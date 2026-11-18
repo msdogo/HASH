@@ -7,6 +7,7 @@ import {
   AdbClient,
   E_NO_SERIAL,
   E_TIMEOUT,
+  E_ABORTED,
   adbChildCount,
   killAllAdbChildren,
 } from '../electron/adb/client'
@@ -149,13 +150,16 @@ describe('AdbClient', () => {
   }, 30_000)
 
   // ---- Important-2b：pre-aborted 语义 ----
-  it('signal 已 abort 时命令不得执行，直接 reject', async () => {
+  // 夹具第一句就写标记：只要进程真的被 spawn 出来，标记几乎立刻落地。
+  // 【为什么上一版是假通过】上一版把写标记推迟到 800ms，而 taskkill 是毫秒级完成，
+  // 进程在标记落地前就被杀了 —— 于是「标记不存在」恒成立，用例看不出命令其实真跑了。
+  it('signal 已 abort 时不得 spawn 进程，直接 reject E_ABORTED', async () => {
     const dir = scriptDir()
     const marker = path.join(dir, 'ran.txt')
     const script = path.join(dir, 'ran.mjs')
     writeFileSync(script, [
       "import { writeFileSync } from 'node:fs'",
-      'setTimeout(() => { writeFileSync(' + JSON.stringify(marker) + ", 'ran') }, 800)",
+      'writeFileSync(' + JSON.stringify(marker) + ", 'ran')",
     ].join('\n'))
 
     const controller = new AbortController()
@@ -164,8 +168,9 @@ describe('AdbClient', () => {
 
     await expect(
       client.run(nodeAdbArgs(script), { adbPath: SHELL, signal: controller.signal }),
-    ).rejects.toThrow()
-    await wait(1400)
+    ).rejects.toThrow(E_ABORTED)
+    // 给「真被 spawn 了」的实现足够时间暴露痕迹
+    await wait(600)
     expect(existsSync(marker)).toBe(false)
     expect(adbChildCount()).toBe(0)
   }, 20_000)

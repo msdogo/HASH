@@ -83,6 +83,13 @@ export class AdbClient {
   run(args: string[], opts: RunOptions & { adbPath: string }): Promise<RunResult> {
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
     return new Promise<RunResult>((resolve, reject) => {
+      // 已取消就先退出，不得 spawn：进程一旦起来，命令就已经在设备上跑了一遍，
+      // 事后 kill 只能止损、不能撤销副作用。所有检查必须先于产生副作用的那一步。
+      if (opts.signal?.aborted) {
+        reject(new Error(E_ABORTED))
+        return
+      }
+
       let child: ChildProcess
       try {
         child = spawn(opts.adbPath, this.buildArgs(args), {
@@ -129,7 +136,9 @@ export class AdbClient {
       child.on('error', (err) => finish(() => { reject(err) }))
       child.on('close', (code) => finish(() => { resolve({ code, stdout, stderr }) }))
 
-      // 先挂 listener 再查 aborted：覆盖「检查与监听之间发生 abort」的竞态。
+      // 入口已查过一次 aborted。这里再补一次，覆盖「入口检查通过、spawn 期间被 abort」的窗口；
+      // 此时进程已存在，只能 kill 止损。必须先挂监听再查状态：已 abort 的 signal 不会再派发事件，
+      // 只挂监听不会误触发，而反过来的顺序会漏掉「检查通过、挂监听之前」那次 abort。
       opts.signal?.addEventListener('abort', onAbort)
       if (opts.signal?.aborted) {
         finish(() => { killTree(child); reject(new Error(E_ABORTED)) })
