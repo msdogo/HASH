@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest'
-import { existsSync, rmSync } from 'node:fs'
-import { AdbClient, E_NO_SERIAL, E_TIMEOUT } from '../electron/adb/client'
+import { describe, it, expect, afterEach } from 'vitest'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { getEventListeners } from 'node:events'
+import {
+  AdbClient,
+  E_NO_SERIAL,
+  E_TIMEOUT,
+  adbChildCount,
+  killAllAdbChildren,
+} from '../electron/adb/client'
 
 const isWin = process.platform === 'win32'
 
@@ -29,6 +38,25 @@ function markerPath(): string {
 
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// 用 node 脚本当假 adb：cmd /c <node> <script>，POSIX 用 bash -c exec。
+const dirs: string[] = []
+afterEach(() => {
+  killAllAdbChildren()
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true })
+})
+
+function scriptDir(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'task2-adb-'))
+  dirs.push(dir)
+  return dir
+}
+
+function nodeAdbArgs(scriptPath: string): string[] {
+  return isWin
+    ? ['/c', process.execPath, scriptPath]
+    : ['-c', `exec "${process.execPath}" "${scriptPath}"`]
 }
 
 describe('AdbClient', () => {
@@ -73,7 +101,26 @@ describe('AdbClient', () => {
     expect(chunks.join('').trim()).toBe('streamed')
   })
 
-  it('超时后真的 kill 子进程并 reject E_TIMEOUT', async () => {
+  // ---- Critical-1：多字节字符跨 chunk ----
+  it('多字节字符被切成两个 chunk 时 stdout 仍完整（不出现 U+FFFD）', async () => {
+    const dir = scriptDir()
+    const script = path.join(dir, 'split.mjs')
+    const original = '/sdcard/手机 照片/a.jpg'
+    // 第 12 字节正好切在「机」的 3 字节中间
+    writeFileSync(script, [
+      `const s = Buffer.from(${JSON.stringify(original)}, 'utf8')`,
+      'process.stdout.write(s.subarray(0, 12))',
+      'setTimeout(() => { process.stdout.write(s.subarray(12)) }, 80)',
+    ].join('\n'))
+
+    const client = new AdbClient('ABC123')
+    const result = await client.run(nodeAdbArgs(script), { adbPath: SHELL })
+    expect(result.stdout).toBe(original)
+    expect(result.stdout.includes('\uFFFD')).toBe(false)
+  }, 15_000)
+
+  // ---- Important-1：超时也走单一出口 ----
+  it('超时后 reject E_TIMEOUT，且手头子进程登记被清理（单一出口 finish）', async () => {
     const marker = markerPath()
     try {
       const client = new AdbClient('ABC123')
@@ -81,32 +128,94 @@ describe('AdbClient', () => {
       await expect(
         client.run(hangThenWriteArgs(marker), { adbPath: SHELL, timeoutMs: 100 }),
       ).rejects.toThrow(E_TIMEOUT)
-      // 必须很快 reject，而不是等子进程自己结束
       expect(Date.now() - startedAt).toBeLessThan(900)
-      // 等过子进程原本要写标记的时刻，标记仍不存在 => 进程确实被杀了
+      // finish 是唯一出口：超时路径必须完成清理，无需等 close
+      expect(adbChildCount()).toBe(0)
       await wait(1600)
       expect(existsSync(marker)).toBe(false)
     } finally {
       rmSync(marker, { force: true })
     }
-  }, 10_000)
+  }, 15_000)
 
-  it('abort 信号会 kill 子进程', async () => {
-    const marker = markerPath()
+  // ---- Important-2a：abort 监听器泄漏 ----
+  it('正常结束后不残留 abort 监听器', async () => {
     const controller = new AbortController()
-    try {
-      const client = new AdbClient('ABC123')
-      const pending = client.run(hangThenWriteArgs(marker), {
-        adbPath: SHELL,
-        timeoutMs: 20_000,
-        signal: controller.signal,
-      })
-      setTimeout(() => controller.abort(), 100)
-      await expect(pending).resolves.toBeDefined()
-      await wait(1600)
-      expect(existsSync(marker)).toBe(false)
-    } finally {
-      rmSync(marker, { force: true })
+    const client = new AdbClient('ABC123')
+    for (let i = 0; i < 13; i++) {
+      await client.run(echoArgs('ok'), { adbPath: SHELL, signal: controller.signal })
     }
-  }, 10_000)
+    expect(getEventListeners(controller.signal, 'abort').length).toBe(0)
+  }, 30_000)
+
+  // ---- Important-2b：pre-aborted 语义 ----
+  it('signal 已 abort 时命令不得执行，直接 reject', async () => {
+    const dir = scriptDir()
+    const marker = path.join(dir, 'ran.txt')
+    const script = path.join(dir, 'ran.mjs')
+    writeFileSync(script, [
+      "import { writeFileSync } from 'node:fs'",
+      'setTimeout(() => { writeFileSync(' + JSON.stringify(marker) + ", 'ran') }, 800)",
+    ].join('\n'))
+
+    const controller = new AbortController()
+    controller.abort()
+    const client = new AdbClient('ABC123')
+
+    await expect(
+      client.run(nodeAdbArgs(script), { adbPath: SHELL, signal: controller.signal }),
+    ).rejects.toThrow()
+    await wait(1400)
+    expect(existsSync(marker)).toBe(false)
+    expect(adbChildCount()).toBe(0)
+  }, 20_000)
+
+  // ---- Important-3：孙进程 ----
+  it('超时 kill 会连带终结孙进程（进程树）', async () => {
+    const dir = scriptDir()
+    const marker = path.join(dir, 'grandchild-alive.txt')
+    const grandchild = path.join(dir, 'grandchild.mjs')
+    const parent = path.join(dir, 'parent.mjs')
+    writeFileSync(grandchild, [
+      "import { writeFileSync } from 'node:fs'",
+      'setInterval(() => {}, 1000)',
+      'setTimeout(() => { writeFileSync(' + JSON.stringify(marker) + ", 'alive') }, 2500)",
+    ].join('\n'))
+    writeFileSync(parent, [
+      "import { spawn } from 'node:child_process'",
+      'spawn(process.execPath, [' + JSON.stringify(grandchild) + '], { stdio: "ignore" })',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+
+    const client = new AdbClient('ABC123')
+    await expect(
+      client.run(nodeAdbArgs(parent), { adbPath: SHELL, timeoutMs: 300 }),
+    ).rejects.toThrow(E_TIMEOUT)
+    await wait(3500)
+    expect(existsSync(marker)).toBe(false)
+  }, 30_000)
+
+  // ---- Important-4：全局回收 ----
+  it('killAllAdbChildren 回收在手子进程并清空登记', async () => {
+    const dir = scriptDir()
+    const marker = path.join(dir, 'survivor.txt')
+    const script = path.join(dir, 'long.mjs')
+    writeFileSync(script, [
+      "import { writeFileSync } from 'node:fs'",
+      'setInterval(() => {}, 1000)',
+      'setTimeout(() => { writeFileSync(' + JSON.stringify(marker) + ", 'alive') }, 2000)",
+    ].join('\n'))
+
+    const client = new AdbClient('ABC123')
+    const pending = client.run(nodeAdbArgs(script), { adbPath: SHELL, timeoutMs: 20_000 })
+    await wait(300)
+    expect(adbChildCount()).toBeGreaterThan(0)
+
+    killAllAdbChildren()
+    expect(adbChildCount()).toBe(0)
+    await expect(pending).resolves.toBeDefined()
+
+    await wait(2600)
+    expect(existsSync(marker)).toBe(false)
+  }, 30_000)
 })

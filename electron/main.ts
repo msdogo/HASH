@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { killAllAdbChildren } from './adb/client'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -27,5 +28,7 @@ function createWindow(): void {
   }
 }
 
+// 规格要求：窗口关闭时回收所有子进程。登记表在 client 里，这里只挂退出钩子。
+app.on('before-quit', () => { killAllAdbChildren() })
 app.whenReady().then(createWindow)
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
