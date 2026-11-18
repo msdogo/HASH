@@ -5,3 +5,4 @@ release/
 resources/platform-tools/
 .superpowers/
 *.log
+*.tsbuildinfo
