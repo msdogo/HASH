@@ -102,3 +102,63 @@ describe('渲染层契约（静态断言）', () => {
     expect(source).toMatch(/return\s+window\.api\.devices\.onChanged\(/)
   })
 })
+describe('任务 7：文件页契约（静态断言）', () => {
+  const FILE_SOURCES = [
+    'src/components/FileTable.tsx',
+    'src/components/Breadcrumb.tsx',
+    'src/pages/FilesPage.tsx',
+    'src/store/fileStore.ts',
+  ]
+
+  it('文件页源码不 import node 内置模块、不直接 import electron、无 as any', () => {
+    for (const rel of FILE_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('文件页组件的文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of FILE_SOURCES) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('排序与过滤只走 shared 纯函数（组件里不自己写 sort/filter 判断）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+    // 必须用 visibleEntries（过滤 + 排序的唯一实现），且包在 useMemo 里（裁决 4）
+    expect(page).toContain('visibleEntries(')
+    expect(page).toContain('useMemo')
+    expect(page).not.toMatch(/\.sort\(/)
+    expect(page).not.toMatch(/entries\.filter\(/)
+  })
+
+  it('虚拟滚动的行高只有一个来源（ROW_HEIGHT），组件不写字面量 34', () => {
+    const table = read('src/components/FileTable.tsx')
+    expect(table).toContain('ROW_HEIGHT')
+    expect(table).toContain('estimateSize: () => ROW_HEIGHT')
+    expect(table).not.toMatch(/height:\s*34/)
+    expect(table).not.toMatch(/height:\s*'34px'/)
+  })
+
+  it('fileStore 按 serial 分片且所有请求经 window.api（不绕过 preload）', () => {
+    const store = read('src/store/fileStore.ts')
+    expect(store).toContain('window.api.fs.list(')
+    // 分片键必须来自 serial（裁决 7）
+    expect(store).toMatch(/\[serial\]/)
+    // 加载必须经过协调器（裁决 2：过期响应丢弃 + 在飞去重）
+    expect(store).toContain('createLoadCoordinator')
+  })
+
+  it('fileStore 不重复实现状态机（reducer 来自 shared，有单测）', () => {
+    const store = read('src/store/fileStore.ts')
+    expect(store).toContain('fileViewsReducer')
+    expect(store).toContain('@shared/file-view')
+  })
+})

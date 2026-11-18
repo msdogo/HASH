@@ -26,6 +26,35 @@ const messages: Record<string, string> = {
   'devices.status.unknown': '未知状态',
   'devices.transport.wireless': '无线',
   'devices.refresh': '刷新',
+
+  // ---- 文件页（任务 7）----
+  'files.loading': '正在读取目录…',
+  'files.empty': '这个目录是空的',
+  'files.emptyHidden': '目录里只有隐藏项，打开「显示隐藏文件」再看',
+  'files.retry': '重试',
+  'files.refresh': '刷新',
+  'files.up': '上一级',
+  'files.showHidden': '显示隐藏文件',
+  'files.hideHidden': '不显示隐藏文件',
+  'files.addressPlaceholder': '输入路径后回车跳转，如 /sdcard/DCIM',
+  'files.addressEdit': '编辑路径',
+  'files.addressInvalid': '路径格式不合法，未跳转',
+  'files.notice.degraded': '部分条目无法读取（{count} 项），已尽力显示',
+  'files.notice.exitCode': '该目录有部分内容因权限不足未能读取，已显示读到的条目',
+  'files.notice.dismiss': '关闭提示',
+  'files.column.name': '名称',
+  'files.column.size': '大小',
+  'files.column.mtime': '修改时间',
+  'files.column.mode': '权限',
+  'files.unknownMeta': '未知',
+  'files.dirSize': '—',
+  'files.open': '打开',
+
+  'files.summary': '{dirs} 个文件夹 · {files} 个文件',
+  'files.linkTo': '指向 {target}',
+  'files.sortHint': '点击切换排序方向',
+  'files.selected': '已选 {count} 项',
+  'files.scrollToTop': '回到顶部',
 }
 
 /**

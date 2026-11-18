@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
 import { DeviceRail } from './components/DeviceRail'
+import { FilesPage } from '@/pages/FilesPage'
 import { useDeviceStore } from '@/store/deviceStore'
 import { deviceLabel } from '@shared/device-view'
 import { t } from '@shared/i18n'
@@ -22,8 +22,9 @@ export function App() {
       </header>
       <div className="flex min-h-0 flex-1">
         <DeviceRail />
-        <main className="flex-1 overflow-auto p-6 text-sm text-neutral-400">
-          {active === undefined ? t('devices.empty') : active.serial}
+        {/* 文件页自己管理滚动（虚拟列表需要真正的滚动容器），所以这里不加 padding / overflow */}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <FilesPage />
         </main>
       </div>
     </div>
