@@ -328,7 +328,10 @@ describe('binary', () => {
     expect(result.resolved).toBeNull()
   })
 
-  it.skipIf(!isWin)(
+  // 这条用例依赖「本机能找到真 adb.exe」当夹具（要复制一份到后段目录）。
+  // 因此除了平台判断，还必须带 !HAS_ADB 守卫：否则在没有 adb 的 Windows 机器上
+  // fixture 会走到 throw，用例是「红」而不是「跳过」，违反控制者裁决 4。
+  it.skipIf(!isWin || !HAS_ADB)(
     'C2 回归：PATH 前段是 shim、后段有真 adb 时，resolveAdb 必须定位到后段的真 adb',
     async () => {
       const shimDir = tmpDir()
