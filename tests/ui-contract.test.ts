@@ -58,8 +58,9 @@ describe('渲染层契约（静态断言）', () => {
    * 把真正的绑定删掉后测试仍然绿 —— 与上一轮修掉的假护栏同类，只是伪装更好。
    *
    * 已删除。防护不再依赖任何源码文本匹配：
-   *   - electron/preload.ts 的 `buildApi(deps): DshApi` 返回类型标注在编译期挡住
-   *     「多实现」（多余属性）与「少实现」（缺必填成员）；
+   *   - electron/preload.ts 的 `buildApi(deps): DshApi` 返回类型标注 +
+   *     函数体内 `return { ... } satisfies DshApi`（审查轮 4 补的兜底），
+   *     两者一起在编译期挡住「少实现」（缺必填成员）与「多实现」（多余属性）；
    *   - src/shared/api.d.ts 只写 `interface Window { api: DshApi }`；
    *   - tests/api-contract-binding.test.ts 只做类型层等价断言（无正则）。
    * 变异验证记录在 task-6-report.md。

@@ -56,10 +56,18 @@ export type Unsubscribe = () => void
  * 与 preload 的实现之间【没有任何编译期约束】—— 往 d.ts 里注入一个 rename() 方法，
  * 测试照样全绿。那比不修更危险：后续任务会以为有护栏而大胆加 API。
  *
- * 现在两侧都绑到这一个接口：
- *   - electron/preload.ts：`const api = { ... } satisfies DshApi`  ← 少实现/多实现都编译报错
- *   - src/shared/api.d.ts：`interface Window { api: DshApi }`     ← 声明与实现同源
+ * 现在两侧都绑到这一个接口，防护是三层（审查轮 4 更正：此前这里写的是"靠 satisfies 绑定"，
+ * 那是轮 3 之前的机制，已经不准确了）：
+ *   1. electron/preload.ts 的返回类型标注 `function buildApi(deps): DshApi`
+ *      → 挡住「少实现」（缺必填成员）；
+ *   2. 同一函数里 `return { ... } satisfies DshApi` → 检查点落在**字面量本身**，
+ *      挡住「多实现」（多余属性），并且即使将来把字面量提取成中间变量也仍然生效；
+ *   3. tests/api-contract-binding.test.ts 的 never 断言 → 把「标注 ≡ 契约」也钉住。
+ *   - src/shared/api.d.ts：`interface Window { api: DshApi }` ← 声明与实现同源
  * 于是「改一侧不同步另一侧」是**编译错误**，不再依赖正则比对。
+ *
+ * 已知限制：方法参数的二变性意味着「形参改成更宽的结构兼容类型」不会报错，
+ * 参数签名的精确一致性仍需人工核对。
  */
 export interface DshApi {
   app: {

@@ -30,7 +30,16 @@ export interface PreloadDeps {
   off: (channel: string, listener: (event: unknown, payload: DevicesChangedBatch) => void) => void
 }
 
-/** 造出 API 面。返回类型就是契约接口 —— 编译期强制，不靠测试。 */
+/**
+ * 造出 API 面。返回类型标注 + 字面量上的 satisfies 双保险，编译期强制，不靠测试。
+ *
+ * 为什么要【同时】写返回类型标注和 satisfies（审查轮 4 / A′）：
+ *   多余属性检查只对「直接 return 的对象字面量」生效。若将来有人做一次极常见的重构
+ *   ——把字面量先赋给中间变量再 return——仅靠返回类型标注就会**静默失守**：
+ *   中间变量的推断类型保留那个多余属性，而它仍可赋值给 DshApi（多余属性不是错误），
+ *   于是 tsc exit 0、never 断言也照样通过（因为 ReturnType 恒等于标注）。
+ *   加上 satisfies 后，检查点落在**字面量本身**，提取中间变量也逃不掉。
+ */
 export function buildApi(deps: PreloadDeps): DshApi {
   return {
     app: {
@@ -53,7 +62,7 @@ export function buildApi(deps: PreloadDeps): DshApi {
       list: (payload: FsListInput): Promise<IpcResult<FsListData>> =>
         deps.invoke(CH.FS_LIST, payload) as Promise<IpcResult<FsListData>>,
     },
-  }
+  } satisfies DshApi
 }
 
 // 渲染层没有任何 node 能力，一切都要经过这里。

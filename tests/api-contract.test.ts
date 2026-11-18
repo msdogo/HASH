@@ -22,14 +22,13 @@ describe('I4 API 契约单一事实源', () => {
    * 复审实测它们抓不住任何东西：往 api.d.ts 注入一个 rename() 方法后，本文件仍然全绿。
    * 也就是说它们是**假护栏**，而假护栏比没有更危险（后续任务会以为有保护）。
    *
-   * 已删除，替换为真正的编译期守卫：
-   *   - electron/preload.ts 用 `satisfies DshApi` 绑定实现；
+   * 已删除，替换为真正的编译期守卫（审查轮 4 更正这里的描述，此前写的是"用 satisfies 绑定"）：
+   *   - electron/preload.ts：`function buildApi(deps): DshApi` 返回类型标注，
+   *     且函数体是 `return { ... } satisfies DshApi`（检查点落在字面量本身）；
    *   - src/shared/api.d.ts 只写 `interface Window { api: DshApi }`；
-   *   - tests/api-contract-binding.test.ts 断言这两个绑定存在，并做类型层等价检查。
-   * 改任一侧不同步另一侧 = tsc 报错（已做变异验证，见 task-6-report.md）。
+   *   - tests/api-contract-binding.test.ts 做类型层等价断言（无任何源码文本匹配）。
+   * 改任一侧不同步另一侧 = tsc 报错（变异验证记录见 task-6-report.md）。
    */
-
-
 
   it('api.d.ts 不再重复定义载荷类型（消除第三份副本）', () => {
     const api = read('src/shared/api.d.ts')
