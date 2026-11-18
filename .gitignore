@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+release/
+resources/platform-tools/
+.superpowers/
+*.log
