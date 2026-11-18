@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { parseLsLong, parseLsLongWithStats, parseStatWithFormat } from '../electron/adb/list-parser'
+import { parseLsLong, parseLsLongWithStats, parseStatWithFormat, splitLinkLine, unknownEntry } from '../electron/adb/list-parser'
 import {
   REAL_DOWNLOAD,
   REAL_DEV,
+  REAL_PROC1,
   REAL_ROOT,
   REAL_SDCARD,
   REAL_SDCARD_SELF,
+  REAL_SPECIAL,
   REAL_STAT,
   REAL_TMP,
 } from './fixtures/real-ls'
@@ -18,6 +20,9 @@ const SAMPLE = [
   '-rw-rw---- 1 root sdcard_r 12 2024-10-12 09:31 我的 照片.jpg',
   "lrwxrwxrwx 1 root root 21 2024-10-12 09:31 link -> /sdcard/DCIM",
 ].join('\n')
+
+/** 真机设备时区：+08:00 = 480 分钟。 */
+const TZ_CST = 480
 
 describe('parseLsLong（简报样例）', () => {
   it('跳过 total 行并解析目录与文件', () => {
@@ -78,53 +83,82 @@ describe('parseLsLong 基础行为', () => {
     expect(stats.unparsed).toBe(100)
     expect(stats.unparsedSamples).toHaveLength(20)
   })
+
+  it('真实输出的条目一律 metaKnown = true', () => {
+    const stats = parseLsLongWithStats(REAL_DOWNLOAD)
+    expect(stats.entries.every((e) => e.metaKnown === true)).toBe(true)
+  })
 })
 
 describe('parseLsLong 时间列变体（裁决 1）', () => {
-  it('真机格式：单空格分隔日期与时间', () => {
-    const [row] = parseLsLong('-rw------- 1 u0_a104 u0_a104 16800 2026-11-06 11:10 a.opus\n')
-    expect(new Date(row.mtime).getFullYear()).toBe(2026)
-    expect(new Date(row.mtime).getMonth()).toBe(10) // 11 月
-    expect(new Date(row.mtime).getDate()).toBe(6)
-    expect(new Date(row.mtime).getHours()).toBe(11)
-    expect(new Date(row.mtime).getMinutes()).toBe(10)
+  it('真机格式：单空格分隔日期与时间，按设备时区换算', () => {
+    const [row] = parseLsLong('-rw------- 1 u0_a104 u0_a104 16800 2026-11-06 11:10 a.opus\n', {
+      tzOffsetMinutes: TZ_CST,
+    })
+    // 设备本地 2026-11-06 11:10 (+08:00) == UTC 2026-11-06 03:10
+    expect(row.mtime).toBe(Date.UTC(2026, 10, 6, 3, 10, 0))
   })
 
   it('有的 ls 在日期与时间之间插两个空格', () => {
-    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-06  11:10 x\n')
-    expect(new Date(row.mtime).getMonth()).toBe(10)
-    expect(new Date(row.mtime).getDate()).toBe(6)
+    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-06  11:10 x\n', { tzOffsetMinutes: TZ_CST })
+    expect(row.mtime).toBe(Date.UTC(2026, 10, 6, 3, 10, 0))
   })
 
   it('时间可以带秒', () => {
-    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-06 11:10:33 x\n')
-    expect(new Date(row.mtime).getSeconds()).toBe(33)
+    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-06 11:10:33 x\n', { tzOffsetMinutes: TZ_CST })
+    expect(row.mtime).toBe(Date.UTC(2026, 10, 6, 3, 10, 33))
   })
 
   it('只有日期没有时间（老 ls 对旧文件只给年）也能解析', () => {
-    const stats = parseLsLongWithStats('-rw-r--r-- 1 a b 1 2023-01-15 x\n')
+    const stats = parseLsLongWithStats('-rw-r--r-- 1 a b 1 2023-01-15 x\n', { tzOffsetMinutes: TZ_CST })
     expect(stats.unparsed).toBe(0)
-    expect(new Date(stats.entries[0].mtime).getFullYear()).toBe(2023)
-    expect(new Date(stats.entries[0].mtime).getMonth()).toBe(0)
-    expect(new Date(stats.entries[0].mtime).getDate()).toBe(15)
+    expect(stats.entries[0].mtime).toBe(Date.UTC(2023, 0, 15, 0, 0, 0) - TZ_CST * 60_000)
   })
 
   it('英文月名格式（busybox/BSD 风格）可解析', () => {
-    const stats = parseLsLongWithStats('-rw-r--r-- 1 a b 1 Jan  5  2023 x\n')
+    const stats = parseLsLongWithStats('-rw-r--r-- 1 a b 1 Jan  5  2023 x\n', { tzOffsetMinutes: TZ_CST })
     expect(stats.unparsed).toBe(0)
-    expect(new Date(stats.entries[0].mtime).getFullYear()).toBe(2023)
-    expect(new Date(stats.entries[0].mtime).getMonth()).toBe(0)
+    expect(new Date(stats.entries[0].mtime).getUTCFullYear()).toBe(2023)
+    expect(new Date(stats.entries[0].mtime).getUTCMonth()).toBe(0)
   })
 
   it('时间列完全缺失的行算未解析，不得凭空造时间', () => {
     const stats = parseLsLongWithStats('-rw-r--r-- 1 a b 1 x\n')
     expect(stats.unparsed).toBe(1)
   })
+
+  // C2 的核心断言：同一份输出在任意宿主时区下都得到同一个 mtime
+  it('同一份 ls 输出在不同宿主时区下解析结果完全一致（C2）', () => {
+    const text = 'total 2\r\n' +
+      '-rw------- 1 u0_a104 u0_a104 16800 2026-11-06 11:10 a.opus\r\n' +
+      'dr-xr-xr-x 52 root root 0 1970-01-01 08:00 acct\r\n'
+    const original = process.env.TZ
+    const results: number[][] = []
+    try {
+      for (const tz of ['UTC', 'Asia/Shanghai', 'America/New_York']) {
+        process.env.TZ = tz
+        results.push(parseLsLong(text, { tzOffsetMinutes: TZ_CST }).map((e) => e.mtime))
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ
+      else process.env.TZ = original
+    }
+    expect(results[1]).toEqual(results[0])
+    expect(results[2]).toEqual(results[0])
+    // 且确实是按设备时区算的：1970-01-01 08:00 (+08:00) == epoch
+    expect(results[0][1]).toBe(0)
+    expect(results[0][0]).toBe(Date.UTC(2026, 10, 6, 3, 10, 0))
+  })
+
+  it('不给 tzOffsetMinutes 时按 UTC 解释（确定值，不跟随宿主）', () => {
+    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-06 11:10 x\n')
+    expect(row.mtime).toBe(Date.UTC(2026, 10, 6, 11, 10, 0))
+  })
 })
 
 describe('parseLsLong 真机输出回归（裁决 1）', () => {
   it('/sdcard/Download 全量：中文、空格、加号、全角逗号名逐字还原，0 未解析', () => {
-    const stats = parseLsLongWithStats(REAL_DOWNLOAD)
+    const stats = parseLsLongWithStats(REAL_DOWNLOAD, { tzOffsetMinutes: TZ_CST })
     expect(stats.unparsed).toBe(0)
     expect(stats.entries.length).toBeGreaterThan(50)
     const names = stats.entries.map((e) => e.name)
@@ -156,31 +190,21 @@ describe('parseLsLong 真机输出回归（裁决 1）', () => {
     expect(dev).toMatchObject({ size: 242, isDir: false, isLink: false, mode: 'crw-------' })
   })
 
-  it('真机 / ：1970 年的 mtime 解析结果与真机时间一致（08:01 就是 60000ms，不是 NaN）', () => {
-    const stats = parseLsLongWithStats(REAL_ROOT)
+  it('真机 / ：1970 年 mtime 按设备时区换算（08:00 就是 epoch，不是 NaN）', () => {
+    const stats = parseLsLongWithStats(REAL_ROOT, { tzOffsetMinutes: TZ_CST })
     expect(stats.unparsed).toBe(0)
-    const metadata = stats.entries.find((e) => e.name === 'metadata')
-    // 设备时区 +08:00，1970-01-01 08:01 == epoch + 60000ms
-    expect(metadata?.mtime).toBe(60_000)
-    expect(new Date(metadata?.mtime as number).getFullYear()).toBe(1970)
-    // 08:00 正好是 epoch 本身：mtime === 0 与「解析失败」在 FileEntry 里同值，
-    // 这是已知的语义重叠，已记录在 task-5-report.md 的疑虑里。
-    expect(stats.entries.find((e) => e.name === 'acct')?.mtime).toBe(0)
+    // 设备时区 +08:00 下 1970-01-01 08:01 == epoch + 60000ms
+    expect(stats.entries.find((e) => e.name === 'metadata')?.mtime).toBe(60_000)
+    // 08:00 正好是 epoch 本身：数值 0 与「解析失败」同值 —— 用 metaKnown 区分（I5）
+    const acct = stats.entries.find((e) => e.name === 'acct')
+    expect(acct?.mtime).toBe(0)
+    expect(acct?.metaKnown).toBe(true)
   })
 
-  it('名字里的首尾空格原样保留（真机允许 trailingspace␠ 这种名字）', () => {
-    const [row] = parseLsLong('-rw------- 1 u0_a104 u0_a104 2 2026-11-18 16:54 trailingspace \n')
-    expect(row.name).toBe('trailingspace ')
-  })
-
-  it('以 - 或 . 开头的名字不被误判成表头/选项', () => {
-    const stats = parseLsLongWithStats(
-      'total 20\r\n' +
-        '-rw------- 1 u0_a104 u0_a104 2 2026-11-18 16:54 -dashfile\r\n' +
-        '-rw------- 1 u0_a104 u0_a104 2 2026-11-18 16:54 .hidden\r\n',
-    )
+  it('真机 /proc/1：48 条条目全部可解析（虽然 ls 退出码是 1）', () => {
+    const stats = parseLsLongWithStats(REAL_PROC1)
     expect(stats.unparsed).toBe(0)
-    expect(stats.entries.map((e) => e.name)).toEqual(['-dashfile', '.hidden'])
+    expect(stats.entries).toHaveLength(48)
   })
 
   it('操作数是符号链接时 ls 只输出链接自身一行（名字是完整路径）', () => {
@@ -192,6 +216,85 @@ describe('parseLsLong 真机输出回归（裁决 1）', () => {
       isDir: false,
       linkTarget: '/storage/self/primary',
     })
+  })
+})
+
+describe('名字里的空白（I1）', () => {
+  it('真机前导空格名 / lead.txt 原样还原（不得被贪婪吃掉）', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    expect(stats.entries.map((e) => e.name)).toContain(' lead.txt')
+  })
+
+  it('行尾空格名 trail.txt␠ 原样还原', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    expect(stats.entries.map((e) => e.name)).toContain('trail.txt ')
+  })
+
+  it('中间多空格名 mid␠␠␠spaces.txt 原样还原', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    expect(stats.entries.map((e) => e.name)).toContain('mid   spaces.txt')
+  })
+
+  it('时间列与名字之间只吃一个分隔空格（前导空格 / 行尾空格 / 中间多空格三种名字）', () => {
+    const text = [
+      '-rw-r--r-- 1 a b 2 2026-11-18 17:20  lead.txt',
+      '-rw-r--r-- 1 a b 2 2026-11-18 17:20 trail.txt ',
+      '-rw-r--r-- 1 a b 2 2026-11-18 17:20 mid   spaces.txt',
+    ].join('\n')
+    expect(parseLsLong(text).map((e) => e.name)).toEqual([' lead.txt', 'trail.txt ', 'mid   spaces.txt'])
+  })
+
+  it('引号、反斜杠、分号等特殊字符名不被转义污染', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    const names = stats.entries.map((e) => e.name)
+    expect(names).toContain('quote"d.txt')
+    expect(names).toContain('back\\slash.txt')
+    expect(names).toContain("测试 文件'1'.txt")
+  })
+})
+
+describe('链接切分（I2：名字与目标都含 " -> "）', () => {
+  it('真机 a -> b -> real.txt：名字是 a -> b，目标是 real.txt', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    expect(stats.entries.find((e) => e.name === 'a -> b')).toMatchObject({
+      isLink: true,
+      linkTarget: 'real.txt',
+    })
+  })
+
+  it('真机 name -> arrow -> /tmp/x -> y：名字是 name -> arrow，目标是 /tmp/x -> y', () => {
+    const stats = parseLsLongWithStats(REAL_SPECIAL)
+    expect(stats.entries.find((e) => e.name === 'name -> arrow')).toMatchObject({
+      isLink: true,
+      linkTarget: '/tmp/x -> y',
+    })
+  })
+
+  it('目标含箭头、名字不含箭头（同一行两种歧义都要对）', () => {
+    const [row] = parseLsLong('lrwxrwxrwx 1 a b 7 2026-11-18 16:55 x -> /a -> b\n')
+    expect(row.name).toBe('x')
+    expect(row.linkTarget).toBe('/a -> b')
+  })
+
+  it('splitLinkLine 用 st_size（目标字节数）消歧', () => {
+    // 'real.txt' 8 字节；'b -> real.txt' 13 字节（1 + 4 + 8）
+    expect(splitLinkLine('a -> b -> real.txt', 8)).toEqual({ name: 'a -> b', target: 'real.txt' })
+    expect(splitLinkLine('a -> b -> real.txt', 13)).toEqual({ name: 'a', target: 'b -> real.txt' })
+  })
+
+  it('splitLinkLine 在 size 与任何切分都不匹配时退回最右切分', () => {
+    expect(splitLinkLine('x -> y -> z', 999)).toEqual({ name: 'x -> y', target: 'z' })
+  })
+
+  it('没有 " -> " 时整体当名字', () => {
+    expect(splitLinkLine('plain-link', 5)).toEqual({ name: 'plain-link' })
+  })
+
+  it('普通文件名里出现 " -> " 不会被当成链接', () => {
+    const [row] = parseLsLong('-rw-r--r-- 1 a b 17 2026-11-18 16:55 arrow -> target.txt\n')
+    expect(row.isLink).toBe(false)
+    expect(row.name).toBe('arrow -> target.txt')
+    expect(row.linkTarget).toBeUndefined()
   })
 })
 
@@ -229,19 +332,6 @@ describe('parseLsLong 链接语义（裁决 4）', () => {
     expect(row.linkTargetResolved).toBe('/storage/self/primary')
   })
 
-  it('普通文件名里出现 " -> " 不会被当成链接', () => {
-    const [row] = parseLsLong('-rw-r--r-- 1 a b 1 2026-11-18 16:55 arrow -> target.txt\n')
-    expect(row.isLink).toBe(false)
-    expect(row.name).toBe('arrow -> target.txt')
-    expect(row.linkTarget).toBeUndefined()
-  })
-
-  it('链接目标本身含 " -> " 时只按第一个切分', () => {
-    const [row] = parseLsLong('lrwxrwxrwx 1 a b 1 2026-11-18 16:55 x -> /a -> b\n')
-    expect(row.name).toBe('x')
-    expect(row.linkTarget).toBe('/a -> b')
-  })
-
   it('断链（目标不存在）与普通链接解析结果一致', () => {
     const [row] = parseLsLong('lrwxrwxrwx 1 shell shell 11 2026-11-18 16:55 broken -> missing.txt\n', {
       dir: '/data/local/tmp',
@@ -261,6 +351,10 @@ describe('parseStatWithFormat（降级补齐的字段来源）', () => {
     expect(rows[1].mtime).toBe(1794534116 * 1000)
   })
 
+  it('stat 结果的 metaKnown 为 true', () => {
+    expect(parseStatWithFormat(REAL_STAT).every((e) => e.metaKnown === true)).toBe(true)
+  })
+
   it('名字里含竖线也不截断', () => {
     const [row] = parseStatWithFormat('-rw-r--r--|u0_a104|u0_a104|7|1794553956|/sdcard/a|b.txt\n')
     expect(row.name).toBe('/sdcard/a|b.txt')
@@ -275,5 +369,29 @@ describe('parseStatWithFormat（降级补齐的字段来源）', () => {
 
   it('无法识别的行被跳过而不是抛错', () => {
     expect(parseStatWithFormat("stat: '/x': No such file or directory\n")).toEqual([])
+  })
+})
+
+describe('unknownEntry（I5：元数据未知的占位条目）', () => {
+  it('名字保留，其余字段为 0/空，且 metaKnown = false', () => {
+    expect(unknownEntry('x.bin')).toEqual({
+      name: 'x.bin',
+      isDir: false,
+      isLink: false,
+      size: 0,
+      mtime: 0,
+      mode: '',
+      owner: '',
+      group: '',
+      metaKnown: false,
+    })
+  })
+
+  it('真 0（1970-01-01 08:00 +08:00）与「未知」在 metaKnown 上可区分', () => {
+    const real = parseLsLongWithStats(REAL_ROOT, { tzOffsetMinutes: TZ_CST }).entries.find((e) => e.name === 'acct')
+    const unknown = unknownEntry('acct')
+    expect(real?.mtime).toBe(unknown.mtime) // 数值相同
+    expect(real?.metaKnown).toBe(true)
+    expect(unknown.metaKnown).toBe(false)
   })
 })

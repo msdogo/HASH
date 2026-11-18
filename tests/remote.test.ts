@@ -6,13 +6,16 @@ import {
   E_NO_PERMISSION,
   E_NOT_FOUND,
   E_PARSE_DEGRADED,
+  clearDeviceTzCache,
   joinPath,
   listDir,
   listDirDetailed,
+  lsOperand,
   normalizeDir,
+  parseTzOffset,
   type ShellRunner,
 } from '../electron/fs/remote'
-import { REAL_DOWNLOAD, REAL_TMP } from './fixtures/real-ls'
+import { REAL_DOWNLOAD, REAL_PROC1, REAL_TMP } from './fixtures/real-ls'
 
 /* ============ 假 adb：只实现 AdbClient 的 run 契约，用于离线断言命令与降级路径 ============ */
 
@@ -28,8 +31,13 @@ interface FakeClient extends ShellRunner {
   opts: Array<{ adbPath: string; timeoutMs?: number }>
 }
 
-function fakeClient(responses: FakeResponse[]): FakeClient {
+/**
+ * 假 client。`tz` 是设备 date +%z 的输出，缺省 +0800（真机实际值）。
+ * 时区查询命中 `^date +%z`，不会污染其余断言。
+ */
+function fakeClient(responses: FakeResponse[], tz = '+0800'): FakeClient {
   const client: FakeClient = {
+    serial: 'FAKE',
     commands: [],
     opts: [],
     run: async (args, opts) => {
@@ -39,6 +47,7 @@ function fakeClient(responses: FakeResponse[]): FakeClient {
       }
       client.commands.push(args[1])
       client.opts.push({ adbPath: opts.adbPath, timeoutMs: opts.timeoutMs })
+      if (/^date \+%z$/.test(args[1])) return { code: 0, stdout: tz + '\r\n', stderr: '' }
       const hit = responses.find((r) => r.match.test(args[1]))
       if (!hit) return { code: 127, stdout: '', stderr: 'fake adb: no matching response' }
       return { code: hit.code ?? 0, stdout: hit.stdout ?? '', stderr: hit.stderr ?? '' }
@@ -50,6 +59,16 @@ function fakeClient(responses: FakeResponse[]): FakeClient {
 const LS_LONG = /^LC_ALL=C ls -lA -- /
 const LS_NAMES = /^LC_ALL=C ls -1A -- /
 const STAT = /^LC_ALL=C stat -c /
+const READLINK = /^readlink -- /
+
+/** 只看业务命令（滤掉时区探测），断言更有针对性。 */
+function businessCommands(client: FakeClient): string[] {
+  return client.commands.filter((c) => !/^date \+%z$/.test(c))
+}
+
+afterEach(() => {
+  clearDeviceTzCache()
+})
 
 /* ============ 裁决 3：路径拼接 ============ */
 
@@ -109,7 +128,7 @@ describe('joinPath（裁决 3：防目录穿越与空段）', () => {
   })
 })
 
-describe('normalizeDir', () => {
+describe('normalizeDir / lsOperand（I7：尾斜杠规避必须可复用）', () => {
   it('折叠重复斜杠、去掉尾斜杠、补前导斜杠', () => {
     expect(normalizeDir('/sdcard///Download/')).toBe('/sdcard/Download')
     expect(normalizeDir('sdcard/Download')).toBe('/sdcard/Download')
@@ -130,6 +149,83 @@ describe('normalizeDir', () => {
     expect(normalizeDir('/sdcard/./Download')).toBe('/sdcard/Download')
     expect(normalizeDir('/sdcard/x/../Download')).toBe('/sdcard/Download')
   })
+
+  it('lsOperand 是公开函数，非根目录一律补尾斜杠（/sdcard 等符号链接才列得出内容）', () => {
+    expect(lsOperand('/sdcard')).toBe('/sdcard/')
+    expect(lsOperand('/sdcard/')).toBe('/sdcard/')
+    expect(lsOperand('/sdcard//Download')).toBe('/sdcard/Download/')
+    expect(lsOperand('/sdcard/x/../Download')).toBe('/sdcard/Download/')
+  })
+
+  it('lsOperand 对根不补斜杠（否则会变成 //）', () => {
+    expect(lsOperand('/')).toBe('/')
+    expect(lsOperand('//')).toBe('/')
+  })
+
+  it('lsOperand 同样拒收换行路径', () => {
+    expect(() => lsOperand('/a\nb')).toThrow('E_INVALID_PATH')
+  })
+})
+
+/* ============ 时区（C2） ============ */
+
+describe('parseTzOffset / resolveDeviceTz', () => {
+  it('解析真机 date +%z 的 +0800', () => {
+    expect(parseTzOffset('+0800\r\n')).toBe(480)
+  })
+
+  it('支持带冒号的 +05:30 与负偏移', () => {
+    expect(parseTzOffset('+05:30')).toBe(330)
+    expect(parseTzOffset('-0330')).toBe(-210)
+    expect(parseTzOffset('+0000')).toBe(0)
+  })
+
+  it('非法输出返回 undefined', () => {
+    expect(parseTzOffset('')).toBeUndefined()
+    expect(parseTzOffset('CST')).toBeUndefined()
+    expect(parseTzOffset('+9900')).toBeUndefined()
+  })
+
+  it('listDir 取设备时区并按它换算 mtime（不是宿主时区）', async () => {
+    const client = fakeClient(
+      [{ match: LS_LONG, stdout: '-rw------- 1 u0_a104 u0_a104 2 2026-11-06 11:10 a.opus\r\n' }],
+      '+0800',
+    )
+    const result = await listDirDetailed(client, 'adb', '/sdcard/Download')
+    expect(result.tzOffsetMinutes).toBe(480)
+    expect(result.entries[0].mtime).toBe(Date.UTC(2026, 10, 6, 3, 10, 0))
+  })
+
+  it('设备时区查询失败时退回宿主偏移，目录照样打得开', async () => {
+    const client = fakeClient(
+      [{ match: LS_LONG, stdout: 'total 0\r\n' }],
+      '',
+    )
+    const result = await listDirDetailed(client, 'adb', '/d')
+    expect(result.tzOffsetMinutes).toBe(-new Date().getTimezoneOffset())
+    expect(result.entries).toEqual([])
+  })
+
+  it('同一份 ls 输出在不同宿主时区下得到相同 mtime（C2 端到端）', async () => {
+    const original = process.env.TZ
+    const mtimes: number[] = []
+    try {
+      for (const tz of ['UTC', 'Asia/Shanghai']) {
+        process.env.TZ = tz
+        clearDeviceTzCache()
+        const client = fakeClient(
+          [{ match: LS_LONG, stdout: '-rw------- 1 u0_a104 u0_a104 2 2026-11-06 11:10 a.opus\r\n' }],
+          '+0800',
+        )
+        mtimes.push((await listDirDetailed(client, 'adb', '/d')).entries[0].mtime)
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ
+      else process.env.TZ = original
+    }
+    expect(mtimes[1]).toBe(mtimes[0])
+    expect(mtimes[0]).toBe(Date.UTC(2026, 10, 6, 3, 10, 0))
+  })
 })
 
 /* ============ listDir 主路径 ============ */
@@ -142,14 +238,14 @@ describe('listDir', () => {
     expect(entries.some((e) => e.name === 'DJI航点航线+喊话器，单曲循环.kmz')).toBe(true)
     // 尾斜杠是刻意补的：ls 的操作数若是符号链接本身（如 /sdcard），
     // 不带尾斜杠只会输出那一条链接，列不出目录内容。
-    expect(client.commands).toEqual(["LC_ALL=C ls -lA -- '/sdcard/Download/'"])
+    expect(businessCommands(client)).toEqual(["LC_ALL=C ls -lA -- '/sdcard/Download/'"])
   })
 
   it('目录经 shellQuote 转义后才进命令串（单引号/空格/中文）', async () => {
     const client = fakeClient([{ match: LS_LONG, stdout: 'total 0\r\n' }])
     const dir = "/sdcard/我的 文件'1'"
     await listDir(client, 'adb', dir)
-    expect(client.commands[0]).toBe('LC_ALL=C ls -lA -- ' + shellQuote(dir + '/'))
+    expect(businessCommands(client)[0]).toBe('LC_ALL=C ls -lA -- ' + shellQuote(dir + '/'))
   })
 
   it('路径含换行时在发命令前就失败，不产生任何 adb 调用', async () => {
@@ -159,33 +255,32 @@ describe('listDir', () => {
   })
 
   it('自动补尾斜杠：操作数是符号链接时也能列出目录内容', async () => {
-    const client = fakeClient([
-      { match: LS_LONG, stdout: REAL_TMP },
-    ])
+    const client = fakeClient([{ match: LS_LONG, stdout: REAL_TMP }])
     await listDir(client, 'adb', '/sdcard')
-    expect(client.commands[0]).toBe("LC_ALL=C ls -lA -- '/sdcard/'")
+    expect(businessCommands(client)[0]).toBe("LC_ALL=C ls -lA -- '/sdcard/'")
   })
 
   it('空目录（只有 total 行）返回空数组，不抛错', async () => {
     const client = fakeClient([{ match: LS_LONG, stdout: 'total 0\r\n' }])
-    await expect(listDir(client, 'adb', '/sdcard/DCIM')).resolves.toEqual([])
+    const entries = await listDir(client, 'adb', '/sdcard/DCIM')
+    expect(entries).toEqual([])
   })
 
-  it('Permission denied 映射为 E_NO_PERMISSION', async () => {
+  it('零条目 + Permission denied 映射为 E_NO_PERMISSION', async () => {
     const client = fakeClient([
       { match: LS_LONG, code: 1, stderr: "ls: /data/app: Permission denied\r\n" },
     ])
     await expect(listDir(client, 'adb', '/data/app')).rejects.toThrow(E_NO_PERMISSION)
   })
 
-  it('No such file or directory 映射为 E_NOT_FOUND', async () => {
+  it('零条目 + No such file or directory 映射为 E_NOT_FOUND', async () => {
     const client = fakeClient([
       { match: LS_LONG, code: 1, stderr: "ls: /nope: No such file or directory\r\n" },
     ])
     await expect(listDir(client, 'adb', '/nope')).rejects.toThrow(E_NOT_FOUND)
   })
 
-  it('Not a directory 也映射为 E_NOT_FOUND', async () => {
+  it('零条目 + Not a directory 也映射为 E_NOT_FOUND', async () => {
     const client = fakeClient([
       { match: LS_LONG, code: 1, stderr: 'ls: /sdcard/a.txt/: Not a directory\r\n' },
     ])
@@ -195,7 +290,8 @@ describe('listDir', () => {
   it('把 adbPath 与超时透传给 client.run', async () => {
     const client = fakeClient([{ match: LS_LONG, stdout: 'total 0\r\n' }])
     await listDir(client, 'C:/adb.exe', '/sdcard/DCIM')
-    expect(client.opts[0]).toEqual({ adbPath: 'C:/adb.exe', timeoutMs: 60_000 })
+    expect(client.opts[0]).toEqual({ adbPath: 'C:/adb.exe', timeoutMs: 10_000 }) // 第一条是时区探测
+    expect(client.opts.some((o) => o.adbPath === 'C:/adb.exe' && o.timeoutMs === 60_000)).toBe(true)
   })
 
   it('链接条目的 isDir 恒为 false，相对目标被解析成绝对路径（裁决 4）', async () => {
@@ -221,6 +317,69 @@ describe('listDir', () => {
   })
 })
 
+/* ============ C1：ls 退出码非 0 不得丢弃同批可用 stdout ============ */
+
+describe('listDir 退出码与 stdout 的关系（C1）', () => {
+  it('真机 /proc/1：48 条条目 + exit 1，必须返回全部条目而不是报无权限', async () => {
+    const client = fakeClient([
+      { match: LS_LONG, code: 1, stdout: REAL_PROC1, stderr: 'ls: /proc/1//cwd: Permission denied\r\n' },
+    ])
+    const result = await listDirDetailed(client, 'adb', '/proc/1')
+    expect(result.entries).toHaveLength(48)
+    expect(result.entries.map((e) => e.name)).toContain('attr')
+    expect(result.exitCode).toBe(1)
+    // 48 条全部解析出来，未解析 0，属于「部分可读」，不算降级
+    expect(result.degraded).toBe(false)
+    expect(result.unparsed).toBe(0)
+  })
+
+  it('退出码 1 但有条目时不再误报 E_NO_PERMISSION', async () => {
+    const client = fakeClient([
+      {
+        match: LS_LONG,
+        code: 1,
+        stdout: '-rw-r--r-- 1 root root 2 2026-11-18 17:08 a.txt\r\n',
+        stderr: 'ls: /x/cwd: Permission denied\r\n',
+      },
+    ])
+    await expect(listDir(client, 'adb', '/x')).resolves.toHaveLength(1)
+  })
+
+  it('退出码 1 + 有条目 + 解析率过低：降级链仍然生效（不被短路废掉）', async () => {
+    const client = fakeClient([
+      {
+        match: LS_LONG,
+        code: 1,
+        stdout: [
+          'total 12',
+          '-rw------- 1 u0_a104 u0_a104 2 2026-11-18 16:54 a.txt',
+          ...Array.from({ length: 9 }, (_, i) => '<<垃圾 ' + i + '>>'),
+        ].join('\r\n'),
+        stderr: 'ls: /x/cwd: Permission denied\r\n',
+      },
+      { match: LS_NAMES, stdout: 'a.txt\r\nx0.bin\r\n' },
+      { match: STAT, stdout: '-rw-------|u0_a104|u0_a104|2|1794992106|/x/a.txt\r\n' },
+    ])
+    const result = await listDirDetailed(client, 'adb', '/x')
+    expect(result.degraded).toBe(true)
+    expect(result.usedFallback).toBe(true)
+    expect(result.entries.map((e) => e.name).sort()).toEqual(['a.txt', 'x0.bin'])
+    expect(result.exitCode).toBe(1)
+  })
+
+  it('零条目 + 非零退出码才走错误映射', async () => {
+    const client = fakeClient([{ match: LS_LONG, code: 1, stdout: '', stderr: 'ls: /x: Permission denied\r\n' }])
+    await expect(listDir(client, 'adb', '/x')).rejects.toThrow(E_NO_PERMISSION)
+  })
+
+  it('零条目 + 退出码 0 是空目录，不是错误', async () => {
+    const client = fakeClient([{ match: LS_LONG, code: 0, stdout: '' }])
+    const result = await listDirDetailed(client, 'adb', '/x')
+    expect(result.entries).toEqual([])
+    expect(result.degraded).toBe(false)
+  })
+})
+
 /* ============ 裁决 2：解析失败必须降级 ============ */
 
 describe('listDir 解析降级（裁决 2）', () => {
@@ -235,7 +394,6 @@ describe('listDir 解析降级（裁决 2）', () => {
   it('前 3 行正常 + 后 7 行乱码：返回前 3 条并带 degraded 标志（不抛错）', async () => {
     const client = fakeClient([
       { match: LS_LONG, stdout: MIXED },
-      // 降级路径也拿不到数据：仍是降级返回，而不是把目录变成打不开
       { match: LS_NAMES, code: 1, stderr: 'ls: nope' },
       { match: STAT, code: 1, stderr: 'stat: nope' },
     ])
@@ -260,7 +418,7 @@ describe('listDir 解析降级（裁决 2）', () => {
     expect(result.entries).toHaveLength(10)
     expect(result.entries.map((e) => e.name)).toContain('x6.bin')
     expect(result.degraded).toBe(true)
-    // 已解析的条目保留 ls 的完整字段，不因降级被 stat 版本覆盖
+    // 同 mtime 下：ls 解析出的条目以 ls 版为准（stat 版秒级时间会覆盖毫秒级语义）
     expect(result.entries.find((e) => e.name === 'a.txt')?.mtime).toBe(Date.UTC(2026, 10, 18, 8, 54))
   })
 
@@ -319,6 +477,70 @@ describe('listDir 解析降级（裁决 2）', () => {
   })
 })
 
+/* ============ I4 / I3 / I5：stat 逐条容错、链接目标补齐、元数据未知标记 ============ */
+
+describe('降级补齐的容错（I3 / I4 / I5）', () => {
+  const BROKEN = 'total 1\r\n<<乱码>>\r\n'
+
+  it('I4：stat 部分成功（exit 1）+ 部分输出时，成功的用真实值、失败的用占位并标 metaKnown=false', async () => {
+    const client = fakeClient([
+      { match: LS_LONG, stdout: BROKEN },
+      { match: LS_NAMES, stdout: 'ok.bin\r\nmissing.bin\r\n' },
+      {
+        match: STAT,
+        code: 1,
+        stdout: '-rw-------|u0_a104|u0_a104|42|1794992106|/d/ok.bin\r\n',
+        stderr: "stat: '/d/missing.bin': No such file or directory\r\n",
+      },
+    ])
+    const result = await listDirDetailed(client, 'adb', '/d')
+    const ok = result.entries.find((e) => e.name === 'ok.bin')
+    const missing = result.entries.find((e) => e.name === 'missing.bin')
+    expect(ok).toMatchObject({ size: 42, metaKnown: true })
+    expect(ok?.mtime).toBe(1794992106000)
+    expect(missing).toMatchObject({ size: 0, mode: '', metaKnown: false })
+    expect(result.entries).toHaveLength(2)
+  })
+
+  it('I3：stat 兜底出的链接会用 readlink 补 linkTarget 与 linkTargetResolved', async () => {
+    const client = fakeClient([
+      { match: LS_LONG, stdout: BROKEN },
+      { match: LS_NAMES, stdout: 'plain.bin\r\nlink.bin\r\n' },
+      {
+        match: STAT,
+        stdout: '-rw-------|u0_a104|u0_a104|5|1794992106|/d/plain.bin\r\n' +
+          'lrwxrwxrwx|u0_a104|u0_a104|11|1794992106|/d/link.bin\r\n',
+      },
+      { match: READLINK, stdout: 'plain.bin\r\n' },
+    ])
+    const result = await listDirDetailed(client, 'adb', '/d')
+    const link = result.entries.find((e) => e.name === 'link.bin')
+    expect(link?.isLink).toBe(true)
+    expect(link?.isDir).toBe(false)
+    expect(link?.linkTarget).toBe('plain.bin')
+    expect(link?.linkTargetResolved).toBe('/d/plain.bin')
+    // readlink 只对链接条目调用（非链接不能进批量参数，否则输出会错位）
+    const readlinkCommand = client.commands.find((c) => READLINK.test(c)) as string
+    expect(readlinkCommand).toBe('readlink -- ' + shellQuote('/d/link.bin'))
+  })
+
+  it('I3：readlink 输出行数与传入条数对不上时宁可不填，也不填错', async () => {
+    const client = fakeClient([
+      { match: LS_LONG, stdout: BROKEN },
+      { match: LS_NAMES, stdout: 'a.link\r\nb.link\r\n' },
+      {
+        match: STAT,
+        stdout: 'lrwxrwxrwx|u0_a104|u0_a104|3|1794992106|/d/a.link\r\n' +
+          'lrwxrwxrwx|u0_a104|u0_a104|3|1794992106|/d/b.link\r\n',
+      },
+      { match: READLINK, stdout: 'only-one\r\n' },
+    ])
+    const result = await listDirDetailed(client, 'adb', '/d')
+    expect(result.entries.map((e) => e.isLink)).toEqual([true, true])
+    expect(result.entries.every((e) => e.linkTarget === undefined)).toBe(true)
+  })
+})
+
 /* ============ 真机集成（本机无 adb / 无设备时跳过） ============ */
 
 const ADB = process.platform === 'win32' ? 'adb.exe' : 'adb'
@@ -339,6 +561,7 @@ const HAS_DEVICE = adbReady()
 
 const cleanup: string[] = []
 afterEach(async () => {
+  clearDeviceTzCache()
   while (cleanup.length > 0) {
     const path = cleanup.pop() as string
     try {
@@ -356,7 +579,7 @@ describe('真机集成（skipIf 无设备）', () => {
       const client = new AdbClient(SERIAL)
       for (const dir of ['/sdcard', '/data/local/tmp', '/dev']) {
         const result = await listDirDetailed(client, ADB, dir)
-        const names = await client.run(['shell', 'LC_ALL=C ls -1A -- ' + shellQuote(dir + '/')], {
+        const names = await client.run(['shell', 'LC_ALL=C ls -1A -- ' + shellQuote(lsOperand(dir))], {
           adbPath: ADB,
           timeoutMs: 60_000,
         })
@@ -376,14 +599,35 @@ describe('真机集成（skipIf 无设备）', () => {
     expect(result.entries.every((e) => e.name !== '' && !e.name.includes('\uFFFD'))).toBe(true)
   })
 
-  it.skipIf(!HAS_DEVICE)('列举 / ：1970 年 mtime 不为 0、符号链接 isDir 为 false', async () => {
+  it.skipIf(!HAS_DEVICE)('设备时区为 +0800，mtime 按设备时区换算', async () => {
+    const result = await listDirDetailed(new AdbClient(SERIAL), ADB, '/sdcard/Download')
+    expect(result.tzOffsetMinutes).toBe(480)
+    const entry = result.entries.find((e) => e.name === '测试音频.opus')
+    if (entry !== undefined) {
+      // 真机 ls 显示 2026-11-13 09:41，stat %Y = 1794534116（09:41:56）。
+      // ls 的时间列只到分钟，所以按分钟截断比对 —— 这是 ls 格式的精度上限，不是解析误差。
+      expect(entry.mtime).toBe(Math.floor(1794534116 / 60) * 60 * 1000)
+    }
+  })
+
+  it.skipIf(!HAS_DEVICE)('列举 / ：1970 年 mtime 不为 NaN、符号链接 isDir 为 false', async () => {
     const entries = await listDir(new AdbClient(SERIAL), ADB, '/')
-    // 1970-01-01 08:01（设备时区 +08:00）== epoch + 60000ms
-    expect(entries.find((e) => e.name === 'metadata')?.mtime).toBe(60_000)
+    const acct = entries.find((e) => e.name === 'acct')
+    // 1970-01-01 08:00 (+08:00) == epoch，数值为 0 但 metaKnown 为 true
+    expect(acct?.mtime).toBe(0)
+    expect(acct?.metaKnown).toBe(true)
     const sdcardLink = entries.find((e) => e.name === 'sdcard')
     expect(sdcardLink).toMatchObject({ isLink: true, isDir: false })
     expect(sdcardLink?.linkTargetResolved?.startsWith('/')).toBe(true)
   })
+
+  // C1 端到端：/proc/1 是半可读目录
+  it.skipIf(!HAS_DEVICE)('/proc/1：ls 退出码非 0 但必须返回条目（C1 端到端）', async () => {
+    const result = await listDirDetailed(new AdbClient(SERIAL), ADB, '/proc/1')
+    expect(result.exitCode).not.toBe(0)
+    expect(result.entries.length).toBeGreaterThan(30)
+    expect(result.entries.map((e) => e.name)).toContain('attr')
+  }, 60_000)
 
   it.skipIf(!HAS_DEVICE)('/data/app 权限不足映射为 E_NO_PERMISSION', async () => {
     await expect(listDir(new AdbClient(SERIAL), ADB, '/data/app')).rejects.toThrow(E_NO_PERMISSION)
@@ -420,6 +664,51 @@ describe('真机集成（skipIf 无设备）', () => {
       })
       expect(cat.code).toBe(0)
       expect(cat.stdout.trim()).toBe('hi')
+    },
+    60_000,
+  )
+
+  // I1 真机往返：前导空格名必须能还原并被访问到
+  it.skipIf(!HAS_DEVICE)(
+    '前导空格名 " lead.txt"：真机创建 → 列举还原前导空格 → 用解析结果读回内容',
+    async () => {
+      const client = new AdbClient(SERIAL)
+      const dir = '/data/local/tmp/t5 lead'
+      const name = ' lead.txt'
+      cleanup.push(dir)
+      await client.run(['shell', 'mkdir -p ' + shellQuote(dir)], { adbPath: ADB, timeoutMs: 30_000 })
+      await client.run(['shell', 'printf hi > ' + shellQuote(joinPath(dir, name))], {
+        adbPath: ADB,
+        timeoutMs: 30_000,
+      })
+      const entries = await listDir(client, ADB, dir)
+      expect(entries.map((e) => e.name)).toContain(name)
+      const cat = await client.run(['shell', 'cat ' + shellQuote(joinPath(dir, name))], {
+        adbPath: ADB,
+        timeoutMs: 30_000,
+      })
+      expect(cat.stdout.trim()).toBe('hi')
+    },
+    60_000,
+  )
+
+  // I2 真机往返：名字本身含 ' -> ' 的链接
+  it.skipIf(!HAS_DEVICE)(
+    "名字含 ' -> ' 的符号链接：真机创建后解析出正确的 name 与 linkTarget",
+    async () => {
+      const client = new AdbClient(SERIAL)
+      const dir = '/data/local/tmp/t5arrow'
+      cleanup.push(dir)
+      await client.run(
+        ['shell', 'mkdir -p ' + shellQuote(dir) + ' && cd ' + shellQuote(dir) +
+          ' && printf hi > real.txt && ln -s real.txt ' + shellQuote('a -> b')],
+        { adbPath: ADB, timeoutMs: 30_000 },
+      )
+      const entries = await listDir(client, ADB, dir)
+      const link = entries.find((e) => e.name === 'a -> b')
+      expect(link?.isLink).toBe(true)
+      expect(link?.linkTarget).toBe('real.txt')
+      expect(link?.linkTargetResolved).toBe('/data/local/tmp/t5arrow/real.txt')
     },
     60_000,
   )
