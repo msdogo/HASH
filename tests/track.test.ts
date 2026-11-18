@@ -41,6 +41,12 @@ const HAS_ADB = adbOnPath()
  *   hex: 30 30 30 30     ascii: "0000"    共 4 字节，无任何换行
  *
  * 结论：简报里「4 位十六进制 + 换行 + 负载」不成立 —— 帧头后没有换行。
+ *
+ * 【危害更正，I5】简报原实现（先 indexOf(0x0a) 找换行）在真实字节上产出的假设备
+ * serial 为 "00169N9CN2G0012A6F"、status 为 **device**（不是 unknown）——
+ * 因为 \t 仍留在这行里，split('\t') 后 state 恰好是 device。
+ * 也就是说 UI 会把它显示成一台可用的真设备，用户点进去才发现全部操作失败，
+ * 危害比 unknown 更大。
  */
 const RAW_SINGLE = '30303136' + '394e39434e324730303132413646' + '09' + '646576696365' + '0d0a'
 const RAW_TWO =
@@ -51,6 +57,11 @@ const RAW_EMPTY = '30303030'
 
 const SINGLE_FRAME = '9N9CN2G0012A6F\tdevice\n'
 const TWO_FRAME = '9N9CN2G0012A6F\tdevice\n127.0.0.1:5599\toffline\n'
+
+// 真实 adb devices -l 的一行（含 model/transport_id 附加列）
+const DEVICES_L =
+  'List of devices attached\r\n' +
+  '9N9CN2G0012A6F         device product:rc701 model:DJI_RC_PLUS_2 device:rc701 transport_id:8\r\n\r\n'
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -84,7 +95,7 @@ interface FakeTrackOpts {
   idle?: boolean
 }
 
-// 起一个假的 track-devices 子进程：真的 spawn node 脚本，因此能真实验证登记与回收。
+// 起一个假的 adb 子进程：真的 spawn node 脚本，因此能真实验证登记与回收。
 function fakeTrack(opts: FakeTrackOpts): () => ReturnType<typeof spawn> {
   return () => {
     const dir = tmpDir()
@@ -105,35 +116,130 @@ describe('FrameDecoder（真实帧格式）', () => {
   it('解析真实单设备帧：帧头后无换行，负载 CRLF 归一为 LF', () => {
     const d = new FrameDecoder()
     expect(d.push(Buffer.from(RAW_SINGLE, 'hex'))).toEqual([SINGLE_FRAME])
+    expect(d.pendingBytes).toBe(0)
   })
 
   it('解析真实两设备帧：一帧多行', () => {
     const d = new FrameDecoder()
     expect(d.push(Buffer.from(RAW_TWO, 'hex'))).toEqual([TWO_FRAME])
+    expect(d.pendingBytes).toBe(0)
   })
 
   it('解析真实空列表帧 0000：负载为空串而非零帧', () => {
     const d = new FrameDecoder()
     expect(d.push(Buffer.from(RAW_EMPTY, 'hex'))).toEqual([''])
+    expect(d.pendingBytes).toBe(0)
   })
 
-  it('帧跨 chunk 切分（切在 \\r 与 \\n 之间）时不提前吐帧', () => {
+  // ---- C1：帧尾 \r 与 \n 分属两个 chunk 时必须等待，不得提前吐帧 ----
+  it('C1 单设备帧切在帧尾 \\r 与 \\n 之间（k=26）时先不吐帧，下一 chunk 补齐后只吐一次', () => {
+    const raw = Buffer.from(RAW_SINGLE, 'hex')
+    // 末两字节是 0x0d 0x0a：切在它们中间
+    expect(raw[raw.length - 2]).toBe(0x0d)
+    expect(raw[raw.length - 1]).toBe(0x0a)
     const d = new FrameDecoder()
+    expect(d.push(raw.subarray(0, raw.length - 1))).toEqual([])
+    expect(d.push(raw.subarray(raw.length - 1))).toEqual([SINGLE_FRAME])
+    expect(d.pendingBytes).toBe(0)
+  })
+
+  it('C1 两设备帧切在帧尾 \\r 与 \\n 之间（k=50）时先不吐帧，下一 chunk 补齐后只吐一次', () => {
     const raw = Buffer.from(RAW_TWO, 'hex')
-    // 第 26 字节是 \r，第 27 是 \n：切在中间，模拟分块到达
-    expect(d.push(raw.subarray(0, 26))).toEqual([])
-    expect(d.push(raw.subarray(26))).toEqual([TWO_FRAME])
+    expect(raw[raw.length - 2]).toBe(0x0d)
+    expect(raw[raw.length - 1]).toBe(0x0a)
+    const d = new FrameDecoder()
+    expect(d.push(raw.subarray(0, raw.length - 1))).toEqual([])
+    expect(d.push(raw.subarray(raw.length - 1))).toEqual([TWO_FRAME])
+    expect(d.pendingBytes).toBe(0)
+  })
+
+  // ---- C1：逐字节全遍历，任何切点都不得失步 ----
+  it('C1 单设备帧逐字节切分全遍历（k=1..26）：每个切点都只吐一次正确帧且缓冲区清空', () => {
+    const raw = Buffer.from(RAW_SINGLE, 'hex')
+    for (let k = 1; k < raw.length; k++) {
+      const d = new FrameDecoder()
+      const got: string[] = []
+      got.push(...d.push(raw.subarray(0, k)))
+      got.push(...d.push(raw.subarray(k)))
+      expect(got, 'k=' + k).toEqual([SINGLE_FRAME])
+      expect(d.pendingBytes, 'k=' + k).toBe(0)
+    }
+  })
+
+  it('C1 两设备帧逐字节切分全遍历（k=1..50）：每个切点都只吐一次正确帧且缓冲区清空', () => {
+    const raw = Buffer.from(RAW_TWO, 'hex')
+    for (let k = 1; k < raw.length; k++) {
+      const d = new FrameDecoder()
+      const got: string[] = []
+      got.push(...d.push(raw.subarray(0, k)))
+      got.push(...d.push(raw.subarray(k)))
+      expect(got, 'k=' + k).toEqual([TWO_FRAME])
+      expect(d.pendingBytes, 'k=' + k).toBe(0)
+    }
+  })
+
+  it('C1 两设备帧三次切分（每个 \\r 与 \\n 都被切开）：仍只吐一次正确帧', () => {
+    const raw = Buffer.from(RAW_TWO, 'hex')
+    const d = new FrameDecoder()
+    const got: string[] = []
+    // 25|26 切在第一个 \r|\n 之间；49|50 切在第二个 \r|\n 之间
+    for (const [a, b] of [[0, 25], [25, 26], [26, 49], [49, 51]] as const) {
+      got.push(...d.push(raw.subarray(a, b)))
+    }
+    expect(got).toEqual([TWO_FRAME])
+    expect(d.pendingBytes).toBe(0)
   })
 
   it('连续两帧在同一 chunk 内到达时全部吐出', () => {
     const d = new FrameDecoder()
     const raw = Buffer.concat([Buffer.from(RAW_SINGLE, 'hex'), Buffer.from(RAW_TWO, 'hex')])
     expect(d.push(raw)).toEqual([SINGLE_FRAME, TWO_FRAME])
+    expect(d.pendingBytes).toBe(0)
   })
 
-  it('兼容裸行输出（首 4 字节非十六进制时退化为按行切分）', () => {
+  it('连续两帧逐字节切分全遍历：每个切点都吐两帧且缓冲区清空（C1 加强）', () => {
+    const raw = Buffer.concat([Buffer.from(RAW_SINGLE, 'hex'), Buffer.from(RAW_TWO, 'hex')])
+    for (let k = 1; k < raw.length; k++) {
+      const d = new FrameDecoder()
+      const got: string[] = []
+      got.push(...d.push(raw.subarray(0, k)))
+      got.push(...d.push(raw.subarray(k)))
+      expect(got, 'k=' + k).toEqual([SINGLE_FRAME, TWO_FRAME])
+      expect(d.pendingBytes, 'k=' + k).toBe(0)
+    }
+  })
+
+  it('兼容裸行输出（启动窗口内首 4 字节非十六进制时退化为按行切分）', () => {
     const d = new FrameDecoder()
     expect(d.push(Buffer.from('ABC123\tdevice\n'))).toEqual(['ABC123\tdevice'])
+  })
+
+  // ---- I1：裸行模式不再粘性，帧模式下的噪声行不会让解码器永久退化 ----
+  it('I1 已判定帧模式后混入噪声行，后续真帧仍能解析（bare 不粘性）', () => {
+    const d = new FrameDecoder()
+    expect(d.push(Buffer.from(RAW_SINGLE, 'hex'))).toEqual([SINGLE_FRAME])
+    // 流里插入一行噪声：帧模式下应从下一个换行重新同步并丢弃
+    expect(d.push(Buffer.from('ZZZZ\n'))).toEqual([])
+    expect(d.push(Buffer.from(RAW_SINGLE, 'hex'))).toEqual([SINGLE_FRAME])
+    expect(d.pendingBytes).toBe(0)
+  })
+
+  it('I1 噪声与真帧同一 chunk 到达时丢掉噪声、保住真帧', () => {
+    const d = new FrameDecoder()
+    expect(d.push(Buffer.from(RAW_SINGLE, 'hex'))).toEqual([SINGLE_FRAME])
+    const noise = Buffer.concat([Buffer.from('ZZZZ\n'), Buffer.from(RAW_SINGLE, 'hex')])
+    expect(d.push(noise)).toEqual([SINGLE_FRAME])
+    expect(d.pendingBytes).toBe(0)
+  })
+
+  it('I1 缓冲区异常增长超过上限时丢弃并从下一个换行重新同步', () => {
+    const d = new FrameDecoder()
+    // 帧头声称 65535 字节负载，随后灌入远超上限的垃圾（无换行）
+    expect(d.push(Buffer.from('ffff'))).toEqual([])
+    expect(d.push(Buffer.alloc(300 * 1024, 0x41))).toEqual([])
+    // 清空后真帧仍正常解析
+    expect(d.push(Buffer.from(RAW_SINGLE, 'hex'))).toEqual([SINGLE_FRAME])
+    expect(d.pendingBytes).toBe(0)
   })
 })
 
@@ -170,13 +276,16 @@ describe('parseDeviceLines', () => {
     ])
   })
 
-  it('adb devices -l 的附加列不影响状态判定', () => {
-    const raw =
-      'List of devices attached\r\n' +
-      '9N9CN2G0012A6F         device product:rc701 model:DJI_RC_PLUS_2 device:rc701 transport_id:8\r\n\r\n'
-    expect(parseDeviceLines(raw)).toEqual([
-      { serial: '9N9CN2G0012A6F', status: 'device', transport: 'usb' },
+  it('adb devices -l 的附加列不影响状态判定，并把 model 解析出来（_ 还原为空格）（I3）', () => {
+    expect(parseDeviceLines(DEVICES_L)).toEqual([
+      { serial: '9N9CN2G0012A6F', status: 'device', transport: 'usb', model: 'DJI RC PLUS 2' },
     ])
+  })
+
+  it('I3 无 model 行时 model 字段不出现（不是空串）', () => {
+    const rows = parseDeviceLines('List of devices attached\r\nABC123\tdevice\r\n\r\n')
+    expect(rows).toEqual([{ serial: 'ABC123', status: 'device', transport: 'usb' }])
+    expect('model' in rows[0]).toBe(false)
   })
 
   it('跳过 adb daemon 提示行', () => {
@@ -250,6 +359,52 @@ describe('DeviceTracker', () => {
     expect(polls).toBe(frozen)
     expect(tracker.mode).toBe('idle')
   })
+
+  it('I2 轮询有 in-flight 守卫：慢 adb devices 不会叠加并发，旧快照不覆盖新快照', async () => {
+    const manager = new DeviceManager()
+    let concurrent = 0
+    let maxConcurrent = 0
+    let polls = 0
+    const tracker = new DeviceTracker({
+      adbPath: ADB,
+      manager,
+      spawnTrack: fakeTrack({ exitCode: 1 }),
+      pollDevices: async () => {
+        concurrent += 1
+        maxConcurrent = Math.max(maxConcurrent, concurrent)
+        polls += 1
+        await wait(120)
+        concurrent -= 1
+        return 'ABC123\tdevice\n'
+      },
+      pollIntervalMs: 10,
+    })
+    trackers.push(tracker)
+    tracker.start()
+    await waitFor(() => polls >= 3)
+    tracker.stop()
+    expect(maxConcurrent).toBe(1)
+  }, 15_000)
+
+  it('I3 降级轮询使用 adb devices -l，model 写入会话表', async () => {
+    const manager = new DeviceManager()
+    const seenArgs: string[][] = []
+    const tracker = new DeviceTracker({
+      adbPath: ADB,
+      manager,
+      spawnTrack: fakeTrack({ exitCode: 1 }),
+      spawnDevices: (args) => {
+        seenArgs.push(args)
+        return fakeTrack({ stdout: Buffer.from(DEVICES_L, 'utf8') })()
+      },
+      pollIntervalMs: 20,
+    })
+    trackers.push(tracker)
+    tracker.start()
+    await waitFor(() => manager.list().length > 0)
+    expect(seenArgs[0]).toEqual(['devices', '-l'])
+    expect(manager.list()[0].model).toBe('DJI RC PLUS 2')
+  }, 15_000)
 
   it('track-devices 启动后长时间无输出时降级轮询（启动守卫）', async () => {
     const manager = new DeviceManager()

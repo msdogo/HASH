@@ -14,26 +14,67 @@ import type { DeviceManager, DeviceSnapshotItem } from '../devices/manager'
  *
  * 帧头给的是【逻辑】负载字节数（\n 记 1 字节）。Windows 上 adb 的 CRT 文本模式
  * 把每个 \n 写成 \r\n，线上实际多出一串 \r 字节 —— 所以既不能按线上字节数等待（会多切），
- * 也不能数 \n 的个数（len 是字节数不是行数）。必须逐字节数「逻辑长度」，
- * 最后再把 \r\n 归一成 \n。
+ * 也不能数 \n 的个数（len 是字节数不是行数）。必须逐字节数「逻辑长度」。
  *
- * 兼容退路：首 4 字节不是小写十六进制时，退化为按 \n 切分的裸行模式。
+ * ===== 跨 chunk 的边界规则（C1）=====
+ * 某个 \r 是不是「CRT 加出来的」，取决于它后面那个字节是不是 \n。
+ * 如果 \r 正好是当前缓冲区的最后一个字节，\n 还在下一个 chunk 里，此时【无法判定】，
+ * 只能先等 —— 绝不能把它当成有效负载计入长度，否则会提前吐帧、
+ * 缓冲区错位、下一帧读出假设备且不可自愈。见 push() 里的 needMore 分支。
+ *
+ * ===== 帧模式 / 裸行模式（I1）=====
+ * 只在「启动窗口」（首次 push 的前 4 字节）里决定是否走裸行兼容。
+ * 判定为帧模式之后，裸行退路永不重新启用 —— 否则一次误判会让解码器永久退化。
+ * 帧模式下遇到非十六进制帧头（流内噪声）时，丢弃到下一个 \n 重新同步，
+ * 而不是切换模式。
  */
+
+/** 单帧逻辑长度上限（256KB）。超过即判为流异常，不无限等待。 */
+export const MAX_FRAME_LEN = 256 * 1024
+/** 缓冲区上限：超过说明已经失步（帧头读错且永远等不到负载），必须丢弃重同步。 */
+export const MAX_BUFFER_BYTES = MAX_FRAME_LEN
+
 export class FrameDecoder {
   private buf = Buffer.alloc(0)
-  /** 一旦判定为裸行模式就保持，避免同一流里两种模式来回抖动。 */
-  private bare = false
+  /** 是否已判定为「帧模式」。判定只在启动窗口内做一次，之后不再改变（I1）。 */
+  private framed = false
+  /** 启动窗口是否已决策。 */
+  private decided = false
+  /** 因流异常丢弃过的字节累计数（诊断用）。 */
+  private discarded = 0
+
+  /** 缓冲区里尚未消费的字节数（诊断与测试用）。 */
+  get pendingBytes(): number {
+    return this.buf.length
+  }
+
+  /** 已丢弃的异常字节数（诊断用）。 */
+  get discardedBytes(): number {
+    return this.discarded
+  }
 
   push(chunk: Buffer): string[] {
     this.buf = Buffer.concat([this.buf, chunk])
     const out: string[] = []
     for (;;) {
-      if (!this.bare && this.buf.length < 4) break
-      const head = this.buf.subarray(0, 4).toString('latin1')
-      const framed = !this.bare && /^[0-9a-f]{4}$/.test(head)
+      // 缓冲区无界增长 = 已失步：丢弃到下一个 \n（含）或整段清空，重新同步。
+      if (this.buf.length > MAX_BUFFER_BYTES) {
+        this.discarded += this.buf.length
+        const nl = this.buf.indexOf(0x0a)
+        this.buf = nl < 0 ? Buffer.alloc(0) : this.buf.subarray(nl + 1)
+        // 清空后仍按当前模式继续，绝不切回裸行（I1）
+        continue
+      }
 
-      if (!framed) {
-        this.bare = true
+      if (!this.decided) {
+        // 启动窗口：前 4 字节决定后续用哪种模式
+        if (this.buf.length < 4) break
+        this.decided = true
+        this.framed = /^[0-9a-f]{4}$/.test(this.buf.subarray(0, 4).toString('latin1'))
+      }
+
+      if (!this.framed) {
+        // 裸行兼容（仅启动窗口判定的裸行流）：按 \n 切
         const nl = this.buf.indexOf(0x0a)
         if (nl < 0) break
         out.push(this.buf.subarray(0, nl).toString('utf8'))
@@ -41,7 +82,25 @@ export class FrameDecoder {
         continue
       }
 
+      const head = this.buf.subarray(0, 4).toString('latin1')
+      if (!/^[0-9a-f]{4}$/.test(head)) {
+        // 帧模式下的噪声（流内偶发垃圾）：丢弃到下一个 \n 重新同步。
+        // 找不到 \n 说明噪声还没吐完，等下一个 chunk —— 但不能无限等，由上面的缓冲上限兜底。
+        const nl = this.buf.indexOf(0x0a)
+        if (nl < 0) break
+        this.discarded += nl + 1
+        this.buf = this.buf.subarray(nl + 1)
+        continue
+      }
+
       const len = parseInt(head, 16)
+      if (len > MAX_FRAME_LEN) {
+        // 帧头荒谬（读错了）：丢 4 字节重新找下一个帧头，不无限等待
+        this.discarded += 4
+        this.buf = this.buf.subarray(4)
+        continue
+      }
+
       const payloadStart = 4
       if (len === 0) {
         out.push('')
@@ -49,20 +108,27 @@ export class FrameDecoder {
         continue
       }
 
-      // 逐字节数逻辑长度：\r 后紧跟 \n 说明这是 CRT 加出来的那个 \r，不计入；
-      // 其余字节（含真正的 \n）各计 1。
+      // 逐字节数逻辑长度：\r 后紧跟 \n 时该 \r 不计入；其余字节（含真正的 \n）各计 1。
+      // 关键：\r 落在缓冲区末尾时无法判断，必须先等下一个 chunk（C1）。
       let logical = 0
       let end = -1
+      let needMore = false
       for (let i = payloadStart; i < this.buf.length; i++) {
-        const isExtraCr = this.buf[i] === 0x0d && i + 1 < this.buf.length && this.buf[i + 1] === 0x0a
-        if (isExtraCr) continue
+        if (this.buf[i] === 0x0d) {
+          if (i + 1 === this.buf.length) {
+            // 末尾的 \r：它后面是不是 \n 还不知道，等下一块
+            needMore = true
+            break
+          }
+          if (this.buf[i + 1] === 0x0a) continue
+        }
         logical += 1
         if (logical === len) {
           end = i
           break
         }
       }
-      if (end < 0) break
+      if (needMore || end < 0) break
 
       out.push(this.buf.subarray(payloadStart, end + 1).toString('utf8').replace(/\r\n/g, '\n'))
       this.buf = this.buf.subarray(end + 1)
@@ -84,6 +150,13 @@ function toStatus(word: string): DeviceStatus {
   }
 }
 
+/** adb devices -l 里的 model:<值>；adb 把型号里的空格写成下划线，这里还原。 */
+function parseModel(rest: string): string | undefined {
+  const m = /(?:^|\s)model:(\S+)/.exec(rest)
+  if (m === null) return undefined
+  return m[1].replace(/_/g, ' ')
+}
+
 /** adb devices 的表头行与提示行，必须跳过，否则会解析出一条假设备（裁决 5）。 */
 function isNoiseLine(line: string): boolean {
   if (line === '') return true
@@ -99,8 +172,8 @@ function isNoiseLine(line: string): boolean {
  *
  * 列分隔用 \t（adb 的真实输出就是 tab），不能按空格切分：
  * no permissions 状态自带空格与括号（裁决 6），按空格切会把 serial 切碎。
- * 空格式（adb devices -l：serial<多个空格>state product:…）先取第一个 token 当 serial，
- * 剩下按空白切出状态词。
+ * 空格式（adb devices -l：serial<多个空格>state product:… model:…）先取第一个 token 当 serial，
+ * 剩下按空白切出状态词，并解析出 model（I3）。
  */
 export function parseDeviceLines(payload: string): DeviceSnapshotItem[] {
   const rows: DeviceSnapshotItem[] = []
@@ -124,7 +197,12 @@ export function parseDeviceLines(payload: string): DeviceSnapshotItem[] {
     // 只取状态词本身：no permissions (...)、device product:xxx 的附加部分都不影响判定。
     const stateWord = rest.split(/[\s:;]/).filter(Boolean)[0] ?? ''
     const transport: Transport = serial.includes(':') ? 'wireless' : 'usb'
-    rows.push({ serial, status: toStatus(stateWord), transport })
+    const model = parseModel(rest)
+    // 无 model 时不写这个字段：写成 undefined 会让 'model' in row 为 true，
+    // 上层做「有没有型号」判断时会被误导。
+    rows.push(model === undefined
+      ? { serial, status: toStatus(stateWord), transport }
+      : { serial, status: toStatus(stateWord), transport, model })
   }
   return rows
 }
@@ -138,6 +216,8 @@ export interface DeviceTrackerOptions {
   spawnTrack?: () => ChildProcess
   /** 仅在测试注入：替换真实的一次 adb devices 调用，返回 stdout。 */
   pollDevices?: () => Promise<string>
+  /** 仅在测试注入：替换 spawn(adbPath, args)，用于断言轮询真的带了 -l。 */
+  spawnDevices?: (args: string[]) => ChildProcess
   /** 降级轮询周期，默认 DEFAULT_POLL_INTERVAL_MS。 */
   pollIntervalMs?: number
   /** track-devices 启动后多久没有任何输出就判定不可用，默认 DEFAULT_STARTUP_TIMEOUT_MS。 */
@@ -149,6 +229,7 @@ interface ResolvedTrackerOptions {
   manager: DeviceManager
   spawnTrack?: () => ChildProcess
   pollDevices?: () => Promise<string>
+  spawnDevices?: (args: string[]) => ChildProcess
   pollIntervalMs: number
   startupTimeoutMs: number
 }
@@ -166,6 +247,9 @@ export const DEFAULT_STARTUP_TIMEOUT_MS = 5_000
  *
  * 红线二：轮询定时器与 gc 定时器都必须能被 stop() 清掉，
  * 否则 Electron 退出时事件循环不空、进程挂住。所有定时器都已 unref。
+ *
+ * 红线三：轮询必须有 in-flight 守卫（I2）。单次 adb devices 慢于轮询周期时，
+ * 没有守卫会无限叠加并发子进程，既突破全局并发上限，又会让晚到的旧快照覆盖新快照。
  */
 export class DeviceTracker {
   private readonly opts: ResolvedTrackerOptions
@@ -175,6 +259,8 @@ export class DeviceTracker {
   private startupTimer: ReturnType<typeof setTimeout> | undefined
   private currentMode: TrackerMode = 'idle'
   private stopped = false
+  /** 上一轮轮询是否还没结束（I2）。 */
+  private polling = false
   /** gc 定时器是不是本跟踪器起的；只有自己起的才由自己停。 */
   private ownsGc = false
 
@@ -184,6 +270,7 @@ export class DeviceTracker {
       manager: options.manager,
       spawnTrack: options.spawnTrack,
       pollDevices: options.pollDevices,
+      spawnDevices: options.spawnDevices,
       pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       startupTimeoutMs: options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
     }
@@ -240,6 +327,8 @@ export class DeviceTracker {
   private startTrack(): void {
     let child: ChildProcess
     try {
+      // 豁免「所有 adb 调用必须带 -s serial」：track-devices 本身就是设备枚举命令，
+      // 它要列出全部设备，不可能也不应该带 -s serial（带了就只能看到一台）。
       child = this.opts.spawnTrack !== undefined
         ? this.opts.spawnTrack()
         : spawn(this.opts.adbPath, ['track-devices'], {
@@ -310,28 +399,38 @@ export class DeviceTracker {
 
   private async pollOnce(): Promise<void> {
     if (this.stopped || this.currentMode !== 'poll') return
-    let stdout: string
+    // I2：上一轮没结束就直接跳过，避免慢 adb devices 无限叠加并发子进程，
+    // 也避免晚到的旧快照覆盖新快照导致设备状态回退。
+    if (this.polling) return
+    this.polling = true
     try {
-      stdout = this.opts.pollDevices !== undefined
+      const stdout = this.opts.pollDevices !== undefined
         ? await this.opts.pollDevices()
         : await this.runDevices()
+      if (this.stopped) return
+      this.applyPayload(stdout)
     } catch {
       // 单次轮询失败不是故障：下一周期再试，不值得把整个跟踪器停掉
-      return
+    } finally {
+      this.polling = false
     }
-    if (this.stopped) return
-    this.applyPayload(stdout)
   }
 
-  /** 一次 adb devices。必须登记子进程，退出时才会被回收。 */
+  /** 一次 adb devices -l。必须登记子进程，退出时才会被回收。 */
   private runDevices(): Promise<string> {
+    // 豁免「所有 adb 调用必须带 -s serial」：devices 是全局枚举命令，列出所有设备；
+    // 带 -s 只能看到那一台，反而失去轮询的意义。
+    // 用 -l 而不是裸 devices：设备栏要显示型号，-l 才有 model:（I3）。
+    const args = ['devices', '-l']
     return new Promise<string>((resolve, reject) => {
       let child: ChildProcess
       try {
-        child = spawn(this.opts.adbPath, ['devices'], {
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
+        child = this.opts.spawnDevices !== undefined
+          ? this.opts.spawnDevices(args)
+          : spawn(this.opts.adbPath, args, {
+              windowsHide: true,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            })
       } catch (err) {
         reject(err)
         return
