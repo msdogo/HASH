@@ -18,8 +18,13 @@ export interface FileEntry {
   mode: string
   owner: string
   group: string
-  /** 软链接的指向；非软链接为 undefined。 */
+  /** 软链接的指向（ls 原样输出，相对目标保持相对）；非软链接为 undefined。 */
   linkTarget?: string
+  /**
+   * 软链接目标解析后的绝对路径。
+   * 只有「绝对目标」或「已知所在目录的相对目标」才能解析出来，其余留 undefined。
+   */
+  linkTargetResolved?: string
 }
 
 /**
