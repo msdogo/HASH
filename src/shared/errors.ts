@@ -14,6 +14,8 @@ export const E_NO_SERIAL = 'E_NO_SERIAL'
 export const E_TIMEOUT = 'E_TIMEOUT'
 /** 操作被取消。 */
 export const E_ABORTED = 'E_ABORTED'
+/** 应用正在退出，子进程关闭闸门已置位：命令没有执行（审查轮 3 补登记）。 */
+export const E_SHUTDOWN = 'E_SHUTDOWN'
 /** 路径非法（含 \n / \r / \0，或空路径）。 */
 export const E_INVALID_PATH = 'E_INVALID_PATH'
 /** 一个可用的 adb 都没找到。 */
@@ -47,6 +49,7 @@ export const ERROR_CODES = [
   E_NO_SERIAL,
   E_TIMEOUT,
   E_ABORTED,
+  E_SHUTDOWN,
   E_INVALID_PATH,
   E_ADB_NOT_FOUND,
   E_ADB_NOT_EXECUTABLE,

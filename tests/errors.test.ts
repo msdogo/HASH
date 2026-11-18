@@ -4,6 +4,7 @@ import {
   E_ABORTED,
   E_BAD_ARGS,
   E_NOT_FOUND,
+  E_SHUTDOWN,
   E_TIMEOUT,
   E_UNKNOWN,
   isErrorCode,
@@ -16,6 +17,7 @@ describe('共享错误码', () => {
       'E_NO_SERIAL',
       'E_TIMEOUT',
       'E_ABORTED',
+      'E_SHUTDOWN',
       'E_INVALID_PATH',
       'E_ADB_NOT_FOUND',
       'E_ADB_NOT_EXECUTABLE',
@@ -32,6 +34,11 @@ describe('共享错误码', () => {
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)
     expect(ERROR_CODES.length).toBe(expected.length)
+  })
+
+  it('E_SHUTDOWN 已登记（子进程闸门关闭时的统一错误码）', () => {
+    expect(isErrorCode(E_SHUTDOWN)).toBe(true)
+    expect(toErrorCode(new Error(E_SHUTDOWN))).toBe(E_SHUTDOWN)
   })
 
   it('isErrorCode 只认表内的码', () => {

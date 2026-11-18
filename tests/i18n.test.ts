@@ -21,6 +21,14 @@ describe('i18n 错误码文案（裁决 3）', () => {
     expect(new Set(texts).size).toBe(texts.length)
   })
 
+  it('E_SHUTDOWN 有中文人话（应用退出时的取消提示）', () => {
+    const text = errorText('E_SHUTDOWN')
+    expect(text).not.toBe('E_SHUTDOWN')
+    expect(text).toMatch(HAN)
+    expect(text).toContain('退出')
+    expect(text.length).toBeGreaterThan(8)
+  })
+
   it('E_ADB_SHIM_UNSUPPORTED 明确指向 platform-tools 里的 adb.exe', () => {
     expect(errorText('E_ADB_SHIM_UNSUPPORTED')).toContain('platform-tools')
     expect(errorText('E_ADB_SHIM_UNSUPPORTED')).toContain('adb.exe')

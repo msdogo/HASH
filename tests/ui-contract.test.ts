@@ -53,19 +53,17 @@ describe('渲染层契约（静态断言）', () => {
   })
 
   /*
-   * 【审查轮 2 / I3】原来这里用正则从 preload 抓方法名，再去 api.d.ts 里找字符串。
-   * 那是假护栏：api.d.ts 现在只剩一行 `interface Window { api: DshApi }`，
-   * 正则根本抓不到结构。真正的守卫已经变成编译期的：
-   *   preload 的 `satisfies DshApi` + api.d.ts 的 `api: DshApi`。
-   * 这里只保留一条「机制存在」的轻量断言，具体的双向等价由
-   * tests/api-contract-binding.test.ts 负责（并做过变异验证）。
+   * 【审查轮 3】这里原本还有一条「preload 用 satisfies DshApi 绑定」的正则断言。
+   * 复审证明它**能被注释满足**：源码注释里出现 satisfies DshApi 字样就够了，
+   * 把真正的绑定删掉后测试仍然绿 —— 与上一轮修掉的假护栏同类，只是伪装更好。
+   *
+   * 已删除。防护不再依赖任何源码文本匹配：
+   *   - electron/preload.ts 的 `buildApi(deps): DshApi` 返回类型标注在编译期挡住
+   *     「多实现」（多余属性）与「少实现」（缺必填成员）；
+   *   - src/shared/api.d.ts 只写 `interface Window { api: DshApi }`；
+   *   - tests/api-contract-binding.test.ts 只做类型层等价断言（无正则）。
+   * 变异验证记录在 task-6-report.md。
    */
-  it('preload 用 satisfies DshApi 绑定，api.d.ts 从同一接口派生', () => {
-    const preload = read('electron/preload.ts')
-    const api = read('src/shared/api.d.ts')
-    expect(preload).toMatch(/satisfies\s+DshApi/)
-    expect(api).toMatch(/api: DshApi/)
-  })
 
   it('preload 通过 ipcRenderer.invoke 只调用白名单通道', () => {
     const source = read('electron/preload.ts')

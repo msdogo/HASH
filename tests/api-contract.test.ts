@@ -1,13 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import {
-  API_SURFACE,
-  FS_LIST_INPUT,
-  DEVICES_LIST_INPUT,
-  apiGroupNames,
-  apiMethodNames,
-} from '../src/shared/api-contract'
+import { FS_LIST_INPUT, DEVICES_LIST_INPUT } from '../src/shared/api-contract'
 
 const root = path.resolve(import.meta.dirname, '..')
 const read = (rel: string): string => readFileSync(path.join(root, rel), 'utf8')

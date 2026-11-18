@@ -38,6 +38,7 @@ const errorTexts: Record<ErrorCode, string> = {
   E_NO_SERIAL: '没有指定设备序列号，无法执行命令。请重新选择设备后重试',
   E_TIMEOUT: '命令执行超时，设备可能没有响应。请检查连接后重试',
   E_ABORTED: '操作已被取消，未完成的部分不会生效',
+  E_SHUTDOWN: '应用正在退出，该操作已取消，请重新启动应用后再试',
   E_INVALID_PATH: '路径不合法，或含有无法通过 adb 传输的字符（换行、回车、空字符）',
   E_ADB_NOT_FOUND: '没有找到可用的 adb。请安装 Android platform-tools，或在设置里指定 adb 路径',
   E_ADB_NOT_EXECUTABLE: '找到的 adb 文件无法运行，请确认它是完整的 adb.exe 而不是空文件或快捷方式',
