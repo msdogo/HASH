@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { killAllAdbChildren } from './adb/client'
+import { killAllAdbChildren } from './adb/children'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 

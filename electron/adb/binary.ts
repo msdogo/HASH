@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
+import { killTree, trackChild, untrackChild } from './children'
 
 export type AdbSource = 'custom' | 'env' | 'bundled' | 'path'
 export interface Candidate { path: string; source: AdbSource }
@@ -9,16 +10,19 @@ export interface Candidate { path: string; source: AdbSource }
 export const E_ADB_NOT_FOUND = 'E_ADB_NOT_FOUND'
 /** 文件存在但起不来：无执行权限、不是可执行镜像、spawn 同步抛错（含 Windows 的 EINVAL）。 */
 export const E_ADB_NOT_EXECUTABLE = 'E_ADB_NOT_EXECUTABLE'
-/** 进程起来了，但输出里解析不出任何 adb 版本行（或超时无输出）。 */
+/** 进程起来了，但输出里解析不出任何 adb 版本行。 */
 export const E_ADB_BAD_OUTPUT = 'E_ADB_BAD_OUTPUT'
 /** 候选是 .cmd/.bat 批处理 shim，Node 24+ 直接 spawn 会抛 EINVAL，一律拒绝并继续试下一个。 */
 export const E_ADB_SHIM_UNSUPPORTED = 'E_ADB_SHIM_UNSUPPORTED'
+/** 探测超时：单候选超时，或总预算耗尽后剩余的候选。 */
+export const E_ADB_TIMEOUT = 'E_ADB_TIMEOUT'
 
 export type AdbErrorCode =
   | typeof E_ADB_NOT_FOUND
   | typeof E_ADB_NOT_EXECUTABLE
   | typeof E_ADB_BAD_OUTPUT
   | typeof E_ADB_SHIM_UNSUPPORTED
+  | typeof E_ADB_TIMEOUT
 
 export interface CandidateInput {
   /** 用户自定义路径（最高优先级）。 */
@@ -51,6 +55,8 @@ export interface ResolveAttempt {
   source: AdbSource
   ok: boolean
   code?: AdbErrorCode
+  /** 解析 PATH 时被跳过的 .cmd/.bat shim，供界面区分「有 shim 但不可用」与「根本没有 adb」。 */
+  skippedShims?: string[]
 }
 
 export interface ResolveResult {
@@ -64,9 +70,19 @@ export type ProbeResult =
   | { ok: true; version: string; build: string }
   | { ok: false; code: AdbErrorCode }
 
-export const DEFAULT_PROBE_TIMEOUT_MS = 10_000
+/** 单候选探测超时。adb version 是毫秒级命令，4s 已经极宽松。 */
+export const DEFAULT_PROBE_TIMEOUT_MS = 4_000
+/** 全部候选的总预算：最坏 4 个候选也不再是 4×4s 的无上限等待。 */
+export const DEFAULT_TOTAL_BUDGET_MS = 8_000
 /** Windows 默认 PATHEXT；环境变量缺失时用它兜底。 */
 export const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
+
+/** PATH 解析结果：命中 / 只有 shim 被跳过 / 什么都没有。 */
+export type PathResolution =
+  | { kind: 'found'; path: string }
+  /** 扫到了可执行文件，但全是 .cmd/.bat shim —— 与「PATH 里没有 adb」必须区分开。 */
+  | { kind: 'shimOnly'; skipped: string[] }
+  | { kind: 'none' }
 
 /**
  * 把裸名（如 'adb'）在 PATH 里解析成绝对路径。
@@ -74,27 +90,49 @@ export const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * 为什么非做不可：spawn 会自己走 PATH，但那样拿回来的进程可能来自一个 .cmd shim，
  * 而 shim 必须在 spawn 之前就识别出来（Node 24+ 对它抛 EINVAL，Node 22 会真的执行批处理）。
  * 先解析成带扩展名的绝对路径，扩展名才可见，isShimPath 才有得判。
+ *
+ * 两个曾导致假阴性的坑，这里都避开了：
+ * 1. 扩展名顺序：PATHEXT 优先、空串殿后。反过来会让同目录下的无扩展名文件压过 adb.exe。
+ * 2. 命中即收尾：scoop/npm 的 shim 目录常排在 platform-tools 之前，
+ *    若在第一个 shim 处就返回，后面目录里的真 adb.exe 永远扫不到 ——
+ *    必须跳过 shim 继续扫，并把它记进诊断。
  */
-function resolveOnPath(name: string, pathEnv: string | undefined, pathext: string): string {
-  // 缺省必须回到真实 PATH：否则 'path' 候选会退回裸名交给 spawn，
-  // 而 spawn 自己走 PATH 时拿不到扩展名，.cmd shim 就永远拦不住。
+export function resolveOnPath(
+  name: string,
+  pathEnv: string | undefined,
+  pathext: string,
+): PathResolution {
+  // 缺省必须回到真实 PATH（Windows 部分启动方式只给 'Path'）
   const raw = pathEnv ?? process.env.PATH ?? process.env.Path ?? ''
   const dirs = raw.split(path.delimiter).filter(Boolean)
-  const exts = process.platform === 'win32'
-    ? [''].concat(pathext.split(';').filter(Boolean))
-    : ['']
+  // name 自带扩展名（如 'adb.exe'）时不再追加，否则会拼出 adb.exe.EXE
+  const hasExt = path.extname(name) !== ''
+  const exts = hasExt
+    ? ['']
+    : process.platform === 'win32'
+      ? pathext.split(';').filter(Boolean).concat([''])
+      : ['']
+
+  const skipped: string[] = []
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = path.join(dir, name + ext)
+      let isFile = false
       try {
-        if (statSync(candidate).isFile()) return candidate
+        isFile = statSync(candidate).isFile()
       } catch {
         // 该目录不可读或文件不存在：继续找下一个
       }
+      if (!isFile) continue
+      // shim 不是「解析失败就终止」，而是「这个文件不能用，接着往后扫」
+      if (isShimPath(candidate)) {
+        skipped.push(candidate)
+        continue
+      }
+      return { kind: 'found', path: candidate }
     }
   }
-  // 解析不到就退回裸名：交给 spawn，由它给出 ENOENT
-  return name
+  return skipped.length > 0 ? { kind: 'shimOnly', skipped } : { kind: 'none' }
 }
 
 /**
@@ -136,7 +174,7 @@ export function isShimPath(adbPath: string): boolean {
  */
 export async function probe(
   adbPath: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; allowBareName?: boolean } = {},
 ): Promise<ProbeResult> {
   // 1) shim 必须先于 spawn 拦下：Windows 上 .cmd/.bat 由 cmd.exe 解释，
   //    Node 24+ 为修 CVE-2024-27980 直接抛 EINVAL，Node 22 则会真执行一个批处理脚本 —— 两种都不能接受。
@@ -144,9 +182,16 @@ export async function probe(
     return { ok: false, code: E_ADB_SHIM_UNSUPPORTED }
   }
 
-  // 2) 带路径分隔符的候选可以在 spawn 前判存在性，错误码更准确；
-  //    裸名（'adb'）必须交给 spawn 走 PATH 解析，不能在这里判文件存在。
-  if (path.isAbsolute(adbPath) || adbPath.includes('/') || adbPath.includes('\\')) {
+  const hasSeparator = path.isAbsolute(adbPath) || adbPath.includes('/') || adbPath.includes('\\')
+
+  // 2) 裸名（无路径分隔符）：扩展名对 JS 不可见，shim 判定整条链失效 ——
+  //    只有测试注入场景显式传 allowBareName 才放行，生产路径一律拒绝。
+  if (!hasSeparator && opts.allowBareName !== true) {
+    return { ok: false, code: E_ADB_NOT_FOUND }
+  }
+
+  // 3) 带分隔符的候选可以在 spawn 前判存在性，错误码更准确
+  if (hasSeparator) {
     let stat
     try {
       stat = statSync(adbPath)
@@ -168,15 +213,22 @@ export async function probe(
       return
     }
 
+    // 登记进全局子进程表：用户在 probe 的窗口里关窗退出时，
+    // app.on('before-quit') 的 killAllAdbChildren() 必须能枚举到它。
+    trackChild(child)
+
     let stdout = ''
     let stderr = ''
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    // 单一出口：error / close / 超时 三条路径都从这里返回，
+    // 定时器与登记表的清理只写在这一处，不会重复 settle、也不会漏摘。
     const finish = (result: ProbeResult): void => {
       if (settled) return
       settled = true
       if (timer !== undefined) clearTimeout(timer)
+      untrackChild(child)
       resolve(result)
     }
 
@@ -202,9 +254,10 @@ export async function probe(
     })
 
     timer = setTimeout(() => {
-      // adb version 是毫秒级命令；超时只可能是候选挂了，按「无法用于自检」处理
-      child.kill()
-      finish({ ok: false, code: E_ADB_BAD_OUTPUT })
+      // 超时必须走 killTree 而不是 child.kill()：Windows 上 adb 可能派生孙进程，
+      // 只杀直接子进程会留下孤儿。
+      killTree(child)
+      finish({ ok: false, code: E_ADB_TIMEOUT })
     }, timeoutMs)
   })
 }
@@ -215,20 +268,64 @@ export async function probe(
  */
 export async function resolveAdb(
   input: CandidateInput,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; totalBudgetMs?: number } = {},
 ): Promise<ResolveResult> {
+  const budgetMs = opts.totalBudgetMs ?? DEFAULT_TOTAL_BUDGET_MS
+  const deadline = Date.now() + budgetMs
   const attempts: ResolveAttempt[] = []
-  for (const candidate of buildCandidates(input)) {
-    // 'path' 候选是裸名：先解析成绝对路径，shim 才可能在 spawn 前被拦下
+  const candidates = buildCandidates(input)
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i]
+
+    // 剩余时间既约束「能不能开始下一个候选」，也作为该候选的探测超时，
+    // 保证总耗时不超过预算 —— 否则 4 个候选各 4s 仍会等到 16s。
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      // 预算耗尽：后面的候选不再探测，但要在结果里如实记账
+      for (let j = i; j < candidates.length; j++) {
+        attempts.push({
+          path: candidates[j].path,
+          source: candidates[j].source,
+          ok: false,
+          code: E_ADB_TIMEOUT,
+        })
+      }
+      break
+    }
+
     const target = candidate.source === 'path'
       ? resolveOnPath(candidate.path, input.pathEnv, input.pathext ?? DEFAULT_PATHEXT)
-      : candidate.path
-    const result = await probe(target, opts)
+      : { kind: 'found' as const, path: candidate.path }
+
+    // PATH 里只有 shim：不是「没有 adb」，诊断要与 NOT_FOUND 分开
+    if (target.kind === 'shimOnly') {
+      attempts.push({
+        path: target.skipped[0],
+        source: candidate.source,
+        ok: false,
+        code: E_ADB_SHIM_UNSUPPORTED,
+        skippedShims: target.skipped,
+      })
+      continue
+    }
+    if (target.kind === 'none') {
+      attempts.push({ path: candidate.path, source: candidate.source, ok: false, code: E_ADB_NOT_FOUND })
+      continue
+    }
+
+    // 单次探测不得越过总预算：即使调用方显式给了更长的 timeoutMs，也要被剩余预算夹住，
+    // 否则「总预算」只是摆设 —— 一个候选的 timeoutMs 就能把总耗时顶穿。
+    const probeTimeoutMs = Math.max(
+      1,
+      Math.min(opts.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS, remaining),
+    )
+    const result = await probe(target.path, { timeoutMs: probeTimeoutMs })
     if (result.ok) {
-      attempts.push({ path: target, source: candidate.source, ok: true })
+      attempts.push({ path: target.path, source: candidate.source, ok: true })
       return {
         resolved: {
-          path: target,
+          path: target.path,
           source: candidate.source,
           version: result.version,
           build: result.build,
@@ -236,7 +333,7 @@ export async function resolveAdb(
         attempts,
       }
     }
-    attempts.push({ path: target, source: candidate.source, ok: false, code: result.code })
+    attempts.push({ path: target.path, source: candidate.source, ok: false, code: result.code })
   }
   return { resolved: null, attempts }
 }

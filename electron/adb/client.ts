@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { killTree, trackChild, untrackChild, adbChildCount, killAllAdbChildren } from './children'
 
 export const E_NO_SERIAL = 'E_NO_SERIAL'
 export const E_TIMEOUT = 'E_TIMEOUT'
@@ -22,45 +23,9 @@ export interface RunOptions {
 
 export const DEFAULT_TIMEOUT_MS = 30_000
 
-/**
- * 在手 adb 子进程登记表。
- * 这是「所有子进程在窗口关闭时回收」的唯一可枚举入口：
- * spawn 后 add、close/error 时 delete，窗口退出时 killAllAdbChildren() 兜底。
- */
-const live = new Set<ChildProcess>()
-
-/** 当前在手的 adb 子进程数量（测试与诊断用）。 */
-export function adbChildCount(): number {
-  return live.size
-}
-
-/**
- * 终结整棵进程树。
- * Windows 上 child.kill() 只终结直接子进程，cmd/adb 派生的孙进程会存活，必须走 taskkill /T /F；
- * POSIX 上用 detached 建立的进程组，对 -pid 发信号即可整组终结。
- */
-function killTree(child: ChildProcess): void {
-  const pid = child.pid
-  if (pid === undefined) {
-    child.kill()
-    return
-  }
-  if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
-    return
-  }
-  try {
-    process.kill(-pid, 'SIGKILL')
-  } catch {
-    child.kill('SIGKILL')
-  }
-}
-
-/** 回收全部在手 adb 子进程（窗口关闭时调用）。 */
-export function killAllAdbChildren(): void {
-  for (const child of live) killTree(child)
-  live.clear()
-}
+// 子进程登记表与 killTree 的实现统一在 ./children（probe 也要登记，见 binary.ts）。
+// 这里转发导出，保持任务 2 已验收的对外接口不变。
+export { adbChildCount, killAllAdbChildren }
 
 /**
  * 单设备 adb 命令封装。
@@ -102,7 +67,7 @@ export class AdbClient {
         return
       }
 
-      live.add(child)
+      trackChild(child)
 
       let stdout = ''
       let stderr = ''
@@ -118,7 +83,7 @@ export class AdbClient {
         settled = true
         if (timer !== undefined) clearTimeout(timer)
         opts.signal?.removeEventListener('abort', onAbort)
-        live.delete(child)
+        untrackChild(child)
         fn()
       }
 
