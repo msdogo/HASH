@@ -12,7 +12,9 @@ function createWindow(): void {
     minHeight: 680,
     backgroundColor: '#12141A',
     webPreferences: {
-      preload: path.join(dirname, 'preload.mjs'),
+      // preload 产物是 CJS（.cjs）。不要关闭 sandbox：本项目 preload 依赖沙箱预加载器
+      // 提供的 require 垫片，sandbox: false 时 window.api 会全部变成 undefined 且不报错。
+      preload: path.join(dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
