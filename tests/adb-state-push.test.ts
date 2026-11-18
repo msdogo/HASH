@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { DeviceManager } from '../electron/devices/manager'
 import { AdbTracking } from '../electron/app/sessions'
+import { createDeviceChangeHub } from '../electron/ipc/throttle'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
 
 function silentChild(): unknown {
@@ -88,5 +89,61 @@ describe('推送批次必须携带 adb 状态（否则界面永远停在「正�
     t.notifyAdbState()
     t.flushChanges()
     expect(count).toBe(0)
+  })
+})
+/* ================= I8 / I9（审查轮 1） ================= */
+
+describe('I8 adb 在推送批次里是必填（把 bug 2 的教训固化进类型）', () => {
+  it('hub 派发的批次一定带 adb 字段', () => {
+    const hub = createDeviceChangeHub(50)
+    const batches: DevicesChangedBatch[] = []
+    hub.onPush((b) => { batches.push(b) })
+    hub.push({
+      changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }],
+      removed: [],
+      adb: OK,
+    })
+    hub.flush()
+    expect(batches).toHaveLength(1)
+    expect(batches[0].adb).toBeDefined()
+    expect(batches[0].adb).toEqual(OK)
+  })
+
+  it('tracker 派发的批次一定带 adb 字段（即使只有设备变化）', async () => {
+    const { DeviceChangeTracker } = await import('../electron/app/device-changed')
+    const { DeviceManager } = await import('../electron/devices/manager')
+    const mgr = new DeviceManager()
+    const tracker = new DeviceChangeTracker(mgr, () => {}, () => OK)
+    const batches: DevicesChangedBatch[] = []
+    tracker.onPush((b) => { batches.push(b) })
+    mgr.upsert({ serial: 'A', status: 'device' })
+    tracker.flush()
+    expect(batches.length).toBeGreaterThan(0)
+    for (const batch of batches) expect(batch.adb).toEqual(OK)
+    tracker.dispose()
+  })
+})
+
+describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', () => {
+  it('devices:list 的返回里带 adb 状态（迟到的订阅者也能自愈）', async () => {
+    const { DeviceManager } = await import('../electron/devices/manager')
+    const { registerHandlers } = await import('../electron/ipc/handlers')
+    const registered = new Map<string, (e: unknown, p?: unknown) => unknown>()
+    const mgr = new DeviceManager()
+    mgr.applySnapshot([{ serial: 'A', status: 'device', transport: 'usb' }])
+    registerHandlers(
+      {
+        devices: mgr,
+        adbPath: () => 'C:/adb.exe',
+        adbState: () => NOT_FOUND,
+        clientFactory: (serial) => ({ serial, run: async () => ({ code: 0, stdout: '', stderr: '' }) }),
+        fs: { list: async () => ({ entries: [], degraded: false, unparsed: 0, usedFallback: false, exitCode: 0, tzOffsetMinutes: 0 }) },
+      },
+      { handle: (ch, fn) => { registered.set(ch, fn) } },
+    )
+    const result = await registered.get('devices:list')?.({}) as { ok: boolean; data: { adb: AdbState } }
+    expect(result.ok).toBe(true)
+    // 迟到的渲染层只要调一次 list 就能拿到当前 adb 状态，不必等下一次广播
+    expect(result.data.adb).toEqual(NOT_FOUND)
   })
 })

@@ -104,7 +104,7 @@ export class DeviceChangeHub {
    * null 表示该 serial 被移除（会话过期）。同一窗口内「先移除再回来」时，
    * 后到的 changed 会覆盖掉 null，语义正确。
    */
-  push(input: { changed: readonly DeviceSession[]; removed: readonly string[]; adb?: AdbState }): void {
+  push(input: { changed: readonly DeviceSession[]; removed: readonly string[]; adb: AdbState }): void {
     if (input.changed.length === 0 && input.removed.length === 0 && input.adb === undefined) return
     if (input.adb !== undefined) this.pendingAdb = input.adb
     const batch = this.accumulator ?? new Map<string, DeviceSession | null>()
@@ -137,8 +137,11 @@ export class DeviceChangeHub {
     }
     const adb = this.pendingAdb
     this.pendingAdb = undefined
+    // adb 缺失说明这个窗口里没有任何一次 push 带过状态 —— 但批次仍必须带 adb（I8），
+    // 所以这里兜底成 checking。正常情况下 tracker 每次 push 都会带。
+    const withAdb = adb ?? { state: 'checking' as const }
     if (changed.length === 0 && removed.length === 0 && adb === undefined) return
-    for (const listener of this.listeners) listener({ changed, removed, adb })
+    for (const listener of this.listeners) listener({ changed, removed, adb: withAdb })
   }
 }
 

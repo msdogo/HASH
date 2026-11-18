@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DEFAULT_COALESCE_MS, Throttle, createDeviceChangeHub } from '../electron/ipc/throttle'
+import type { AdbState } from '../src/shared/types'
+
+/** 推送批次里的 adb 状态（I8 已改成必填）。 */
+const OK_ADB: AdbState = { state: 'ok', path: 'C:/adb.exe', version: '1.0.41', source: 'path' }
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -93,8 +97,8 @@ describe('设备变更合并器（裁决 5 的推送侧）', () => {
     hub.onPush((batch) => {
       batches.push({ changed: batch.changed.map((d) => d.serial), removed: batch.removed })
     })
-    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [] })
-    hub.push({ changed: [{ serial: 'B', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: ['C'] })
+    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [], adb: OK_ADB })
+    hub.push({ changed: [{ serial: 'B', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: ['C'], adb: OK_ADB })
     expect(batches).toEqual([])
     vi.advanceTimersByTime(50)
     expect(batches).toEqual([{ changed: ['A', 'B'], removed: ['C'] }])
@@ -105,20 +109,32 @@ describe('设备变更合并器（裁决 5 的推送侧）', () => {
     const hub = createDeviceChangeHub(50)
     const batches: string[][] = []
     hub.onPush((b) => { batches.push(b.changed.map((d) => d.serial + ':' + d.status)) })
-    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [] })
-    hub.push({ changed: [{ serial: 'A', status: 'offline', transport: 'usb', lastSeenAt: 2 }], removed: [] })
+    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [], adb: OK_ADB })
+    hub.push({ changed: [{ serial: 'A', status: 'offline', transport: 'usb', lastSeenAt: 2 }], removed: [], adb: OK_ADB })
     vi.advanceTimersByTime(50)
     expect(batches).toEqual([['A:offline']])
   })
 
-  it('空变化不派发', () => {
+  /*
+   * 判断谁错（I8 之后语义变了，用例必须跟着改，不能为了让测试绿而放宽断言）：
+   *
+   * 修前：adb 是可选字段，「changed/removed 都为空」= 没有任何信息 → 不派发，这是对的。
+   * 修后：adb 变成必填，而「只带 adb、不带任何设备变化」恰恰是唯一的合法用法 ——
+   * 自检完成时设备表一个字没变，但界面必须从「正在查找 adb…」推进到结果，
+   * 这条推送就是靠 adb 字段单独派发的（main.ts 的 notifyAdbState → flushChanges）。
+   * 所以「空变化不派发」这个断言在新语义下是【错的】，改成断言它必须派发。
+   *
+   * 真正需要守住的不变量是：批次里的 adb 一定有值（I8），且没有设备变化时
+   * changed/removed 都是空数组（不能让渲染层凭空收到设备）。
+   */
+  it('只带 adb、没有设备变化时仍要派发（这是脱离 checking 的唯一通道）', () => {
     vi.useFakeTimers()
     const hub = createDeviceChangeHub(50)
-    let count = 0
-    hub.onPush(() => { count += 1 })
-    hub.push({ changed: [], removed: [] })
+    const batches: Array<{ changed: number; removed: number; adb: string }> = []
+    hub.onPush((b) => { batches.push({ changed: b.changed.length, removed: b.removed.length, adb: b.adb.state }) })
+    hub.push({ changed: [], removed: [], adb: OK_ADB })
     vi.advanceTimersByTime(50)
-    expect(count).toBe(0)
+    expect(batches).toEqual([{ changed: 0, removed: 0, adb: 'ok' }])
   })
 
   it('dispose 后挂起批次被丢弃', () => {
@@ -126,7 +142,7 @@ describe('设备变更合并器（裁决 5 的推送侧）', () => {
     const hub = createDeviceChangeHub(50)
     let count = 0
     hub.onPush(() => { count += 1 })
-    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [] })
+    hub.push({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 1 }], removed: [], adb: OK_ADB })
     hub.dispose()
     vi.advanceTimersByTime(100)
     expect(count).toBe(0)

@@ -100,11 +100,13 @@ export interface DevicesChangedBatch {
   /**
    * 当前 adb 自检状态，随每次推送一起下发。
    *
-   * 为什么必须带：渲染层启动时先拉一次 devices:list，那一刻 adb 自检（4~8s）
-   * 往往还是 checking。若推送里不带 adb，界面就会永远停在「正在查找 adb…」，
+   * 为什么必须带（而不是可选）：渲染层启动时先拉一次 devices:list，那一刻 adb 自检
+   * （4~8s）往往还是 checking。若推送里不带 adb，界面就永远停在「正在查找 adb…」，
    * 「无法使用 adb」的提示永远不会出现。
+   * 审查轮 1（I8）把这里从 `adb?` 改成**必填**：bug 2 的本质就是「推送方可以忘记带」，
+   * 留成可选等于没把教训固化 —— 现在漏传直接是类型错误。
    */
-  adb?: AdbState
+  adb: AdbState
 }
 
 /** fs:list 的返回数据（裁决 7：degraded 与 exitCode 必须带到渲染层）。 */

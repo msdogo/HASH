@@ -79,3 +79,37 @@ describe('CSP 注入（裁决 4：onHeadersReceived 行为）', () => {
     expect(details['content-type']).toEqual(['text/html'])
   })
 })
+describe('C2 避免重复注入 CSP（app:// 已带头时 onHeadersReceived 不再叠加）', () => {
+  function capture(existing: Record<string, string[]> | undefined, isDev: boolean): Record<string, string[]> {
+    let listener:
+      | ((d: { responseHeaders?: Record<string, string[]> }, cb: (r: { responseHeaders: Record<string, string[]> }) => void) => void)
+      | undefined
+    applyCsp({ webRequest: { onHeadersReceived: (fn) => { listener = fn } } }, isDev)
+    if (listener === undefined) throw new Error('没有注册 onHeadersReceived')
+    let captured: Record<string, string[]> = {}
+    listener({ responseHeaders: existing }, (response) => { captured = response.responseHeaders })
+    return captured
+  }
+
+  it('响应里已经有 CSP 时不重复添加（保持一条，避免策略被拼成两份）', () => {
+    const existing = { 'Content-Security-Policy': ["default-src 'self'"] }
+    const headers = capture(existing, false)
+    const values = Object.entries(headers)
+      .filter(([name]) => name.toLowerCase() === 'content-security-policy')
+      .flatMap(([, v]) => v)
+    // 大小写不同也算同一类头；必须只有一份
+    expect(values).toHaveLength(1)
+  })
+
+  it('响应里没有 CSP 时补上（dev 的 http:// 就靠这条）', () => {
+    const headers = capture({ 'content-type': ['text/html'] }, true)
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === 'content-security-policy')
+    expect(key).toBeDefined()
+    expect(headers[key as string][0]).toBe(buildCsp(true))
+  })
+
+  it('保留其余原有响应头', () => {
+    const headers = capture({ 'content-type': ['text/html'] }, false)
+    expect(headers['content-type']).toEqual(['text/html'])
+  })
+})

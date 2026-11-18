@@ -1,10 +1,12 @@
-import { app, BrowserWindow, session, ipcMain } from 'electron'
+import { app, BrowserWindow, session, ipcMain, protocol } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { killAllAdbChildren } from './adb/children'
 import { E_UNKNOWN } from '../src/shared/errors'
 import { listDirDetailed } from './fs/remote'
 import { AdbTracking, createAdbProbe, createClient } from './app/sessions'
+import { createBootSequence } from './app/boot'
+import { APP_ENTRY_URL, registerAppProtocol, registerAppScheme } from './app/protocol'
 import { DeviceManager } from './devices/manager'
 import { applyCsp } from './csp'
 import { CH } from './ipc/channels'
@@ -18,12 +20,17 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 
 // 手工验证用：设置 ADB_FM_DEBUG_PORT 后开放 Chrome DevTools 协议端口，
-// 就可以用 CDP 抓渲染层真实的 DOM 与截图（不必靠肉眼猜界面显示什么）。
-// 未设置环境变量时完全无副作用，也不进打包产物的默认行为。
+// 就可以用 CDP 抓渲染层真实的 DOM 与截图（不必只靠肉眼猜界面显示什么）。
 const debugPort = process.env.ADB_FM_DEBUG_PORT
 if (debugPort !== undefined && debugPort !== '') {
   app.commandLine.appendSwitch('remote-debugging-port', debugPort)
 }
+
+/**
+ * 【C2】scheme 特权必须在 app ready 之前声明，晚了不生效。
+ * 生产模式页面走 app://bundle/index.html，而不是 file://。
+ */
+registerAppScheme()
 
 /**
  * adb 自检状态。
@@ -40,9 +47,15 @@ const devices = new DeviceManager()
 
 /** 跟踪器要等自检拿到 adb 路径才能起，此时为 undefined。 */
 let tracking: AdbTracking | undefined
+/** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */
+const bootAbort = new AbortController()
+
 /**
- * CSP（裁决 4）：dev/prod 双模式，用响应头注入而不是写死 meta（写死会挡掉 Vite HMR）。
- * 具体实现在 ./csp，那里可以脱离 Electron 单测。
+ * CSP（裁决 4）：dev/prod 双模式。
+ * - dev：页面来自 http://127.0.0.1:5555，走 session 的 onHeadersReceived；
+ * - prod：页面来自 app://，CSP 由 protocol.handle 亲手写进响应头（C2），
+ *   因为 onHeadersReceived 对 file:// 根本不触发 —— 这正是审查发现的漏洞。
+ * 两边共用同一份 buildCsp()，策略不会漂移。
  */
 function installCsp(): void {
   applyCsp(session.defaultSession, isDev)
@@ -64,15 +77,16 @@ function createWindow(): void {
       sandbox: true,
     },
   })
-  if (process.env.VITE_DEV_SERVER_URL) {
-    win.loadURL(process.env.VITE_DEV_SERVER_URL)
+  if (isDev) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL as string)
   } else {
-    win.loadFile(path.join(dirname, '../dist/index.html'))
+    // 生产走自定义协议：有真实响应头（CSP 能落地），'self' 语义也正常（不会白屏）
+    win.loadURL(APP_ENTRY_URL)
   }
 }
 
 /**
- * 把一批设备变更推给所有窗口（自检完成时也用它补推一次）。
+ * 把一批设备变更推给所有窗口。
  * 只遍历窗口，不额外持有窗口引用 —— 持有的引用在窗口销毁后就是悬垂的，
  * 而 getAllWindows() 天然只返回存活的窗口。
  */
@@ -84,58 +98,80 @@ function broadcast(batch: DevicesChangedBatch): void {
 }
 
 /**
- * 启动顺序（裁决 1）：
- * 1. 建窗口 —— adb 自检要 4~8s，绝不能挡在窗口出现之前；
- * 2. 立刻注册 IPC（用还没起来的会话表），渲染层首屏调用不会落空；
- * 3. 异步自检 adb，拿到路径后再起 tracker；
- * 4. 自检失败也照样起 tracker（它会降级轮询），让用户至少看到「无设备」而不是一直转圈。
+ * 启动（I7：顺序由 createBootSequence 保证并被测试锁住）：
+ * CSP → 注册 IPC → 建窗口 → 自检 adb → 起 tracker → 通知 adb 状态。
+ *
+ * 注册 IPC 严格早于建窗口：窗口一出现渲染层就会 invoke devices:list，
+ * 那一刻 handler 必须在位。（修前的代码顺序相反，只因同 tick 无间隙才没出事。）
  */
 app.whenReady().then(async () => {
-  installCsp()
-  createWindow()
-
-  registerHandlers(
-    {
-      devices,
-      adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
-      adbState: () => adbState,
-      clientFactory: (serial) => createClient(serial),
-      fs: { list: listDirDetailed },
-    },
-    ipcMain,
-  )
-
-  const probe = createAdbProbe({
-    resourcePath: process.resourcesPath,
-    env: process.env.ADB_PATH,
-  })
-  adbState = await probe()
-
-  tracking = new AdbTracking({
-    // 自检失败时用裸名兜底：错误已经通过 adbState 显示给用户，tracker 起不来也无害。
-    adbPath: adbState.state === 'ok' ? adbState.path : 'adb',
-    manager: devices,
-    // adb 状态随每次推送下发：渲染层首屏拿到的往往是 checking，
-    // 只有推送能把界面从「正在查找 adb…」推进到「无法使用 adb」或正常状态。
-    adbState: () => adbState,
-  })
-  // 设备掉线 / 重连时清掉该 serial 的时区缓存（裁决 6）：这一步由
-  // DeviceChangeTracker 在构造时接好的 clearDeviceSerialTzCache 完成，
-  // 这里只负责把去重 + 合并后的批次推给渲染层。
-  tracking.onDevicesChanged((batch) => { broadcast(batch) })
-  tracking.start()
-
-  // 自检结果晚于窗口：主动推一次，让设备栏立刻脱离 checking。
-  tracking.notifyAdbState()
-  tracking.flushChanges()
-  if (adbState.state === 'error') {
-    console.warn('[adb] 自检失败：' + errorText(adbState.code))
+  // 生产模式：把 dist 用 app:// 提供出来（C2）。dev 模式不需要。
+  if (!isDev) {
+    registerAppProtocol(path.join(dirname, '..', 'dist'), isDev)
   }
+
+  await createBootSequence(
+    {
+      installCsp,
+      registerHandlers: () => {
+        registerHandlers(
+          {
+            devices,
+            adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+            adbState: () => adbState,
+            clientFactory: (serial) => createClient(serial),
+            fs: { list: listDirDetailed },
+          },
+          ipcMain,
+        )
+      },
+      createWindow,
+      probeAdb: async (signal) => {
+        const probe = createAdbProbe({
+          resourcePath: process.resourcesPath,
+          env: process.env.ADB_PATH,
+        })
+        // 自检本身不支持取消（resolveAdb 内部逐候选探测，最坏 8s），
+        // 但这里用 race 让它【不再阻塞启动流程】：退出时立刻放弃等待，
+        // 剩下的探测子进程由 before-quit 的 killAllAdbChildren 统一回收（I5）。
+        const aborted = new Promise<AdbState>((resolve) => {
+          signal.addEventListener('abort', () => {
+            resolve({ state: 'error', code: 'E_ABORTED', attempts: [] })
+          })
+        })
+        adbState = await Promise.race([probe(), aborted])
+        return adbState
+      },
+      startTracking: () => {
+        tracking = new AdbTracking({
+          // 自检失败时用裸名兜底：错误已经通过 adbState 显示给用户，tracker 起不来也无害。
+          adbPath: adbState.state === 'ok' ? adbState.path : 'adb',
+          manager: devices,
+          // adb 状态随每次推送下发（I8 已把该字段改成必填）。
+          adbState: () => adbState,
+        })
+        tracking.onDevicesChanged((batch) => { broadcast(batch) })
+        tracking.start()
+      },
+      notifyAdbState: () => {
+        // 自检结果晚于窗口：主动推一次，让设备栏立刻脱离 checking。
+        tracking?.notifyAdbState()
+        tracking?.flushChanges()
+      },
+      onAdbError: (code) => { console.warn('[adb] 自检失败：' + errorText(code)) },
+    },
+    bootAbort.signal,
+  )().catch((err: unknown) => {
+    // 启动失败不能让窗口空白着没有任何提示
+    console.error('[boot] 启动失败：' + String(err))
+  })
 })
 
 // 规格要求：窗口关闭时回收所有子进程；tracker 也必须在这里停掉，
 // 否则它的定时器与长驻 track-devices 进程会挂住事件循环（裁决 1）。
 app.on('before-quit', () => {
+  // I5：先取消在飞的自检，别让 probe 的子进程在退出过程中被漏掉
+  bootAbort.abort()
   tracking?.flushChanges()
   tracking?.stop()
   tracking = undefined

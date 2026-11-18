@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { FS_LIST_INPUT } from '../../src/shared/api-contract'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
 import { normalizeDir } from '../fs/remote'
@@ -49,12 +49,6 @@ export interface HandlerDeps {
   }
 }
 
-/** fs:list 的入参契约。 */
-const fsListSchema = z.object({
-  serial: z.string().min(1),
-  dir: z.string().min(1),
-})
-
 /** 统一的失败出口。 */
 function fail(error: string): IpcResult<never> {
   return { ok: false, error }
@@ -79,7 +73,8 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
   })
 
   handle(CH.FS_LIST, async (_event, payload): Promise<IpcResult<FsListData>> => {
-    const parsed = fsListSchema.safeParse(payload)
+    // 入参 schema 来自 api-contract（与 preload / api.d.ts 同源，见 I4）
+    const parsed = FS_LIST_INPUT.safeParse(payload)
     if (!parsed.success) return fail(E_BAD_ARGS)
     const { serial, dir } = parsed.data
 

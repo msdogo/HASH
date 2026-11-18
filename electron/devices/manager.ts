@@ -74,10 +74,17 @@ export class DeviceManager extends EventEmitter {
       // 已经在 offline 且已记账的，不重复发事件、也不重置 lostAt ——
       // 否则每轮轮询都会把丢失时间往后推，会话永远清理不掉。
       if (this.lostAt.has(serial)) continue
+      // 必须【新建对象】而不是原地改 status。
+      // 为什么：DeviceChangeTracker 的 previous 存的是 manager.list() 的引用（浅拷贝），
+      // 原地改会让「新值」和「上一次快照」指向同一个对象 —— 掉线那一刻比对的
+      // 是「自己跟自己」，指纹必然相等，changed 永远为空，设备栏就一直绿着，
+      // 直到 30 分钟后 gc 发 removed 才知道设备没了。掉线是最高频的设备事件，
+      // 这条路径必须和上面的在线分支一样走不可变更新。
       const session = this.sessions.get(serial) as DeviceSession
-      session.status = 'offline'
+      const next: DeviceSession = { ...session, status: 'offline' }
+      this.sessions.set(serial, next)
       this.lostAt.set(serial, now)
-      this.emit('changed', session)
+      this.emit('changed', next)
     }
   }
 
@@ -85,9 +92,11 @@ export class DeviceManager extends EventEmitter {
   markLost(serial: string, now = Date.now()): void {
     const session = this.sessions.get(serial)
     if (session === undefined) return
-    session.status = 'offline'
+    // 同 applySnapshot 的 offline 分支：必须新建对象，否则去重层比对不到这次变化
+    const next: DeviceSession = { ...session, status: 'offline' }
+    this.sessions.set(serial, next)
     this.lostAt.set(serial, now)
-    this.emit('changed', session)
+    this.emit('changed', next)
   }
 
   /** 清理超过保留期的掉线会话。 */

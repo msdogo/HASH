@@ -116,6 +116,21 @@ export function summarize(list: readonly DeviceSession[]): {
 }
 
 /**
+ * 是否有未授权设备（设备栏要显示「请在手机上允许 USB 调试」）。
+ *
+ * 为什么单独抽函数而不是在组件里内联 `devices.some(...)`（审查轮 1 / I6）：
+ * 内联判断与 summarize() 里的 unauthorized 计数是同一件事的第二份实现，
+ * 两处迟早漂移，而且内联的那份没有测试覆盖。这里与 summarize() 共用同一判定，
+ * 测试直接断言「两者永远一致」。
+ */
+export function hasUnauthorized(list: readonly { status: DeviceStatus }[]): boolean {
+  for (const device of list) {
+    if (device.status === 'unauthorized') return true
+  }
+  return false
+}
+
+/**
  * 当前活动设备。
  * 原设备还在就保持（用户选中的不能被一次轮询抢走）；
  * 原设备消失才回退到第一台；一台都没有则为 null。

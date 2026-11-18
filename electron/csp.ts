@@ -72,11 +72,33 @@ export interface SessionLike {
 export function applyCsp(ses: SessionLike, isDev: boolean): void {
   const policy = buildCsp(isDev)
   ses.webRequest.onHeadersReceived((details, callback) => {
+    const existing = details.responseHeaders ?? {}
+    /*
+     * 已经有 CSP 就原样放行，不叠加第二条。
+     *
+     * 为什么：生产模式走 app:// 自定义协议，CSP 由 protocol.handle 亲手写进响应头
+     * （那样即使 onHeadersReceived 不触发也一定有）。而实测 app:// 是标准网络事务，
+     * onHeadersReceived 同样会触发 —— 两边都写就会变成「同一个头两份策略」。
+     * 浏览器对多份 CSP 取交集，两份一致时语义无害，但响应头会膨胀一倍、
+     * 而且将来若两边策略漂移，排障会非常痛苦。这里以「已有则不再写」收敛。
+     */
+    if (hasCsp(existing)) {
+      callback({ responseHeaders: existing })
+      return
+    }
     callback({
       responseHeaders: {
-        ...details.responseHeaders,
+        ...existing,
         'Content-Security-Policy': [policy],
       },
     })
   })
+}
+
+/** 响应头里是否已带 CSP（头名大小写不敏感）。 */
+function hasCsp(headers: Record<string, string[]>): boolean {
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === 'content-security-policy') return true
+  }
+  return false
 }

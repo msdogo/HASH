@@ -96,3 +96,113 @@ describe('设备快照去重（裁决 5：不变就不推）', () => {
     expect(batches).toEqual([['A'], ['B'], ['B']])
   })
 })
+
+/* ================= C1：设备掉线必须推送（审查轮 1） ================= */
+
+describe('C1 设备掉线必须推送 offline（不是靠 30 分钟后 gc 才知道）', () => {
+  it('applySnapshot([A]) → applySnapshot([]) 时第二批必须推 A:offline', async () => {
+    const { DeviceChangeTracker } = await import('../electron/app/device-changed')
+    const mgr = new DeviceManager()
+    const tracker = new DeviceChangeTracker(mgr, () => {}, () => ({ state: 'checking' }))
+    const batches: Array<{ changed: string[]; removed: string[] }> = []
+    tracker.onPush((b) => {
+      batches.push({ changed: b.changed.map((d) => d.serial + ':' + d.status), removed: b.removed })
+    })
+
+    // 第一批：设备在线
+    mgr.applySnapshot([{ serial: 'SER1', status: 'device', transport: 'usb' }])
+    tracker.flush()
+
+    // 第二批：设备消失（这是掉线最高频的真实路径）
+    mgr.applySnapshot([])
+    tracker.flush()
+
+    expect(batches).toEqual([
+      { changed: ['SER1:device'], removed: [] },
+      { changed: ['SER1:offline'], removed: [] },
+    ])
+    // 管理器里确实是 offline
+    expect(mgr.get('SER1')?.status).toBe('offline')
+    tracker.dispose()
+  })
+
+  it('markLost 路径同样要推 offline', async () => {
+    const { DeviceChangeTracker } = await import('../electron/app/device-changed')
+    const mgr = new DeviceManager()
+    const tracker = new DeviceChangeTracker(mgr, () => {}, () => ({ state: 'checking' }))
+    const batches: string[][] = []
+    tracker.onPush((b) => { batches.push(b.changed.map((d) => d.serial + ':' + d.status)) })
+
+    mgr.upsert({ serial: 'SER1', status: 'device' })
+    tracker.flush()
+    mgr.markLost('SER1')
+    tracker.flush()
+
+    expect(batches).toEqual([['SER1:device'], ['SER1:offline']])
+    tracker.dispose()
+  })
+
+  it('设备重新插回要推 device（离线↔在线两个方向都不能丢）', async () => {
+    const { DeviceChangeTracker } = await import('../electron/app/device-changed')
+    const mgr = new DeviceManager()
+    const tracker = new DeviceChangeTracker(mgr, () => {}, () => ({ state: 'checking' }))
+    const batches: string[][] = []
+    tracker.onPush((b) => { batches.push(b.changed.map((d) => d.serial + ':' + d.status)) })
+
+    mgr.applySnapshot([{ serial: 'SER1', status: 'device', transport: 'usb' }])
+    tracker.flush()
+    mgr.applySnapshot([])
+    tracker.flush()
+    mgr.applySnapshot([{ serial: 'SER1', status: 'device', transport: 'usb' }])
+    tracker.flush()
+
+    expect(batches).toEqual([['SER1:device'], ['SER1:offline'], ['SER1:device']])
+    tracker.dispose()
+  })
+
+  it('连续多轮空快照不会反复推 offline（去重仍然生效）', async () => {
+    const { DeviceChangeTracker } = await import('../electron/app/device-changed')
+    const mgr = new DeviceManager()
+    const tracker = new DeviceChangeTracker(mgr, () => {}, () => ({ state: 'checking' }))
+    const batches: string[][] = []
+    tracker.onPush((b) => { batches.push(b.changed.map((d) => d.serial + ':' + d.status)) })
+
+    mgr.applySnapshot([{ serial: 'SER1', status: 'device', transport: 'usb' }])
+    tracker.flush()
+    mgr.applySnapshot([])
+    tracker.flush()
+    mgr.applySnapshot([])
+    tracker.flush()
+    mgr.applySnapshot([])
+    tracker.flush()
+
+    expect(batches).toEqual([['SER1:device'], ['SER1:offline']])
+    tracker.dispose()
+  })
+})
+
+describe('C1 根因：DeviceManager 的 offline 分支必须新建对象（不可变更新）', () => {
+  it('applySnapshot 让设备掉线时，会话对象引用必须变化', () => {
+    const mgr = new DeviceManager()
+    mgr.applySnapshot([{ serial: 'SER1', status: 'device', transport: 'usb' }])
+    const before = mgr.get('SER1')
+    mgr.applySnapshot([])
+    const after = mgr.get('SER1')
+    expect(after?.status).toBe('offline')
+    // 关键：如果原地改，before === after，任何「拿旧引用比对新引用」的去重都会失效
+    expect(after).not.toBe(before)
+    // 旧引用不能被偷偷改掉（否则 external 持有者看到的是一份被篡改的快照）
+    expect(before?.status).toBe('device')
+  })
+
+  it('markLost 同样必须新建对象', () => {
+    const mgr = new DeviceManager()
+    mgr.upsert({ serial: 'SER1', status: 'device' })
+    const before = mgr.get('SER1')
+    mgr.markLost('SER1')
+    const after = mgr.get('SER1')
+    expect(after?.status).toBe('offline')
+    expect(after).not.toBe(before)
+    expect(before?.status).toBe('device')
+  })
+})

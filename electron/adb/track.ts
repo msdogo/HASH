@@ -263,7 +263,13 @@ export class DeviceTracker {
   private polling = false
   /** gc 定时器是不是本跟踪器起的；只有自己起的才由自己停。 */
   private ownsGc = false
-  /** 已经补过型号的 serial（避免每帧都多跑一条 adb devices -l）。 */
+  /**
+   * 【已经成功拿到型号】的 serial（I1）。
+   *
+   * 语义必须是「拿到过」而不是「尝试过」：修前在发起请求前就置位，于是
+   * unauthorized → 用户点「允许」→ device 这条新机最主流的接入路径永远补不上型号
+   * （第一次尝试时设备还没授权，模型拿不到，但记号已经置位，之后再也不会补）。
+   */
   private enriched = new Set<string>()
   /** 补型号是否还在跑（同一时刻只允许一条，不得与自己的上一次重叠）。 */
   private enriching = false
@@ -405,21 +411,20 @@ export class DeviceTracker {
 
   private async pollOnce(): Promise<void> {
     if (this.stopped || this.currentMode !== 'poll') return
-    // I2：上一轮没结束就直接跳过，避免慢 adb devices 无限叠加并发子进程，
+    // I2：与补型号共用 runDevicesGuarded 的同一个 in-flight 守卫 ——
+    // 上一轮没结束（或补型号正在飞）就直接跳过：既避免慢 adb devices 无限叠加并发子进程，
     // 也避免晚到的旧快照覆盖新快照导致设备状态回退。
-    if (this.polling) return
-    this.polling = true
+    let stdout: string | undefined
     try {
-      const stdout = this.opts.pollDevices !== undefined
-        ? await this.opts.pollDevices()
-        : await this.runDevices()
-      if (this.stopped) return
-      this.applyPayload(stdout)
+      stdout = await this.runDevicesGuarded()
     } catch {
       // 单次轮询失败不是故障：下一周期再试，不值得把整个跟踪器停掉
-    } finally {
-      this.polling = false
+      return
     }
+    // undefined = 守卫被占用（补型号正在飞），本轮跳过
+    if (stdout === undefined) return
+    if (this.stopped) return
+    this.applyPayload(stdout)
   }
 
   /** 一次 adb devices -l。必须登记子进程，退出时才会被回收。 */
@@ -481,12 +486,14 @@ export class DeviceTracker {
     if (this.currentMode !== 'track') return
     // 型号还可能在会话里（断线重插时 DeviceManager 会复用旧会话的元数据）——
     // 已经有就不必再跑一次 adb devices，否则每次拔插都多一条命令。
+    // I1：这里【不】提前置位 enriched —— 只有 enrichModels 真的拿到 model 才置位。
+    // 否则 unauthorized→device 这种「第一次尝试必然失败」的路径就永远补不上型号，
+    // 而新机接入正是这个路径。
     const missing = rows.filter((row) =>
       row.model === undefined &&
       !this.enriched.has(row.serial) &&
       this.opts.manager.get(row.serial)?.model === undefined)
     if (missing.length === 0) return
-    for (const row of missing) this.enriched.add(row.serial)
     this.requestEnrich()
   }
 
@@ -496,6 +503,10 @@ export class DeviceTracker {
    * 单飞（single-flight）：补型号是异步的，而 track 的一帧里可能同时冒出 3 台新设备；
    * 不合并就会并发跑 3 条 adb devices。跑的过程中又有设备报到就记一个 pending，
    * 等这一次结束再补一轮（只补一轮，避免「永远补不到型号」时无限自旋）。
+   *
+   * 【I2】这个单飞标记与轮询循环共享同一个 in-flight 语义：
+   * enrichModels 走的是同一套 `this.polling` 守卫（见 pickDevices），
+   * 因此 track→poll 降级的交界处也不会出现「补型号 + 轮询」两条 adb devices 并发。
    */
   private requestEnrich(): void {
     if (this.enriching) {
@@ -512,26 +523,65 @@ export class DeviceTracker {
   }
 
   /**
+   * 跑一次 adb devices -l。
+   *
+   * 【I2】补型号与轮询共用这一个入口，因此它们共享同一个 in-flight 守卫：
+   * 同一时刻最多只有一条 adb devices 在飞，跨 track→poll 切换也成立。
+   * 守卫被占用时返回 undefined（本次放弃），由调用方决定重试策略。
+   */
+  private async runDevicesGuarded(): Promise<string | undefined> {
+    if (this.polling) return undefined
+    this.polling = true
+    try {
+      return this.opts.pollDevices !== undefined
+        ? await this.opts.pollDevices()
+        : await this.runDevices()
+    } finally {
+      this.polling = false
+    }
+  }
+
+  /**
    * 补型号：跑一次 adb devices -l，把 model 合并进会话表。
    * 失败不影响设备发现 —— 型号只是展示字段，绝不能因为它挂掉整条 track 流。
    */
   private async enrichModels(): Promise<void> {
-    let stdout: string
+    let stdout: string | undefined
     try {
-      stdout = this.opts.pollDevices !== undefined
-        ? await this.opts.pollDevices()
-        : await this.runDevices()
+      stdout = await this.runDevicesGuarded()
     } catch {
-      // 补不到型号不是故障：下一帧如果设备重新出现会再试
-      for (const serial of [...this.enriched]) {
-        if (this.opts.manager.get(serial)?.model === undefined) this.enriched.delete(serial)
-      }
+      // 补不到型号不是故障：不置位 enriched（I1），下一帧会再试
       return
     }
+    // 守卫被占用（轮询正在飞）：本次放弃，不置位，下一帧再试
+    if (stdout === undefined) return
     if (this.stopped) return
+
+    /*
+     * 【C3】迟到的结果不得复活已拔出的设备。
+     *
+     * 时序：设备出现 → 发起 adb devices -l（在飞）→ 设备拔出（status=offline，
+     * lostAt 已记账）→ 早前发出的结果才回来，里面还写着 "SER1 device"。
+     * 修前这里无条件 upsert，会把 status 写回 device、并清掉 lostAt，
+     * 于是 gc 永远清不掉这台僵尸设备。
+     *
+     * 修法：只写回「当前仍在会话表里且仍在线」的设备；其余整个丢弃，
+     * 绝不触碰 lostAt（upsert 会删 lostAt，所以连 upsert 都不能调）。
+     * 型号本身也从最新结果里取，不依赖迟到的快照内容。
+     */
     for (const row of parseDeviceLines(stdout)) {
       if (row.model === undefined) continue
-      this.opts.manager.upsert(row)
+      // 只写回型号：不改 status / transport / 不碰 lostAt
+      const current = this.opts.manager.get(row.serial)
+      if (current === undefined) continue
+      if (current.status === 'offline') continue
+      if (current.model === row.model) {
+        // 型号已经一致：说明这条结果对我们没用，但也不该把标记弄丢
+        this.enriched.add(row.serial)
+        continue
+      }
+      this.opts.manager.upsert({ serial: row.serial, status: current.status, model: row.model, transport: current.transport })
+      this.enriched.add(row.serial)
     }
   }
 }

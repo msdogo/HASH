@@ -23,6 +23,12 @@ function silentChild(): unknown {
   }
 }
 
+const DEVICES_L_SER1 = [
+  'List of devices attached',
+  'SER1                   device product:rc701 model:DJI_RC_PLUS_2 device:rc701 transport_id:1',
+  '',
+].join('\r\n')
+
 const DEVICES_L = [
   'List of devices attached',
   '9N9CN2G0012A6F         device product:rc701 model:DJI_RC_PLUS_2 device:rc701 transport_id:1',
@@ -146,4 +152,151 @@ describe('track 模式下补型号（裁决 9 的生产路径）', () => {
     expect(mgr.get('9N9CN2G0012A6F')?.model).toBe('DJI RC PLUS 2')
     tracker.stop()
   })
+})
+/* ================= C3 / I1 / I2：补型号的三个缺陷（审查轮 1） ================= */
+
+describe('C3 迟到的补型号结果不得复活已拔出设备', () => {
+  it('设备拔出后才回来的 devices -l 结果必须丢弃（不得写回 online）', async () => {
+    const mgr = new DeviceManager()
+    let release: (v: string) => void = () => {}
+    const slow = new Promise<string>((resolve) => { release = resolve })
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices: () => slow,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    apply('SER1\tdevice\n')          // 设备出现，触发补型号（在飞）
+    apply('')                         // 设备拔出 → offline
+    expect(mgr.get('SER1')?.status).toBe('offline')
+
+    release(DEVICES_L_SER1)           // 迟到的结果返回，里面还写着 SER1 device
+    await new Promise((r) => setTimeout(r, 60))
+
+    expect(mgr.get('SER1')?.status).toBe('offline')
+    tracker.stop()
+  })
+
+  it('被丢弃的迟到结果不得清掉 lostAt（否则 gc 永远清不掉僵尸设备）', async () => {
+    const mgr = new DeviceManager()
+    let release: (v: string) => void = () => {}
+    const slow = new Promise<string>((resolve) => { release = resolve })
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices: () => slow,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    apply('SER1\tdevice\n')
+    apply('')
+    release(DEVICES_L_SER1)
+    await new Promise((r) => setTimeout(r, 60))
+
+    mgr.gc(Date.now() + 31 * 60 * 1000)
+    expect(mgr.get('SER1')).toBeUndefined()
+    tracker.stop()
+  })
+
+  it('设备仍在快照里时正常写回型号（防复活不能把正常路径堵死）', async () => {
+    const mgr = new DeviceManager()
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices: async () => DEVICES_L_SER1,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+    apply('SER1\tdevice\n')
+    await vi.waitFor(() => { expect(mgr.get('SER1')?.model).toBe('DJI RC PLUS 2') })
+    expect(mgr.get('SER1')?.status).toBe('device')
+    tracker.stop()
+  })
+})
+
+describe('I1 enriched 的语义必须是「拿到过」而不是「尝试过」', () => {
+  it('unauthorized → device（用户点允许）必须触发一次补型号', async () => {
+    const mgr = new DeviceManager()
+    const pollDevices = vi.fn(async () => DEVICES_L_SER1)
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    // 未授权接入：新机最主流的路径。第一次补型号必然拿不到（设备还没授权）
+    apply('SER1\tunauthorized\n')
+    await new Promise((r) => setTimeout(r, 40))
+    expect(mgr.get('SER1')?.status).toBe('unauthorized')
+
+    // 用户在手机上点了「允许」
+    apply('SER1\tdevice\n')
+    await vi.waitFor(() => { expect(mgr.get('SER1')?.model).toBe('DJI RC PLUS 2') })
+    tracker.stop()
+  })
+
+  it('补型号失败后同一设备下一帧仍会重试（不因一次失败永久放弃）', async () => {
+    const mgr = new DeviceManager()
+    let fail = true
+    const pollDevices = vi.fn(async () => {
+      if (fail) throw new Error('boom')
+      return DEVICES_L_SER1
+    })
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    apply('SER1\tdevice\n')
+    await new Promise((r) => setTimeout(r, 40))
+    expect(mgr.get('SER1')?.model).toBeUndefined()
+
+    fail = false
+    apply('SER1\tdevice\n')
+    await vi.waitFor(() => { expect(mgr.get('SER1')?.model).toBe('DJI RC PLUS 2') })
+    tracker.stop()
+  })
+})
+
+describe('I2 补型号与轮询共享 in-flight 单飞', () => {
+  it('track 转 poll 的交界处最大并发仍为 1', async () => {
+    const mgr = new DeviceManager()
+    let concurrent = 0
+    let maxConcurrent = 0
+    const slowDevices = async (): Promise<string> => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 60))
+      concurrent -= 1
+      return DEVICES_L_SER1
+    }
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices: slowDevices,
+      pollIntervalMs: 10,
+      startupTimeoutMs: 15,
+    })
+    tracker.start()
+    await new Promise((r) => setTimeout(r, 40))
+    expect(tracker.mode).toBe('poll')
+
+    await new Promise((r) => setTimeout(r, 300))
+    tracker.stop()
+    expect(maxConcurrent).toBe(1)
+  }, 15_000)
 })

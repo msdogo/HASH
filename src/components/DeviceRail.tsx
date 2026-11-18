@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { DOT_CLASS, DOT_LABEL_KEY, deviceLabel, serialTail, statusDot, summarize } from '@shared/device-view'
+import { DOT_CLASS, DOT_LABEL_KEY, deviceLabel, hasUnauthorized, serialTail, statusDot, summarize } from '@shared/device-view'
 import { errorText, t, tf } from '@shared/i18n'
 import { useDeviceStore } from '@/store/deviceStore'
 
@@ -20,6 +20,8 @@ export function DeviceRail() {
   const adbChecking = adb === null || adb.state === 'checking'
 
   const summary = summarize(devices)
+  // 判断走 shared 的纯函数（I6）：不在组件里内联 any()/some() 判断，避免与 summarize 的二套逻辑漂移
+  const showUnauthorizedHint = hasUnauthorized(devices)
   // 错误码翻译统一走 i18n 的集中表（裁决 3），组件里不出现硬编码文案
   const adbCode = adb !== null && adb.state === 'error' ? adb.code : ''
 
@@ -70,7 +72,7 @@ export function DeviceRail() {
         {adbChecking && (
           <p className="px-3 py-4 text-xs text-neutral-500">{t('devices.adbChecking')}</p>
         )}
-        {devices.some((d) => d.status === 'unauthorized') && (
+        {showUnauthorizedHint && (
           <p className="px-3 py-2 text-[11px] leading-snug text-amber-400/80">
             {t('devices.unauthorizedHint')}
           </p>
