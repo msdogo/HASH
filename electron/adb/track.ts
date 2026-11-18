@@ -263,6 +263,12 @@ export class DeviceTracker {
   private polling = false
   /** gc 定时器是不是本跟踪器起的；只有自己起的才由自己停。 */
   private ownsGc = false
+  /** 已经补过型号的 serial（避免每帧都多跑一条 adb devices -l）。 */
+  private enriched = new Set<string>()
+  /** 补型号是否还在跑（同一时刻只允许一条，不得与自己的上一次重叠）。 */
+  private enriching = false
+  /** 补型号途中又有新设备报到：等这一次跑完再补一轮。 */
+  private enrichPending = false
 
   constructor(options: DeviceTrackerOptions) {
     this.opts = {
@@ -454,6 +460,78 @@ export class DeviceTracker {
 
   private applyPayload(payload: string): void {
     if (this.stopped) return
-    this.opts.manager.applySnapshot(parseDeviceLines(payload))
+    const rows = parseDeviceLines(payload)
+    this.opts.manager.applySnapshot(rows)
+
+    // 裁决 9：track-devices 的负载只有「serial\tstate」，【没有 model】——
+    // 型号只出现在 adb devices -l 里。而生产路径优先走 track-devices，
+    // 不补这一步设备栏就永远只能显示 serial 后 4 位。
+    // 只对「新出现且还没补过」的设备补一次：track 每次变化都重发全量，
+    // 每帧都补会把 adb 命令打成每秒几十条。
+    // 设备消失（空帧或不在表里）时先清掉记号：重插回来型号可能变了，要重新补。
+    // 这一步必须在下面的早退之前做 —— 空帧时 missing 一定为空，放在后面永远执行不到。
+    const present = new Set(rows.map((row) => row.serial))
+    for (const serial of [...this.enriched]) {
+      if (!present.has(serial)) this.enriched.delete(serial)
+    }
+
+    // 只有 track 模式才需要补：轮询模式本来就是 adb devices -l，model 已经在 rows 里了。
+    // 这一条也是硬约束 —— 轮询模式下再调一次 pollDevices 会与轮询循环并发，
+    // 直接破坏任务 4 验收过的「in-flight 守卫：单次 devices 不叠加」不变量。
+    if (this.currentMode !== 'track') return
+    // 型号还可能在会话里（断线重插时 DeviceManager 会复用旧会话的元数据）——
+    // 已经有就不必再跑一次 adb devices，否则每次拔插都多一条命令。
+    const missing = rows.filter((row) =>
+      row.model === undefined &&
+      !this.enriched.has(row.serial) &&
+      this.opts.manager.get(row.serial)?.model === undefined)
+    if (missing.length === 0) return
+    for (const row of missing) this.enriched.add(row.serial)
+    this.requestEnrich()
+  }
+
+  /**
+   * 排队一次补型号。
+   *
+   * 单飞（single-flight）：补型号是异步的，而 track 的一帧里可能同时冒出 3 台新设备；
+   * 不合并就会并发跑 3 条 adb devices。跑的过程中又有设备报到就记一个 pending，
+   * 等这一次结束再补一轮（只补一轮，避免「永远补不到型号」时无限自旋）。
+   */
+  private requestEnrich(): void {
+    if (this.enriching) {
+      this.enrichPending = true
+      return
+    }
+    this.enriching = true
+    void this.enrichModels().finally(() => {
+      this.enriching = false
+      if (!this.enrichPending || this.stopped) return
+      this.enrichPending = false
+      this.requestEnrich()
+    })
+  }
+
+  /**
+   * 补型号：跑一次 adb devices -l，把 model 合并进会话表。
+   * 失败不影响设备发现 —— 型号只是展示字段，绝不能因为它挂掉整条 track 流。
+   */
+  private async enrichModels(): Promise<void> {
+    let stdout: string
+    try {
+      stdout = this.opts.pollDevices !== undefined
+        ? await this.opts.pollDevices()
+        : await this.runDevices()
+    } catch {
+      // 补不到型号不是故障：下一帧如果设备重新出现会再试
+      for (const serial of [...this.enriched]) {
+        if (this.opts.manager.get(serial)?.model === undefined) this.enriched.delete(serial)
+      }
+      return
+    }
+    if (this.stopped) return
+    for (const row of parseDeviceLines(stdout)) {
+      if (row.model === undefined) continue
+      this.opts.manager.upsert(row)
+    }
   }
 }

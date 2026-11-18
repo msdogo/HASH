@@ -117,9 +117,21 @@ export async function resolveDeviceTz(
   return hostOffsetMinutes()
 }
 
-/** 清空时区缓存（测试与设备重连时用）。 */
+/** 清空时区缓存（测试用）。 */
 export function clearDeviceTzCache(): void {
   tzCache.clear()
+}
+
+/**
+ * 只清掉某台设备的时区缓存（裁决 6 / 任务 5 N1）。
+ *
+ * 调用时机：设备掉线或重连。设备时区运行期一般不变，但用户完全可能在拔插之间
+ * 改掉设备的日期/时区 —— 不失效就会一直按旧偏移解释 ls 的时间列，列表时间整体偏移。
+ * 缓存键是 serial（无 serial 时退化成 adbPath），所以这里按 serial 前缀清。
+ */
+export function clearDeviceSerialTzCache(serial: string): void {
+  if (serial === '') return
+  tzCache.delete(serial)
 }
 
 /** 拒收无法表达成 shell 单词的路径字符。 */

@@ -60,3 +60,73 @@ export interface DeviceSession {
   /** 最后一次出现在 adb 设备表里的时间（毫秒）。 */
   lastSeenAt: number
 }
+/** adb 的来源优先级：custom > env > bundled > path（与 electron/adb/binary.ts 一致）。 */
+export type AdbSource = 'custom' | 'env' | 'bundled' | 'path'
+
+/** 单个 adb 候选的探测结论。 */
+export interface AdbAttempt {
+  path: string
+  source: AdbSource
+  ok: boolean
+  /** 失败原因；成功时缺省。 */
+  code?: string
+}
+
+/**
+ * adb 自检状态（裁决 3：设备栏要显示「无法使用 adb」）。
+ * state 只有两态：要么拿到一个可用 adb，要么给出一个错误码。
+ */
+export type AdbState =
+  /** 自检还没结束（启动瞬间）。界面据此显示「正在查找 adb…」，而不是误报「无法使用 adb」。 */
+  | { state: 'checking' }
+  | { state: 'ok'; path: string; version: string; source: AdbSource }
+  | { state: 'error'; code: string; attempts: AdbAttempt[] }
+
+/** 一次完整的设备快照（设备表 + adb 状态），用于指纹比对与首屏下发。 */
+export interface DeviceSnapshot {
+  devices: DeviceSession[]
+  adb: AdbState
+}
+
+/** devices:list 的返回数据：设备表 + adb 状态。 */
+export type DevicesListData = DeviceSnapshot
+
+/** devices:changed 推送的批次（已节流合并）。 */
+export interface DevicesChangedBatch {
+  /** 新增或字段有变化的设备。 */
+  changed: DeviceSession[]
+  /** 被清理掉的 serial（会话过期）。 */
+  removed: string[]
+  /**
+   * 当前 adb 自检状态，随每次推送一起下发。
+   *
+   * 为什么必须带：渲染层启动时先拉一次 devices:list，那一刻 adb 自检（4~8s）
+   * 往往还是 checking。若推送里不带 adb，界面就会永远停在「正在查找 adb…」，
+   * 「无法使用 adb」的提示永远不会出现。
+   */
+  adb?: AdbState
+}
+
+/** fs:list 的返回数据（裁决 7：degraded 与 exitCode 必须带到渲染层）。 */
+export interface FsListData {
+  serial: string
+  /** 归一化后的目录路径（已消除尾斜杠与 ..）。 */
+  dir: string
+  entries: FileEntry[]
+  /** 是否降级（解析率过低或走了 stat 兜底）→ 界面提示「部分文件无法读取」。 */
+  degraded: boolean
+  /** ls -lA 里解析失败的条数。 */
+  unparsed: number
+  /** 是否真的执行了 ls -1A + stat 兜底。 */
+  usedFallback: boolean
+  /** ls 退出码；非 0 但有条目属于「部分可读」，不是错误。 */
+  exitCode: number | null
+  /** 本次列举使用的设备时区偏移（分钟）。 */
+  tzOffsetMinutes: number
+}
+
+/**
+ * 所有 IPC invoke 通道的统一返回结构（裁决 2）。
+ * 主进程永远不通过 reject 传播业务错误 —— 渲染层拿到的要么是 data，要么是一个错误码。
+ */
+export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
