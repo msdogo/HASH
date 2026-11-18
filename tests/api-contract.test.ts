@@ -23,26 +23,19 @@ const read = (rel: string): string => readFileSync(path.join(root, rel), 'utf8')
  */
 
 describe('I4 API 契约单一事实源', () => {
-  it('API 面清单与 preload 暴露的方法集合一致（双向）', () => {
-    const preload = read('electron/preload.ts')
-    const groups = [...preload.matchAll(/^ {2}([a-zA-Z]+): \{$/gm)].map((m) => m[1])
-    const methods = [...preload.matchAll(/^ {4}([a-zA-Z]+): /gm)].map((m) => m[1])
-    expect(new Set(groups)).toEqual(new Set(apiGroupNames()))
-    // 方法名：契约里是 'group.method'，preload 里是扁平的 method 名
-    const flat = apiMethodNames().map((n) => n.split('.')[1])
-    expect(new Set(methods)).toEqual(new Set(flat))
-  })
+  /*
+   * 【审查轮 2 / I3、N1】这里原来有两条「正则比对 preload 与 api.d.ts 方法名」的用例。
+   * 复审实测它们抓不住任何东西：往 api.d.ts 注入一个 rename() 方法后，本文件仍然全绿。
+   * 也就是说它们是**假护栏**，而假护栏比没有更危险（后续任务会以为有保护）。
+   *
+   * 已删除，替换为真正的编译期守卫：
+   *   - electron/preload.ts 用 `satisfies DshApi` 绑定实现；
+   *   - src/shared/api.d.ts 只写 `interface Window { api: DshApi }`；
+   *   - tests/api-contract-binding.test.ts 断言这两个绑定存在，并做类型层等价检查。
+   * 改任一侧不同步另一侧 = tsc 报错（已做变异验证，见 task-6-report.md）。
+   */
 
-  it('api.d.ts 声明的方法集合与契约一致（双向，不是单向）', () => {
-    const api = read('src/shared/api.d.ts')
-    expect(api).toContain('api-contract')
-    // api.d.ts 里每个命名空间块内的方法名都要在契约里
-    for (const [group, methods] of Object.entries(API_SURFACE)) {
-      const block = new RegExp('^ {2}' + group + ': \\{[\\s\\S]*?^ {2}\\}', 'm').exec(api)?.[0] ?? ''
-      expect(block, group).not.toBe('')
-      for (const method of methods) expect(block, group + '.' + method).toContain(method + '(')
-    }
-  })
+
 
   it('api.d.ts 不再重复定义载荷类型（消除第三份副本）', () => {
     const api = read('src/shared/api.d.ts')

@@ -300,3 +300,91 @@ describe('I2 补型号与轮询共享 in-flight 单飞', () => {
     expect(maxConcurrent).toBe(1)
   }, 15_000)
 })
+/* ================= N3（审查轮 2）：补型号必须有退避，不能每帧重跑 ================= */
+
+describe('N3 补型号退避：拿不到 model 的设备不能每帧重跑 adb devices', () => {
+  it('连续 10 帧同一 serial 只调用有限次（3 次封顶）', async () => {
+    const mgr = new DeviceManager()
+    // 老 ROM：adb devices -l 里根本没有 model 字段
+    const pollDevices = vi.fn(async () => 'List of devices attached\r\nSER1\tdevice\r\n')
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    for (let i = 0; i < 10; i++) {
+      apply('SER1\tdevice\n')
+      // 等这一轮补型号彻底跑完，避免被单飞合并（那样测不到退避）
+      await new Promise((r) => setTimeout(r, 40))
+    }
+
+    // 明确断言具体次数：最多 3 次（MAX_ENRICH_ATTEMPTS）
+    expect(pollDevices.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(pollDevices.mock.calls.length).toBeGreaterThan(0)
+    tracker.stop()
+  })
+
+  it('状态跃迁（unauthorized→device）会重置失败计数，允许再试', async () => {
+    const mgr = new DeviceManager()
+    let withModel = false
+    const pollDevices = vi.fn(async () => {
+      if (!withModel) return 'List of devices attached\r\nSER1\tdevice\r\n'
+      return DEVICES_L_SER1
+    })
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    // 先用掉 3 次机会（都在 unauthorized）
+    for (let i = 0; i < 4; i++) {
+      apply('SER1\tunauthorized\n')
+      await new Promise((r) => setTimeout(r, 40))
+    }
+    expect(mgr.get('SER1')?.model).toBeUndefined()
+
+    // 用户点「允许」：状态跃迁必须重置计数
+    withModel = true
+    apply('SER1\tdevice\n')
+    await vi.waitFor(() => { expect(mgr.get('SER1')?.model).toBe('DJI RC PLUS 2') })
+    tracker.stop()
+  })
+
+  it('offline→device 跃迁同样重置计数', async () => {
+    const mgr = new DeviceManager()
+    let withModel = false
+    const pollDevices = vi.fn(async () => {
+      if (!withModel) return 'List of devices attached\r\nSER1\tdevice\r\n'
+      return DEVICES_L_SER1
+    })
+    const tracker = new DeviceTracker({
+      adbPath: 'C:/adb.exe',
+      manager: mgr,
+      spawnTrack: () => silentChild() as never,
+      pollDevices,
+    })
+    tracker.start()
+    const apply = (tracker as unknown as { applyPayload: (p: string) => void }).applyPayload.bind(tracker)
+
+    for (let i = 0; i < 4; i++) {
+      apply('SER1\tdevice\n')
+      await new Promise((r) => setTimeout(r, 40))
+    }
+    // 掉线再用光机会
+    apply('')
+    await new Promise((r) => setTimeout(r, 20))
+
+    withModel = true
+    apply('SER1\tdevice\n')  // 重新出现 = 跃迁，应重置
+    await vi.waitFor(() => { expect(mgr.get('SER1')?.model).toBe('DJI RC PLUS 2') })
+    tracker.stop()
+  })
+})

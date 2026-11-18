@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -41,11 +42,51 @@ export const DEVICES_LIST_INPUT = z.unknown()
 
 /* ============ 出参类型（从 shared/types 派生，不重复定义） ============ */
 
-export type { DevicesListData, FsListData } from './types'
+export type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 
-/* ============ API 面清单（preload 与 api.d.ts 的双向比对基准） ============ */
+/* ============ 唯一 API 接口（I3：编译期强制的唯一事实源） ============ */
 
-/** 每个命名空间下的方法名。preload 与 api.d.ts 都必须是它的超集/等价集。 */
+/** 退订函数。 */
+export type Unsubscribe = () => void
+
+/**
+ * window.api 的**唯一**接口定义（审查轮 2 / I3）。
+ *
+ * 为什么必须放在这里：原来的实现里 api.d.ts 自己写了一份 DshApi，
+ * 与 preload 的实现之间【没有任何编译期约束】—— 往 d.ts 里注入一个 rename() 方法，
+ * 测试照样全绿。那比不修更危险：后续任务会以为有护栏而大胆加 API。
+ *
+ * 现在两侧都绑到这一个接口：
+ *   - electron/preload.ts：`const api = { ... } satisfies DshApi`  ← 少实现/多实现都编译报错
+ *   - src/shared/api.d.ts：`interface Window { api: DshApi }`     ← 声明与实现同源
+ * 于是「改一侧不同步另一侧」是**编译错误**，不再依赖正则比对。
+ */
+export interface DshApi {
+  app: {
+    /** 桥是否活着。 */
+    ping(): string
+  }
+  devices: {
+    /** 取设备表 + adb 自检状态（含首屏与迟到订阅者的自愈入口）。 */
+    list(): Promise<IpcResult<DevicesListData>>
+    /** 订阅设备变更推送；返回退订函数。批次必然携带 adb 状态（I8）。 */
+    onChanged(callback: (batch: DevicesChangedBatch) => void): Unsubscribe
+  }
+  fs: {
+    /** 列举远程目录；入参类型从 FsListInput（zod schema 派生）来。 */
+    list(payload: FsListInput): Promise<IpcResult<FsListData>>
+  }
+}
+
+/* ============ API 面清单（运行期反射用；类型层的等价性由 DshApi 保证） ============ */
+
+/**
+ * 每个命名空间下的方法名。
+ *
+ * 注意：这里只是给「运行期静态检查 / 文档」用的便利清单，
+ * **真正的守卫是 DshApi 接口 + satisfies**（tests/api-contract-binding.test.ts 会断言这一点）。
+ * 若两者不一致，tests 里对 DshApi 键集合的类型断言会编译失败。
+ */
 export const API_SURFACE = {
   app: ['ping'],
   devices: ['list', 'onChanged'],

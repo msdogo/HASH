@@ -1,9 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { killTree, trackChild, untrackChild, adbChildCount, killAllAdbChildren } from './children'
+import { type ChildProcess } from 'node:child_process'
+import { killTree, spawnTracked, untrackChild, adbChildCount, killAllAdbChildren } from './children'
 
 export const E_NO_SERIAL = 'E_NO_SERIAL'
 export const E_TIMEOUT = 'E_TIMEOUT'
 export const E_ABORTED = 'E_ABORTED'
+/** 应用正在退出，子进程闸门已关闭：命令没有执行。 */
+export const E_SHUTDOWN = 'E_SHUTDOWN'
 
 /** adb 命令的完整执行结果。code 为 null 表示进程被信号终止（例如超时/中断后 kill）。 */
 export interface RunResult {
@@ -55,9 +57,11 @@ export class AdbClient {
         return
       }
 
-      let child: ChildProcess
+      let child: ChildProcess | null
       try {
-        child = spawn(opts.adbPath, this.buildArgs(args), {
+        // 统一出入口（I5）：闸门已关闭时 spawnTracked 返回 null 且【不 spawn】，
+        // 因此「退出过程中迟到的命令」不会留下孤儿进程。
+        child = spawnTracked(opts.adbPath, this.buildArgs(args), {
           windowsHide: true,
           // POSIX 建独立进程组，超时/取消时能整组终结；Windows 用 taskkill /T 走进程树。
           detached: process.platform !== 'win32',
@@ -66,8 +70,11 @@ export class AdbClient {
         reject(err)
         return
       }
-
-      trackChild(child)
+      if (child === null) {
+        // 进程闸门已关闭：明确失败，绝不让调用方误以为命令执行了
+        reject(new Error(E_SHUTDOWN))
+        return
+      }
 
       let stdout = ''
       let stderr = ''

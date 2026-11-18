@@ -52,18 +52,19 @@ describe('渲染层契约（静态断言）', () => {
     }
   })
 
-  it('preload 暴露的每一个方法在 api.d.ts 里都有声明', () => {
+  /*
+   * 【审查轮 2 / I3】原来这里用正则从 preload 抓方法名，再去 api.d.ts 里找字符串。
+   * 那是假护栏：api.d.ts 现在只剩一行 `interface Window { api: DshApi }`，
+   * 正则根本抓不到结构。真正的守卫已经变成编译期的：
+   *   preload 的 `satisfies DshApi` + api.d.ts 的 `api: DshApi`。
+   * 这里只保留一条「机制存在」的轻量断言，具体的双向等价由
+   * tests/api-contract-binding.test.ts 负责（并做过变异验证）。
+   */
+  it('preload 用 satisfies DshApi 绑定，api.d.ts 从同一接口派生', () => {
     const preload = read('electron/preload.ts')
     const api = read('src/shared/api.d.ts')
-    // preload 里 contextBridge.exposeInMainWorld('api', { ... }) 的命名空间键（2 空格缩进）
-    const groups = [...preload.matchAll(/^ {2}([a-zA-Z]+): \{$/gm)].map((m) => m[1])
-    expect(groups.length).toBeGreaterThan(0)
-    // 方法名（4 空格缩进）
-    const methods = [...preload.matchAll(/^ {4}([a-zA-Z]+): /gm)].map((m) => m[1])
-    expect(methods.length).toBeGreaterThan(0)
-    for (const key of [...groups, ...methods]) {
-      expect(api, 'api.d.ts 缺少 ' + key).toContain(key)
-    }
+    expect(preload).toMatch(/satisfies\s+DshApi/)
+    expect(api).toMatch(/api: DshApi/)
   })
 
   it('preload 通过 ipcRenderer.invoke 只调用白名单通道', () => {

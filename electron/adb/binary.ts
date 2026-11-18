@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
-import { killTree, trackChild, untrackChild } from './children'
+import { killTree, spawnTracked, untrackChild } from './children'
 
 export type AdbSource = 'custom' | 'env' | 'bundled' | 'path'
 export interface Candidate { path: string; source: AdbSource }
@@ -206,16 +205,18 @@ export async function probe(
   return new Promise<ProbeResult>((resolve) => {
     let child
     try {
-      child = spawn(adbPath, ['version'], { windowsHide: true })
+      // 统一出入口（I5）：闸门关闭后直接返回 null，不再 spawn ——
+      // 这是「退出瞬间继续探测」会留孤儿进程的直接修法。
+      child = spawnTracked(adbPath, ['version'], { windowsHide: true })
     } catch {
       // Windows 上「文件存在但不是可执行镜像」会同步抛错（code 可能是 UNKNOWN / EINVAL）
       resolve({ ok: false, code: E_ADB_NOT_EXECUTABLE })
       return
     }
-
-    // 登记进全局子进程表：用户在 probe 的窗口里关窗退出时，
-    // app.on('before-quit') 的 killAllAdbChildren() 必须能枚举到它。
-    trackChild(child)
+    if (child === null) {
+      resolve({ ok: false, code: E_ADB_NOT_EXECUTABLE })
+      return
+    }
 
     let stdout = ''
     let stderr = ''

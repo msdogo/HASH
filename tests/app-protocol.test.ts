@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import path from 'node:path'
-import { APP_SCHEME, appUrlToPath, toAppUrl } from '../electron/app-protocol'
+import { APP_HOST, APP_SCHEME, appUrlToPath, toAppUrl } from '../electron/app-protocol'
 
 /*
  * C2：生产模式 CSP 未落地（审查轮 1）。
@@ -100,5 +100,28 @@ describe('C2 自定义协议路径映射', () => {
   it('协议名是小写单段 scheme（Chromium 要求）', () => {
     expect(APP_SCHEME).toBe('app')
     expect(APP_SCHEME).toMatch(/^[a-z][a-z0-9+.-]*$/)
+  })
+})
+describe('附带：app:// host 白名单（审查轮 2）', () => {
+  it('只接受 bundle 这个 host', () => {
+    expect(APP_HOST).toBe('bundle')
+    expect(appUrlToPath('app://bundle/index.html', DIST)).not.toBeNull()
+  })
+
+  it('app://bundle:99/ 这类带端口的 URL 被拒（实测原实现返回 200）', () => {
+    expect(appUrlToPath('app://bundle:99/index.html', DIST)).toBeNull()
+    expect(appUrlToPath('app://bundle:99/assets/x.js', DIST)).toBeNull()
+  })
+
+  it('其它 host 一律拒绝', () => {
+    expect(appUrlToPath('app://evil/index.html', DIST)).toBeNull()
+    expect(appUrlToPath('app://evil.test/index.html', DIST)).toBeNull()
+    expect(appUrlToPath('app://localhost/index.html', DIST)).toBeNull()
+    expect(appUrlToPath('app://evil:8080/index.html', DIST)).toBeNull()
+  })
+
+  it('大小写不同的 host 也要被拒（只认精确的小写 bundle）', () => {
+    expect(appUrlToPath('app://BUNDLE/index.html', DIST)).toBeNull()
+    expect(appUrlToPath('app://Bundle/index.html', DIST)).toBeNull()
   })
 })

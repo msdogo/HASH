@@ -1,5 +1,4 @@
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 /**
  * 自定义协议 app://（审查轮 1 / C2）。
@@ -101,7 +100,19 @@ export function appUrlToPath(rawUrl: string, distRoot: string): string | null {
     return null
   }
   if (parsed.protocol !== APP_SCHEME + ':') return null
-  if (parsed.hostname === '') return null
+  /*
+   * host 白名单（审查轮 2 附带项）。
+   *
+   * 修前只判 host 非空，实测 `app://bundle:99/index.html` 返回 200 ——
+   * 虽然端口不影响文件映射，但这意味着「host 任意」是被默认接受的，
+   * 将来若有人用 host 区分多份资源，就会出现意外可达的路径。
+   * 这里收紧成「只认精确的小写 bundle」：
+   *   - 带端口（bundle:99）不算精确；
+   *   - 大小写不同（BUNDLE）不算精确 —— URL 规范会把 host 统一小写，
+   *     但这里仍然显式拒绝，避免依赖解析器的规范化行为。
+   */
+  if (parsed.hostname !== APP_HOST || parsed.port !== '') return null
+  if (parsed.host !== APP_HOST) return null
 
   let pathname: string
   try {
@@ -124,9 +135,4 @@ export function appUrlToPath(rawUrl: string, distRoot: string): string | null {
   if (resolved !== rootResolved && !resolved.startsWith(withSep)) return null
 
   return resolved
-}
-
-/** 给 Electron 的 file URL（protocol.handle 用 net.fetch 时需要 file:// 形式）。 */
-export function fileUrlFor(absPath: string): string {
-  return pathToFileURL(absPath).toString()
 }

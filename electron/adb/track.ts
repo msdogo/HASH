@@ -1,6 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import type { DeviceStatus, Transport } from '../../src/shared/types'
-import { killTree, trackChild, untrackChild } from './children'
+import { type ChildProcess } from 'node:child_process'
+import { E_SHUTDOWN } from './client'
+import type { DeviceSession, DeviceStatus, Transport } from '../../src/shared/types'
+import { killTree, spawnTracked, trackChild, untrackChild } from './children'
 import type { DeviceManager, DeviceSnapshotItem } from '../devices/manager'
 
 /**
@@ -213,7 +214,7 @@ export interface DeviceTrackerOptions {
   adbPath: string
   manager: DeviceManager
   /** 仅在测试注入：替换 spawn(adbPath, ['track-devices'])。 */
-  spawnTrack?: () => ChildProcess
+  spawnTrack?: () => ChildProcess | null
   /** 仅在测试注入：替换真实的一次 adb devices 调用，返回 stdout。 */
   pollDevices?: () => Promise<string>
   /** 仅在测试注入：替换 spawn(adbPath, args)，用于断言轮询真的带了 -l。 */
@@ -227,12 +228,22 @@ export interface DeviceTrackerOptions {
 interface ResolvedTrackerOptions {
   adbPath: string
   manager: DeviceManager
-  spawnTrack?: () => ChildProcess
+  /** 返回 null 表示「子进程闸门已关闭，未创建进程」（I5）。 */
+  spawnTrack?: () => ChildProcess | null
   pollDevices?: () => Promise<string>
   spawnDevices?: (args: string[]) => ChildProcess
   pollIntervalMs: number
   startupTimeoutMs: number
 }
+
+/**
+ * 补型号的最大尝试次数（N3）。
+ *
+ * 3 次足以覆盖「设备刚接入时还没准备好」这类瞬时失败，
+ * 又不会让一台永远拿不到 model 的设备每帧都打一条 adb devices。
+ * 设备状态跃迁（unauthorized→device、offline→device）会重置计数。
+ */
+export const MAX_ENRICH_ATTEMPTS = 3
 
 /** 默认轮询周期：3 秒一次 adb devices，跟得上插拔，又不至于压垮 adb server。 */
 export const DEFAULT_POLL_INTERVAL_MS = 3_000
@@ -263,6 +274,20 @@ export class DeviceTracker {
   private polling = false
   /** gc 定时器是不是本跟踪器起的；只有自己起的才由自己停。 */
   private ownsGc = false
+  /**
+   * 【补型号失败次数】按 serial 记账，用于退避（N3）。
+   *
+   * 为什么必须有：I1 把 enriched 的语义改成「拿到过才置位」之后，
+   * 一台永远拿不到 model 的设备（某些老 ROM 的 adb devices -l 就是没有 model 字段，
+   * 或者 unauthorized 之后一直变不回来）会在**每一帧**触发一次 adb devices -l。
+   * track 每有变化就全量重发，10 帧 = 10 次命令 —— 比修前（同 serial 最多 1 次）放大了一个量级。
+   * 这里给每个 serial 记失败次数，达到 MAX_ENRICH_ATTEMPTS 就停止重试，直到状态跃迁重置。
+   */
+  private enrichFailures = new Map<string, number>()
+
+  /** 本轮补型号尝试覆盖的 serial（用于事后判定成败，见 enrichModels）。 */
+  private pendingEnrichSerials = new Set<string>()
+
   /**
    * 【已经成功拿到型号】的 serial（I1）。
    *
@@ -337,25 +362,40 @@ export class DeviceTracker {
   }
 
   private startTrack(): void {
-    let child: ChildProcess
+    let child: ChildProcess | null
     try {
       // 豁免「所有 adb 调用必须带 -s serial」：track-devices 本身就是设备枚举命令，
       // 它要列出全部设备，不可能也不应该带 -s serial（带了就只能看到一台）。
       child = this.opts.spawnTrack !== undefined
         ? this.opts.spawnTrack()
-        : spawn(this.opts.adbPath, ['track-devices'], {
+        : spawnTracked(this.opts.adbPath, ['track-devices'], {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
           })
+      // 注入路径（测试）不经过 spawnTracked，需要在这里显式登记；
+      // 生产路径由 spawnTracked 完成登记，重复登记是无害的（Set 幂等）。
+      if (child !== null) {
+        const accepted = trackChild(child)
+        if (!accepted) {
+          // 闸门已关闭：这个 child 已被 trackChild 立刻 kill，直接当作已停
+          this.stopped = true
+          this.currentMode = 'idle'
+          return
+        }
+      }
     } catch {
       // spawn 同步抛错（路径不存在等）也算 track 不可用
       this.fallbackToPoll()
       return
     }
+    if (child === null) {
+      // 子进程闸门已关闭（应用正在退出）：不再降级轮询，直接当作已停
+      this.stopped = true
+      this.currentMode = 'idle'
+      return
+    }
 
     this.child = child
-    // 登记进全局子进程表：before-quit 时 killAllAdbChildren() 才能枚举到它。
-    trackChild(child)
     this.currentMode = 'track'
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -424,6 +464,7 @@ export class DeviceTracker {
     // undefined = 守卫被占用（补型号正在飞），本轮跳过
     if (stdout === undefined) return
     if (this.stopped) return
+
     this.applyPayload(stdout)
   }
 
@@ -436,17 +477,22 @@ export class DeviceTracker {
     return new Promise<string>((resolve, reject) => {
       let child: ChildProcess
       try {
-        child = this.opts.spawnDevices !== undefined
+        const spawned = this.opts.spawnDevices !== undefined
           ? this.opts.spawnDevices(args)
-          : spawn(this.opts.adbPath, args, {
+          : spawnTracked(this.opts.adbPath, args, {
               windowsHide: true,
               stdio: ['ignore', 'pipe', 'pipe'],
             })
+        if (spawned === null) {
+          // 闸门已关闭：明确失败，让调用方走正常的错误分支（绝不留下孤儿进程）
+          reject(new Error(E_SHUTDOWN))
+          return
+        }
+        child = spawned
       } catch (err) {
         reject(err)
         return
       }
-      trackChild(child)
       let stdout = ''
       // setEncoding 走 StringDecoder，多字节字符跨 chunk 不会被切坏
       child.stdout?.setEncoding('utf8')
@@ -466,7 +512,23 @@ export class DeviceTracker {
   private applyPayload(payload: string): void {
     if (this.stopped) return
     const rows = parseDeviceLines(payload)
+    const statusBefore = new Map<string, DeviceSession['status'] | undefined>()
+    for (const row of rows) statusBefore.set(row.serial, this.opts.manager.get(row.serial)?.status)
     this.opts.manager.applySnapshot(rows)
+
+    /*
+     * 设备状态跃迁时重置该 serial 的补型号失败计数（N3）。
+     * 为什么要重置：unauthorized → device（用户点了允许）、offline → device（重新插回）
+     * 都是「之前拿不到、现在可能拿得到」的时刻。不重置的话，一台设备在前面几次
+     * 未授权期间耗光重试次数后，哪怕用户已经授权，型号也永远不会补。
+     */
+    for (const row of rows) {
+      const before = statusBefore.get(row.serial)
+      if (before !== undefined && before !== row.status) {
+        this.enrichFailures.delete(row.serial)
+        this.enriched.delete(row.serial)
+      }
+    }
 
     // 裁决 9：track-devices 的负载只有「serial\tstate」，【没有 model】——
     // 型号只出现在 adb devices -l 里。而生产路径优先走 track-devices，
@@ -478,6 +540,9 @@ export class DeviceTracker {
     const present = new Set(rows.map((row) => row.serial))
     for (const serial of [...this.enriched]) {
       if (!present.has(serial)) this.enriched.delete(serial)
+    }
+    for (const serial of [...this.enrichFailures.keys()]) {
+      if (!present.has(serial)) this.enrichFailures.delete(serial)
     }
 
     // 只有 track 模式才需要补：轮询模式本来就是 adb devices -l，model 已经在 rows 里了。
@@ -492,8 +557,10 @@ export class DeviceTracker {
     const missing = rows.filter((row) =>
       row.model === undefined &&
       !this.enriched.has(row.serial) &&
+      (this.enrichFailures.get(row.serial) ?? 0) < MAX_ENRICH_ATTEMPTS &&
       this.opts.manager.get(row.serial)?.model === undefined)
     if (missing.length === 0) return
+    for (const row of missing) this.pendingEnrichSerials.add(row.serial)
     this.requestEnrich()
   }
 
@@ -556,6 +623,23 @@ export class DeviceTracker {
     // 守卫被占用（轮询正在飞）：本次放弃，不置位，下一帧再试
     if (stdout === undefined) return
     if (this.stopped) return
+
+    /*
+     * 记录本轮补型号的成败，供退避使用（N3）。
+     * 「结果里出现该 serial 的 model」= 成功 → 清失败计数、置 enriched；
+     * 「没出现」= 失败 → 计数 +1，达到 MAX_ENRICH_ATTEMPTS 后不再重试。
+     */
+    const rowsWithModel = parseDeviceLines(stdout).filter((row) => row.model !== undefined)
+    const gotModel = new Set(rowsWithModel.map((row) => row.serial))
+    const attempted = this.pendingEnrichSerials
+    this.pendingEnrichSerials = new Set()
+    for (const serial of attempted) {
+      if (gotModel.has(serial)) {
+        this.enrichFailures.delete(serial)
+      } else {
+        this.enrichFailures.set(serial, (this.enrichFailures.get(serial) ?? 0) + 1)
+      }
+    }
 
     /*
      * 【C3】迟到的结果不得复活已拔出的设备。

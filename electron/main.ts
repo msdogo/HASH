@@ -1,7 +1,7 @@
 import { app, BrowserWindow, session, ipcMain, protocol } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { killAllAdbChildren } from './adb/children'
+import { shutdownChildren } from './adb/children'
 import { E_UNKNOWN } from '../src/shared/errors'
 import { listDirDetailed } from './fs/remote'
 import { AdbTracking, createAdbProbe, createClient } from './app/sessions'
@@ -131,9 +131,20 @@ app.whenReady().then(async () => {
           resourcePath: process.resourcesPath,
           env: process.env.ADB_PATH,
         })
-        // 自检本身不支持取消（resolveAdb 内部逐候选探测，最坏 8s），
-        // 但这里用 race 让它【不再阻塞启动流程】：退出时立刻放弃等待，
-        // 剩下的探测子进程由 before-quit 的 killAllAdbChildren 统一回收（I5）。
+        /*
+         * 退出时的自检收尾（I5，审查轮 2 修正过注释）。
+         *
+         * 【上一轮的说法是错的】：我曾写「剩余探测子进程由 killAllAdbChildren 统一回收」，
+         * 但复审实测该说法不成立 —— killAllAdbChildren 只杀【当刻在册】的进程，
+         * 对一个正在 await、马上要 spawn 的调用无效，于是退出后仍会留下孤儿（pid 45740）。
+         *
+         * 现在真正起作用的机制是两道：
+         * 1. race：abort 一发生就立刻放弃等待自检结果，不再阻塞退出流程；
+         * 2. children.ts 的【全局关闭闸门】：before-quit 里先 shutdownChildren() 置位 closed，
+         *    之后所有 spawnTracked() 直接返回 null（根本不创建进程），
+         *    trackChild() 也会立刻 kill 迟到的 child。
+         *    所以「迟到的那次 spawn」会自己失败，而不是靠事后枚举去杀。
+         */
         const aborted = new Promise<AdbState>((resolve) => {
           signal.addEventListener('abort', () => {
             resolve({ state: 'error', code: 'E_ABORTED', attempts: [] })
@@ -170,12 +181,17 @@ app.whenReady().then(async () => {
 // 规格要求：窗口关闭时回收所有子进程；tracker 也必须在这里停掉，
 // 否则它的定时器与长驻 track-devices 进程会挂住事件循环（裁决 1）。
 app.on('before-quit', () => {
-  // I5：先取消在飞的自检，别让 probe 的子进程在退出过程中被漏掉
+  // 顺序很重要（I5）：
+  // 1. 先 abort 在飞的自检 —— 让 await probe() 立刻返回，不再等它跑完；
+  // 2. shutdownChildren() 置位全局闸门并回收在册进程 —— 这之后任何迟到的
+  //    spawn（包括自检里正在 await 的那一次）都会被 spawnTracked 拒绝，
+  //    从根本上杜绝「退出瞬间又冒出一个子进程」；
+  // 3. 最后停 tracker（它的定时器与长驻 track-devices 也走同一套闸门 + killTree）。
   bootAbort.abort()
+  shutdownChildren()
   tracking?.flushChanges()
   tracking?.stop()
   tracking = undefined
-  killAllAdbChildren()
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
