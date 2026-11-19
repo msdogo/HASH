@@ -36,12 +36,35 @@ export interface OpDialogProps {
   initial?: Partial<{ dialog: OpDialog | null; lastSummary: OpSummary | null }>
 }
 
+/**
+ * 决定「这一屏渲染哪个对话框 / 哪份结果」：没传 initial 时**必须**读 store。
+ *
+ * 【合并前复审 J / 生产路径门禁】为什么单列成纯函数：
+ * 复审实测变异 `props.initial === undefined ? storeDialog : …` → `? null : …`
+ * （生产上确认框永远不弹）后 **1203 全绿、tsc 0** —— 注入点写错时没有任何用例会红。
+ * 抽成纯函数后 tests/component-wiring.test.tsx 直接断言
+ * 「initial 为 undefined → 原样返回 store 的两份引用」与「initial 给了就以它为准」，
+ * 方向写反或退化成 null 都会红。
+ *
+ * 语义保留改前的 `=== undefined`（不是 `??`）：传 `initial={{}}` 时应得到 null
+ * 而不是偷读 store —— 否则测试里「显式要求空对话框」根本表达不出来。
+ */
+export function pickDialogState(
+  initial: OpDialogProps['initial'],
+  store: { dialog: OpDialog | null; lastSummary: OpSummary | null },
+): { dialog: OpDialog | null; lastSummary: OpSummary | null } {
+  if (initial === undefined) return store
+  return { dialog: initial.dialog ?? null, lastSummary: initial.lastSummary ?? null }
+}
+
 export function OpDialogHost(props: OpDialogProps) {
   const storeDialog = useOpStore((state) => state.dialog)
   const storeLastSummary = useOpStore((state) => state.lastSummary)
   const dismissSummary = useOpStore((state) => state.dismissSummary)
-  const dialog = props.initial === undefined ? storeDialog : (props.initial.dialog ?? null)
-  const lastSummary = props.initial === undefined ? storeLastSummary : (props.initial.lastSummary ?? null)
+  const { dialog, lastSummary } = pickDialogState(props.initial, {
+    dialog: storeDialog,
+    lastSummary: storeLastSummary,
+  })
 
   if (dialog === null) {
     return lastSummary === null ? null : <OpResultNotice summary={lastSummary} onDismiss={dismissSummary} />

@@ -329,13 +329,20 @@ export const CANONICAL_USER_STORAGE = '/storage/emulated/0'
  * 于是受保护后代（Android / Android/data / Android/obb）对**所有用户**都受保护，
  * 而普通目录（Download / DCIM）对所有用户都照常可写 —— 只补保护，不动可用性。
  *
- * 已知边界（如实记录，不在本轮范围）：`/mnt/user/<N>/(primary|emulated/<M>)`
- * 这一族同样没被归一（终审 I-6 表里第三行），它属于 /mnt 老别名族，
- * 本轮只按裁决修 `/storage/emulated/<N>`。
+ * 【合并前复审补】/mnt/user/<N>/(primary|emulated/<M>) 同属这一族，一并归一。
+ * 复审实测（探针直调四闸门）：/mnt/user/10/primary/Android/data 与
+ * /mnt/user/1/emulated/1/Android/data 三个闸门**全 false** —— 与修前的 I-6
+ * 是同一类洞，只是换了别名族；而终审 I-6 的修法建议就点名了
+ * /mnt/user/\d+/(primary|emulated/\d+) 这一族。精确别名表里只有 user 0 的两条，
+ * 非 0 用户仍然裸奔。
  */
 const MULTIUSER_STORAGE_PATTERNS: readonly { pattern: RegExp; rest: number }[] = [
   // /storage/emulated/<N> 以及它下面的任意后代（rest 捕获组 = 后代部分，含前导 /）
   { pattern: /^\/storage\/emulated\/\d+(\/.*)?$/, rest: 1 },
+  // /mnt/user/<N>/primary[/...]（/mnt 老别名族的按用户分片）
+  { pattern: /^\/mnt\/user\/\d+\/primary(\/.*)?$/, rest: 1 },
+  // /mnt/user/<N>/emulated/<M>[/...]（同上，带内层 emulated 用户号）
+  { pattern: /^\/mnt\/user\/\d+\/emulated\/\d+(\/.*)?$/, rest: 1 },
 ]
 
 /**

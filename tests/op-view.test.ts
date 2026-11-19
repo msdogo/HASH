@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   EMPTY_OP_STATE,
   canConfirm,
+  isDestructive,
   opReducer,
 } from '../src/shared/op-view'
 import { E_PROTECTED_PATH } from '../src/shared/errors'
@@ -135,5 +136,29 @@ describe('确认按钮的可用性（组件与测试共用同一个 canConfirm�
   it('忙碌时一律不可确认（包括新建）', () => {
     const opened = opReducer(EMPTY_OP_STATE, { type: 'openConfirm', kind: 'newFolder', targets: [] })
     expect(canConfirm(opReducer(opened, { type: 'setBusy', busy: true }))).toBe(false)
+  })
+})
+
+/*
+ * 【第 14 次假护栏 / 合并前复审】isDestructive 的纯函数真值表。
+ *
+ * 原来组件层的唯一门禁是 expect(dialogSource).toContain('isDestructive(')，
+ * 而它被 import 行满足（复审实测：把两处判断改成 false 后全量 1203 仍绿）。
+ * 那条已删；这里是它的替代品之一 —— 函数本身的正/反/空三态。
+ * 组件里「有没有真的用它」由 tests/component-wiring.test.tsx 的红色类断言压着。
+ */
+describe('isDestructive：只有删除算破坏性操作', () => {
+  it('delete → true', () => {
+    expect(isDestructive({ kind: 'delete', targets: ['/sdcard/a'] })).toBe(true)
+  })
+
+  it('其余 kind → false（写死 true 会在这里红）', () => {
+    for (const kind of ['newFolder', 'rename', 'copy', 'move'] as const) {
+      expect(isDestructive({ kind, targets: ['/sdcard/a'] }), kind).toBe(false)
+    }
+  })
+
+  it('没有对话框 → false', () => {
+    expect(isDestructive(null)).toBe(false)
   })
 })

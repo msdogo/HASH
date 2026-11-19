@@ -239,8 +239,22 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
    *     「removeFacts 真的被调用一次、facts 真的是主进程给的、且取事实阶段不调 remove」。
    * 本文件只保留「哪些判断必须来自 shared（有单测）」这类确实只能静态查的规则。
    */
-  it('裁决 1：确认按钮的可用性来自 shared 的 canConfirm（不在组件里重写）', () => {
-    expect(read('src/components/OpDialog.tsx')).toContain('canConfirm(')
+  /*
+   * 【第 14 次假护栏 / 合并前复审】这里原本是：
+   *   expect(read('src/components/OpDialog.tsx')).toContain('canConfirm(')
+   * 而这条**永远为真**：文件顶部有
+   *   import { canConfirm, isDestructive, type OpDialog } from '@shared/op-view'
+   * import 行本身就含 'canConfirm('。复审实测：把组件里的判断改成
+   *   const canGo = true（后跟一行 canConfirm 注释）
+   * → 全量 1203 passed、tsc exit 0。与 I-4 的 toContain('hasUnauthorized') 被 import
+   * 满足是同一种形态。**已删除该行**，替代品是两层真门禁：
+   *   - tests/op-view.test.ts：canConfirm 纯函数的正/反/按 kind 分别的真值表；
+   *   - tests/component-wiring.test.tsx：真渲染删除框，断言「确定」按钮在 count>0 时
+   *     **没有 disabled**、count 为 0 时**有 disabled** —— 组件若绕过 canConfirm，两条都会红。
+   * 只保留下面那条「opStore 不得自己编 facts 数字」的正则：它查的是**禁止形态**
+   * （断言某写法不存在），不是「某函数名出现过」，无法被注释满足。
+   */
+  it('裁决 1：store 不得自己编造删除事实数量（必须是主进程给的）', () => {
     expect(read('src/store/opStore.ts')).not.toMatch(/facts:\s*\{[^}]*count:\s*\d/)
   })
 
@@ -253,12 +267,23 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
    * 真组件渲染出的 HTML 里必须逐个出现「将删除 5 项」「a.txt/dir1/b.txt」「另有 2 项未列出」
    * 「其中有非空文件夹…」「1 项被安全策略拒绝」，且事实随输入变化（没有就不显示）。
    */
-  it('裁决 1：确认框的标题与事实判断来自 shared（组件只做取值）', () => {
+  /*
+   * 【第 14 次假护栏 / 合并前复审】这里原本还有一条：
+   *   expect(dialog).toContain('isDestructive(')
+   * 复审实测两种注入：干净地把两处改成 false → 1 failed（文本断言此刻能红）；
+   * 但只要在改动处留一句 isDestructive(dialog) 的注释诱饵 → **全量 1203 passed、tsc 0**。
+   * 即「注释即满足」，与第 9~13 次逐字同款。**已删除**，替代品是：
+   *   - tests/op-view.test.ts：isDestructive 纯函数真值表（delete→true，其余→false，null→false）；
+   *   - tests/component-wiring.test.tsx：真渲染删除框断言标题带 text-red-300、
+   *     确认按钮带 bg-red-600；渲染「新建文件夹」框断言**不带**这两个红色类 ——
+   *     组件若把 isDestructive 写死 true/false，两个方向都会红。
+   * 剩下两条（titleKey 映射与词面标题）保留：它查的是「标题走哪个 key」这一映射，
+   * 而 import 行满足在这里不成立（'return \'op.delete.title\'' 只出现在函数体内）。
+   */
+  it('裁决 1：确认框标题经 titleKey() 映射到 i18n key（不写死文案）', () => {
     const dialog = read('src/components/OpDialog.tsx')
-    // 标题经 titleKey() 映射到 i18n key（不是直接 t('op.delete.title')）
     expect(dialog).toContain("return 'op.delete.title'")
     expect(dialog).toContain('t(titleKey(dialog))')
-    expect(dialog).toContain('isDestructive(')
   })
 
   it('裁决 4：界面显示「N 成功 / M 失败」且失败项可展开看文案', () => {

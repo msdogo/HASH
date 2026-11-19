@@ -324,6 +324,18 @@ export function FilesPage() {
   return (
     <div className="flex h-full min-h-0 w-full">
     <section className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      {/*
+        * 【已知无门禁 / 合并前复审 I-2】下面 onDownload 那一行是**纯转发**：把工具条的
+        * 点击转给 handleDownload（其逻辑在 makeDownloadHandler，见 @shared/download-flow）。
+        * download-flow.test.ts 有 5 条行为用例（入参逐字段、未选中时 run 零调用、
+        * 无本地目录时 run 零调用、下载期 busy=true、结束复位）。
+        *
+        * 但「本行有没有真的调用 handleDownload」**测不出来**：FilesPage 是组件，
+        * 工程无 jsdom、只做 SSR 渲染（renderToStaticMarkup），而这条转发发生在
+        * 点击后的事件回调里，SSR 拿不到。复审实测把它换成「空函数」→ 全量 1203 绿。
+        * 按裁决 2：不造假静态断言，改为在此如实标注，并记进
+        * .superpowers/sdd/adb-file-manager/progress.md 的「已知无门禁清单」。
+        */}
       <FileToolbar
         selectedCount={current.selected.length}
         ready

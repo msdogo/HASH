@@ -348,6 +348,49 @@ describe('终审 I-6：多用户存储根 /storage/emulated/<N> 不得绕过闸�
     }
   })
 
+  /*
+   * 【合并前复审补】/mnt/user/<N>/(primary|emulated/<M>) 同属多用户存储根一族。
+   *
+   * 复审用探针直调四闸门实测（修前）：/mnt/user/10/primary/Android/data 与
+   * /mnt/user/1/emulated/1/Android/data **三个闸门全 false** —— 与 I-6 原状同一类洞，
+   * 只是换了别名族；而终审 I-6 的修法建议里点名了这一族。上面 /storage/emulated/<N>
+   * 修好之后，这里如果还留着，等于换个前缀就能绕过，保护是假的。
+   *
+   * 注意 /mnt/user/0/primary 与 /mnt/user/0/emulated/0 早在精确别名表里（N-2 补的），
+   * 所以下面刻意只用 **非 0 用户号**，否则测的是精确表而不是新模式。
+   */
+  it('/mnt/user/<N>/primary 与 /mnt/user/<N>/emulated/<M> 同样归一到存储根', () => {
+    expect(canonicalRemotePath('/mnt/user/10/primary')).toBe(CANONICAL_USER_STORAGE)
+    expect(canonicalRemotePath('/mnt/user/10/primary/Download')).toBe(CANONICAL_USER_STORAGE + '/Download')
+    expect(canonicalRemotePath('/mnt/user/1/emulated/1')).toBe(CANONICAL_USER_STORAGE)
+    expect(canonicalRemotePath('/mnt/user/1/emulated/1/Android/data'))
+      .toBe(CANONICAL_USER_STORAGE + '/Android/data')
+    // 不误伤：非数字用户号、以及 emulated 后面不是数字的老写法都原样保留
+    expect(canonicalRemotePath('/mnt/user')).toBe('/mnt/user')
+    expect(canonicalRemotePath('/mnt/user/primary')).toBe('/mnt/user/primary')
+    expect(canonicalRemotePath('/mnt/user/10/emulated/primary')).toBe('/mnt/user/10/emulated/primary')
+  })
+
+  it('/mnt/user/10/primary/Android/data 受保护（修前三闸门全 false）', () => {
+    for (const path of [
+      '/mnt/user/10/primary/Android/data',
+      '/mnt/user/10/primary/Android/obb',
+      '/mnt/user/1/emulated/1/Android/data',
+    ]) {
+      expect(isProtectedRemotePath(path), path).toBe(true)
+      expect(isProtectedTransferPath(path), path).toBe(true)
+      expect(isProtectedTransferDirectory(path), path).toBe(true)
+    }
+  })
+
+  it('/mnt/user/10/primary/Download 必须放行（只补保护、不动可用性）', () => {
+    for (const path of ['/mnt/user/10/primary/Download', '/mnt/user/1/emulated/1/Download']) {
+      expect(isProtectedRemotePath(path), path).toBe(false)
+      expect(isProtectedTransferPath(path), path).toBe(false)
+      expect(isProtectedTransferDirectory(path), path).toBe(false)
+    }
+  })
+
   it('多用户路径参与自包含判定（别名归一后与 emulated/0 同源）', () => {
     // 同一台设备的两个用户目录是**不同**的存储区，不能互相判成自包含
     expect(isRemoteInside('/storage/emulated/0/A', '/storage/emulated/1/A/inner')).toBe(true)

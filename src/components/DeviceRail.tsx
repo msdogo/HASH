@@ -28,12 +28,49 @@ export interface DeviceRailProps {
   initial?: Partial<{ devices: DeviceSession[]; adb: AdbState | null; activeSerial: string | null; loaded: boolean }>
 }
 
+/** 渲染所需的数据切片（来自 store 或注入）。 */
+interface RailData {
+  devices: DeviceSession[]
+  adb: AdbState | null
+  activeSerial: string | null
+  loaded: boolean
+}
+
+/**
+ * 决定「这一屏渲染什么数据」：注入优先，缺哪个字段就用 store 的对应字段。
+ *
+ * 【合并前复审 I / 生产路径门禁】为什么单列成纯函数：
+ * 复审实测两个变异都 **1203 全绿** ——
+ *   - `props.initial?.devices ?? store.devices` → `?? []`（生产上设备栏永远空）
+ *   - `props.initial !== undefined ? … : store…` 整个方向写反
+ * 即「注入点写错时没有一条用例会红」。抽成纯函数后
+ * tests/component-wiring.test.tsx 直接喂两种入参，断言
+ * 「initial 为 undefined 时必须原样拿 store 的四个字段」（包括 devices 引用相等），
+ * 上述两种变异都会红。
+ *
+ * 注意：这里仍用逐字段 `??`（而不是「initial 有值就整份替换」）——
+ * 与改前逐字等价，注入只给部分字段时其余字段继续读 store。
+ */
+export function pickRailData(
+  initial: DeviceRailProps['initial'],
+  store: RailData,
+): RailData {
+  return {
+    devices: initial?.devices ?? store.devices,
+    adb: initial?.adb ?? store.adb,
+    activeSerial: initial?.activeSerial ?? store.activeSerial,
+    loaded: initial?.loaded ?? store.loaded,
+  }
+}
+
 export function DeviceRail(props: DeviceRailProps) {
   const store = useDeviceStore()
-  const devices = props.initial?.devices ?? store.devices
-  const adb = props.initial?.adb ?? store.adb
-  const activeSerial = props.initial?.activeSerial ?? store.activeSerial
-  const loaded = props.initial?.loaded ?? store.loaded
+  const { devices, adb, activeSerial, loaded } = pickRailData(props.initial, {
+    devices: store.devices,
+    adb: store.adb,
+    activeSerial: store.activeSerial,
+    loaded: store.loaded,
+  })
   const setActive = store.setActive
 
   // 空状态与 adb 故障是两种不同的事，提示必须分开给
