@@ -1,4 +1,8 @@
 import {
+  BATCH_INSTALL_INPUT,
+  BATCH_PUSH_INPUT,
+  BATCH_SCREENSHOT_INPUT,
+  BATCH_SHELL_INPUT,
   FS_BATCH_INPUT,
   FS_LIST_INPUT,
   FS_MKDIR_INPUT,
@@ -10,6 +14,7 @@ import {
   TRANSFER_ENQUEUE_INPUT,
   TRANSFER_ID_INPUT,
 } from '../../src/shared/api-contract'
+import type { BatchRunData } from '../../src/shared/batch'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
@@ -70,6 +75,13 @@ export interface HandlerDeps {
   local: LocalController
   /** 让用户挑选本地根目录（系统目录选择框）；取消返回空串。 */
   pickRoot: () => Promise<string>
+  /**
+   * 批量动作服务（任务 10）。
+   *
+   * 与 ops / local 一样只依赖接口：IPC 层负责「校验 + 会话检查 + 错误码收敛」，
+   * 四个动作各自的编排（离线跳过、参数预检、截图走队列）由 service 负责并有专门测试。
+   */
+  batch: BatchController
   /** 目录列举实现（默认 listDirDetailed；测试可注入）。 */
   fs: {
     list: (client: ShellRunner, adbPath: string, dir: string) => Promise<{
@@ -129,6 +141,21 @@ export interface FileOpsController {
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
 export interface LocalController {
   list(dir?: string): Promise<LocalListData>
+}
+
+/**
+ * 批量动作对 IPC 层暴露的最小面（electron/batch/service 的 BatchService 满足它）。
+ *
+ * 六个方法 = 四个动作 + 两个选择框。选择框也在这一层，因为它们的**结果**
+ * 只有批量动作会消费（截图目录 / apk 路径），拆成独立服务只是多一层转发。
+ */
+export interface BatchController {
+  screenshot(input: { serials: readonly string[] }): Promise<BatchRunData>
+  install(input: { serials: readonly string[] }, apkPath: string): Promise<BatchRunData>
+  push(input: { serials: readonly string[]; files: readonly string[]; dstDir: string }): Promise<BatchRunData>
+  shell(input: { serials: readonly string[] }, command: string): Promise<BatchRunData>
+  pickScreenshotDir(): Promise<string>
+  pickApk(): Promise<string>
 }
 
 /** 统一的失败出口。 */
@@ -400,6 +427,104 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     if (!parsed.success) return fail(E_BAD_ARGS)
     deps.transfer.clearFinished()
     return { ok: true, data: deps.transfer.snapshot() }
+  })
+
+  /* ============ 批量操作（任务 10） ============ */
+
+  /*
+   * 批量通道的公共前置：zod + 会话检查（R6）。
+   *
+   * 「每个 serial 都必须是主进程已知的会话」这条要在 handler 层判，
+   * 而不是让 service 去猜：渲染层从未连接过的 serial 意味着它在问一个不存在的设备，
+   * 整批 E_BAD_ARGS 比「N 台里有一台莫名失败」更能表达问题所在。
+   *
+   * 为什么允许列表中既有在线也有离线设备：离线设备由 service 按 R5 逐台跳过，
+   * 那是**用户能看见并理解**的结果（「设备已断开」）；整批拒绝反而让在线的那些白勾了。
+   */
+  const batchPreflight = <T extends { serials: string[] }>(
+    payload: unknown,
+    schema: { safeParse: (value: unknown) => { success: boolean; data?: T; error?: unknown } },
+  ): { ok: true; data: T } | { ok: false; error: string } => {
+    const parsed = preflight<T>(payload, schema)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    for (const serial of parsed.data.serials) {
+      if (deps.devices.get(serial) === undefined) return { ok: false, error: E_BAD_ARGS }
+    }
+    if (deps.adbPath() === '') return { ok: false, error: E_ADB_NOT_FOUND }
+    return { ok: true, data: parsed.data }
+  }
+
+  handle(CH.BATCH_SCREENSHOT, async (_event, payload): Promise<IpcResult<BatchRunData>> => {
+    const parsed = batchPreflight<{ serials: string[] }>(payload, BATCH_SCREENSHOT_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.batch.screenshot({ serials: parsed.data.serials }) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.BATCH_INSTALL, async (_event, payload): Promise<IpcResult<BatchRunData>> => {
+    const parsed = batchPreflight<{ serials: string[]; apkPath: string }>(payload, BATCH_INSTALL_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.batch.install({ serials: parsed.data.serials }, parsed.data.apkPath) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.BATCH_PUSH, async (_event, payload): Promise<IpcResult<BatchRunData>> => {
+    const parsed = batchPreflight<{ serials: string[]; files: string[]; dstDir: string }>(payload, BATCH_PUSH_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return {
+        ok: true,
+        data: await deps.batch.push({
+          serials: parsed.data.serials,
+          files: parsed.data.files,
+          dstDir: parsed.data.dstDir,
+        }),
+      }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.BATCH_SHELL, async (_event, payload): Promise<IpcResult<BatchRunData>> => {
+    const parsed = batchPreflight<{ serials: string[]; command: string }>(payload, BATCH_SHELL_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.batch.shell({ serials: parsed.data.serials }, parsed.data.command) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * 两个选择框。
+   *
+   * 取消返回**空串**（不是错误）—— 与 transfer:pick-files 的「取消 = 空数组」、
+   * local:pick-root 的「取消 = 空串」保持同一约定。把取消当错误会让界面弹一条
+   * 「请求参数不合法」，而用户只是按了 Esc。
+   *
+   * 这里不校验也有 no-device 的前置：选目录与选 apk 与设备无关，
+   * 用户可以先选好文件再插设备。
+   */
+  handle(CH.BATCH_PICK_DIRECTORY, async (): Promise<IpcResult<string>> => {
+    try {
+      return { ok: true, data: await deps.batch.pickScreenshotDir() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.BATCH_PICK_APK, async (): Promise<IpcResult<string>> => {
+    try {
+      return { ok: true, data: await deps.batch.pickApk() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
   })
 
   // 自检：注册表必须覆盖全部 invoke 通道，漏一个就是渲染层点了没反应

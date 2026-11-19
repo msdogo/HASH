@@ -13,6 +13,7 @@ import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import type { ShellRunner } from '../electron/fs/remote'
 import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
+import { fakeBatch } from './fake-batch'
 
 /* ============ 假 ipcMain：捕获注册表，直接调用 handler ============ */
 
@@ -204,6 +205,7 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     ops: fakeOps(),
     local: fakeLocal(),
     pickRoot: async () => '',
+    batch: fakeBatch(),
     ...over,
   }
   const ipc = fakeIpc()

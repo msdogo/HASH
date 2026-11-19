@@ -12,7 +12,7 @@ import { useDeviceStore } from '@/store/deviceStore'
  * 文案一律走 i18n：设备栏要显示「无法使用 adb」时走 errorText(adb.code)，
  * 不得在组件里硬编码中文（tests/ui-contract.test.ts 静态断言守着）。
  */
-export function DeviceRail() {
+export function DeviceRail(props: { onShowOverview?: () => void }) {
   const { devices, adb, activeSerial, loaded, setActive } = useDeviceStore()
 
   // 空状态与 adb 故障是两种不同的事，提示必须分开给
@@ -78,6 +78,15 @@ export function DeviceRail() {
           </p>
         )}
       </nav>
+
+      {/* 规格 §9.2：底部固定「全部设备」入口（任务 10 的总览页从这里进） */}
+      <button
+        type="button"
+        onClick={props.onShowOverview}
+        className="border-t border-neutral-800 px-3 py-2 text-left text-xs text-neutral-400 hover:bg-neutral-800/60"
+      >
+        {t('devices.all')}
+      </button>
 
       <div className="border-t border-neutral-800 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
         {tf('devices.summary', { total: summary.total, online: summary.online })}

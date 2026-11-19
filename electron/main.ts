@@ -13,6 +13,8 @@ import { CH } from './ipc/channels'
 import { registerHandlers } from './ipc/handlers'
 import { TransferOnlineTracker, wireBatchToTransfer } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
+import { BatchService } from './batch/service'
+import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
 import { LocalFs } from './fs/local'
 import { homedir } from 'node:os'
@@ -96,7 +98,10 @@ const transfer = new TransferService({
    */
   localRoot: () => localRoot,
   // emit 里的 broadcast 是函数声明（会提升），窗口还没建好时它自然只会遍历到空窗口列表。
-  emit: () => { broadcastTransfer() },
+  emit: (event: TransferEvent) => {
+    settleBatchTask(event)
+    broadcastTransfer()
+  },
 })
 /**
  * 文件操作服务（任务 9）。
@@ -109,6 +114,91 @@ const fsOps = new FsOpsService({
 })
 
 const localFs = new LocalFs({ root: () => localRoot })
+
+/**
+ * 批量截图待清理的临时文件（任务 10 / R1）。
+ *
+ * 为什么需要这张表：截图走的是「设备上写临时 png → 传输队列拉回 → 删临时文件」，
+ * 而删的时机必须是**传输任务进入终态之后** —— 提前删会让 adb pull 读到一个
+ * 已经不存在的源文件，用户拿到的是「截图失败」但他明明看到屏幕上闪了一下。
+ *
+ * key 是传输任务 id；TransferService 的每个事件都带 task，
+ * 落到 done/failed/canceled 时取出回调执行一次（执行后立即删除，表不会长胖）。
+ */
+const batchCleanup = new Map<string, () => void>()
+
+/**
+ * 传输事件 → 批量临时文件清理。
+ *
+ * 用**函数声明**而不是 const 箭头：它在 TransferService 构造时就被引用（emit），
+ * 而声明在下面的常量初始化之前，只有函数声明会被提升。
+ */
+function settleBatchTask(event: TransferEvent): void {
+  const status = event.task.status
+  if (status !== 'done' && status !== 'failed' && status !== 'canceled') return
+  const callback = batchCleanup.get(event.task.id)
+  if (callback === undefined) return
+  batchCleanup.delete(event.task.id)
+  try {
+    callback()
+  } catch (err) {
+    // 清理失败只记日志：用户的截图已经拿到了，不该因为 rm 失败而变成失败项
+    console.warn('[batch] 临时文件清理回调失败：' + String(err))
+  }
+}
+
+/**
+ * 批量动作服务（任务 10）。
+ *
+ * 与 fsOps / transfer 一样在模块顶层构造：IPC handler 必须尽早注册，而 handler 依赖它。
+ * adbPath 与 localRoot 都传 getter —— 构造时机早于 adb 自检完成，取当前值才是对的。
+ */
+const batchService = new BatchService({
+  devices,
+  clientFor: (serial) => createClient(serial),
+  transfer: transfer.controller,
+  localRoot: () => localRoot,
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+  /*
+   * 两个选择框。取消一律返回空串（不是错误）—— 与 pickFiles / pickRoot 同一约定。
+   * 批量截图的目录选择框默认落在当前本地根目录：那里本来就是这个应用唯一允许读写的位置。
+   */
+  pickDirectory: async () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win === undefined) return ''
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择批量截图的保存目录',
+      defaultPath: localRoot,
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (picked.canceled || picked.filePaths.length === 0) return ''
+    return picked.filePaths[0]
+  },
+  pickApk: async () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win === undefined) return ''
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择要安装的 APK',
+      filters: [{ name: 'Android 安装包', extensions: ['apk'] }],
+      properties: ['openFile'],
+    })
+    if (picked.canceled || picked.filePaths.length === 0) return ''
+    return picked.filePaths[0]
+  },
+  /*
+   * 传输任务进终态后再删临时文件（R1）。
+   * 任务可能在我们登记之前就已经结束（队列空闲时几乎瞬间完成），
+   * 所以登记时先看一眼当前状态 —— 否则那张 png 会永久留在设备上。
+   */
+  onTaskSettled: (taskId, callback) => {
+    batchCleanup.set(taskId, callback)
+    const task = transfer.controller.get(taskId)
+    if (task === undefined) return
+    if (task.status === 'done' || task.status === 'failed' || task.status === 'canceled') {
+      settleBatchTask({ type: 'changed', task })
+    }
+  },
+})
 
 /** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */
 const bootAbort = new AbortController()
@@ -220,6 +310,7 @@ app.whenReady().then(async () => {
               return localRoot
             },
             transfer: transfer.controller,
+            batch: batchService,
             // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
             // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。
             pickFiles: async () => {

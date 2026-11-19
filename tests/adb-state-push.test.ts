@@ -150,6 +150,15 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
         },
         local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
         pickRoot: async () => '',
+        // 本文件不测批量：空壳只为满足 HandlerDeps（批量有 tests/batch-*.test.ts）
+        batch: {
+          screenshot: async () => ({ results: [] }),
+          install: async () => ({ results: [] }),
+          push: async () => ({ results: [] }),
+          shell: async () => ({ results: [] }),
+          pickScreenshotDir: async () => '',
+          pickApk: async () => '',
+        },
         // 本文件不测传输：给一个空壳，只为满足 HandlerDeps（传输有专门的 tests/transfer-*.test.ts）
         transfer: {
           enqueue: () => { throw new Error('not used') },

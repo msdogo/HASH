@@ -45,6 +45,20 @@ export const CH = {
   LOCAL_LIST: 'local:list',
   /** invoke：让用户挑选本地根目录（系统目录选择框）。 */
   LOCAL_PICK_ROOT: 'local:pick-root',
+
+  /* ===== 任务 10：批量操作（全设备总览页） ===== */
+  /** invoke：批量截图（每台设备各存一张 png 到用户选的目录）。 */
+  BATCH_SCREENSHOT: 'batch:screenshot',
+  /** invoke：批量安装（adb install -r）。 */
+  BATCH_INSTALL: 'batch:install',
+  /** invoke：批量推送（每台设备各产生传输任务）。 */
+  BATCH_PUSH: 'batch:push',
+  /** invoke：在每台勾选设备上跑同一条 shell 命令。 */
+  BATCH_SHELL: 'batch:shell',
+  /** invoke：弹出目录选择框（批量截图的目标目录）。 */
+  BATCH_PICK_DIRECTORY: 'batch:pick-directory',
+  /** invoke：弹出文件选择框挑一个 .apk。 */
+  BATCH_PICK_APK: 'batch:pick-apk',
 } as const
 
 export type Channel = (typeof CH)[keyof typeof CH]
@@ -68,6 +82,13 @@ export const INVOKE_CHANNELS = [
   CH.TRANSFER_LIST,
   CH.TRANSFER_CLEAR,
   CH.TRANSFER_PICK_FILES,
+  // 任务 10：批量操作 + 两个选择框
+  CH.BATCH_SCREENSHOT,
+  CH.BATCH_INSTALL,
+  CH.BATCH_PUSH,
+  CH.BATCH_SHELL,
+  CH.BATCH_PICK_DIRECTORY,
+  CH.BATCH_PICK_APK,
 ] as const
 
 /** 由主进程单向推送的通道（webContents.send，绝不 handle）。 */

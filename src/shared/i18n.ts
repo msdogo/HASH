@@ -149,6 +149,44 @@ const messages: Record<string, string> = {
   'local.restricted': '这个位置在本地选定目录之外，无法访问',
   'local.selectHint': '点击文件夹进入，选中文件后可上传',
   'local.refresh': '刷新',
+
+  // ---- 批量操作与设备总览页（任务 10 / 规格 §9.3）----
+  'batch.title': '设备总览',
+  'batch.screenshot': '批量截图',
+  'batch.install': '批量安装',
+  'batch.push': '批量推送',
+  'batch.shell': '执行命令',
+  'batch.pickFiles': '选择要推送的文件',
+  'batch.pickApk': '选择 APK',
+  'batch.dstDir': '目标目录',
+  'batch.dstDirPlaceholder': '设备上的目标目录，如 /sdcard/Download',
+  'batch.shellPlaceholder': '要在每台设备上执行的命令，如 echo ok',
+  'batch.selected': '已选 {count} 台',
+  'batch.selectAll': '全选',
+  'batch.pickCancelled': '已取消选择，没有执行任何操作',
+  'batch.running': '正在执行…',
+  'batch.result.title': '{ok} 成功 / {failed} 失败',
+  'batch.result.dismiss': '知道了',
+  'batch.result.queued': '已加入队列（下载进度见底栏）',
+  'batch.result.installed': '安装成功',
+  'batch.shellOutput': '输出：{text}',
+  'batch.result.filesQueued': '{count} 个文件已加入队列',
+  'batch.result.truncated': '输出已截断',
+  'batch.result.noOutput': '没有输出',
+  'batch.column.device': '设备',
+  'batch.column.status': '状态',
+  'batch.column.android': 'Android',
+  'batch.column.battery': '电量',
+  'batch.column.storage': '存储',
+  'batch.column.tasks': '任务',
+  'batch.unknown': '—',
+  'batch.tasks': '{count} 任务',
+  'batch.idle': '空闲',
+  'batch.storageMissing': '电量与存储暂不可用',
+
+  // ---- 顶栏页面切换（任务 10）----
+  'nav.files': '当前设备',
+  'nav.overview': '全部设备',
 }
 
 /**
@@ -200,6 +238,8 @@ const errorTexts: Record<ErrorCode, string> = {
   E_READ_ONLY: '这个位置是只读的，当前权限无法写入。请换一个目录（例如 /sdcard/Download）',
   E_NO_SPACE: '设备存储空间不足，操作已中止。请先清理一些文件再试',
   E_OUTSIDE_ROOT: '这个位置在本地选定的目录之外，已被拒绝访问。请先在左侧切换到允许的目录',
+  // ---- 任务 10：批量动作的整批参数错（用户能自己修好）----
+  E_BATCH_PARAM: '批量操作没有执行：参数不合法，没有任何设备收到命令。请检查是否选了设备、选了文件、填了目标目录或命令',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */

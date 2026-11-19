@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from './ipc/channels'
 import type {
+  BatchInstallInput,
+  BatchPushInput,
+  BatchScreenshotInput,
+  BatchShellInput,
   DshApi,
   FsBatchInput,
   FsListInput,
@@ -11,6 +15,7 @@ import type {
   TransferEnqueueInput,
   TransferIdInput,
 } from '../src/shared/api-contract'
+import type { BatchRunData } from '../src/shared/batch'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from '../src/shared/file-ops'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
@@ -129,6 +134,26 @@ export function buildApi(deps: PreloadDeps): DshApi {
         deps.on(CH.TRANSFER_CHANGED, listener)
         return () => { deps.off(CH.TRANSFER_CHANGED, listener) }
       },
+    },
+    batch: {
+      /** 批量截图：目录由主进程弹框选（渲染层拿不到本地绝对路径）。 */
+      screenshot: (payload: BatchScreenshotInput): Promise<IpcResult<BatchRunData>> =>
+        deps.invoke(CH.BATCH_SCREENSHOT, payload) as Promise<IpcResult<BatchRunData>>,
+      /** 批量安装：apk 由主进程的选取框给出。 */
+      install: (payload: BatchInstallInput): Promise<IpcResult<BatchRunData>> =>
+        deps.invoke(CH.BATCH_INSTALL, payload) as Promise<IpcResult<BatchRunData>>,
+      /** 批量推送：返回的是「已加入队列」，进度在底栏看。 */
+      push: (payload: BatchPushInput): Promise<IpcResult<BatchRunData>> =>
+        deps.invoke(CH.BATCH_PUSH, payload) as Promise<IpcResult<BatchRunData>>,
+      /** 批量执行命令：输出已截断（8 KB）。 */
+      shell: (payload: BatchShellInput): Promise<IpcResult<BatchRunData>> =>
+        deps.invoke(CH.BATCH_SHELL, payload) as Promise<IpcResult<BatchRunData>>,
+      /** 选目录；取消返回空串。 */
+      pickDirectory: (): Promise<IpcResult<string>> =>
+        deps.invoke(CH.BATCH_PICK_DIRECTORY) as Promise<IpcResult<string>>,
+      /** 选 apk；取消返回空串。 */
+      pickApk: (): Promise<IpcResult<string>> =>
+        deps.invoke(CH.BATCH_PICK_APK) as Promise<IpcResult<string>>,
     },
   } satisfies DshApi
 }

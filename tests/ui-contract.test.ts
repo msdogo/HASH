@@ -319,6 +319,63 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
   })
 })
 
+describe('任务 10：批量操作与总览页契约（静态断言）', () => {
+  const BATCH_SOURCES = [
+    'src/pages/OverviewPage.tsx',
+    'src/store/batchStore.ts',
+    'src/shared/batch.ts',
+  ]
+
+  it('新增源码不 import node 内置模块、不直接 import electron、无 as any', () => {
+    for (const rel of BATCH_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('总览页文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of ['src/pages/OverviewPage.tsx', 'src/store/batchStore.ts']) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('渲染层只经 window.api.batch 调用批量动作（不绕过 preload）', () => {
+    const store = read('src/store/batchStore.ts')
+    for (const call of [
+      'window.api.batch.screenshot(',
+      'window.api.batch.install(',
+      'window.api.batch.push(',
+      'window.api.batch.shell(',
+    ]) {
+      expect(store, call).toContain(call)
+    }
+  })
+
+  it('电量/存储没有数据时显示占位符（不伪造 0%）', () => {
+    const page = read('src/pages/OverviewPage.tsx')
+    // 判断全部来自 shared 的纯函数（有单测），组件不自己算
+    expect(page).toContain('batteryPercent(')
+    expect(page).toContain('storageView(')
+    expect(page).toContain("t('batch.unknown')")
+    // 绝不把 undefined 当 0 用
+    expect(page).not.toMatch(/device\.battery\s*\?\?\s*0/)
+  })
+
+  it('运行中禁用四个按钮（避免重复提交），且结果行数据来自 shared/store', () => {
+    const page = read('src/pages/OverviewPage.tsx')
+    expect(page).toContain('disabled={disabled}')
+    expect(page).toContain('running')
+    expect(page).toContain('resultRows(')
+  })
+})
+
 describe('任务 8：传输底栏契约（静态断言）', () => {
   const TRANSFER_SOURCES = [
     'src/components/TransferDock.tsx',

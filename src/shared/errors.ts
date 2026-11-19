@@ -100,6 +100,19 @@ export const E_INTO_SELF = 'E_INTO_SELF'
  */
 export const E_CROSS_DEVICE = 'E_CROSS_DEVICE'
 /**
+ * 批量动作的**整批参数**不合法（任务 10 / R7）。
+ *
+ * 与 E_BAD_ARGS 分开的理由：E_BAD_ARGS 的文案是「程序内部错误，请重启」，
+ * 而批量动作的参数错（没选设备、没选文件、命令为空、apk 文件是空的）是
+ * **用户能自己修好**的事。给一个内部错误码会让用户去重启应用，
+ * 而正确动作是「重新选一下文件」。
+ *
+ * 重要：这个码只用于「一条 adb 命令都没发」的情况（整批失败），
+ * 单台设备的失败有各自的设备侧码。
+ */
+export const E_BATCH_PARAM = 'E_BATCH_PARAM'
+
+/**
  * 操作只完成了一部分（多文件移动/递归删除中途失败）。
  *
  * 与 E_OP_FAILED 分开：后者承诺「什么都没发生」，而部分完成时那句承诺是假话。
@@ -144,6 +157,8 @@ export const ERROR_CODES = [
   E_INTO_SELF,
   E_CROSS_DEVICE,
   E_OP_PARTIAL,
+  // 任务 10：批量动作的整批参数错（用户能自己修好，与 E_BAD_ARGS 分开）
+  E_BATCH_PARAM,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

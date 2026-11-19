@@ -52,6 +52,11 @@ describe('共享错误码', () => {
       'E_INTO_SELF',    // C3：复制/移动到自己里面（否则用户看到的是笼统失败）
       'E_CROSS_DEVICE', // I4：跨文件系统移动不可回滚（必须让用户改走两步）
       'E_OP_PARTIAL',   // I5：部分完成（不能说「文件保持原样」）
+      // 任务 10：批量动作的整批参数错。
+      // 与 E_BAD_ARGS 分开：E_BAD_ARGS 的文案是「程序内部错误，请重启」，
+      // 而「没选设备 / 没选文件 / 命令为空」是用户自己能修好的事，
+      // 让用户去重启应用是错误的引导。
+      'E_BATCH_PARAM',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)
