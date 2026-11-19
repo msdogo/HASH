@@ -1,6 +1,13 @@
 import { toErrorCode } from '../../src/shared/errors'
 import { E_ALREADY_EXISTS, E_INVALID_PATH, E_PROTECTED_PATH } from '../../src/shared/errors'
-import { checkName, checkRemotePath, isProtectedRemotePath, remoteBaseName, remoteJoin } from '../../src/shared/path-guard'
+import {
+  checkName,
+  checkRemotePath,
+  isProtectedRemotePath,
+  isProtectedTransferPath,
+  remoteBaseName,
+  remoteJoin,
+} from '../../src/shared/path-guard'
 import { blockedResults, deleteConfirmSummary, runSequential, type OpItemResult } from '../../src/shared/fs-ops'
 import type { FsOpData, FsRemoveFactsData } from '../../src/shared/file-ops'
 import { RemoteOps, type OpsRunner } from './operations'
@@ -199,6 +206,22 @@ export class FsOpsService {
       const gate = this.gate(source)
       if (!gate.ok) {
         return { name: remoteBaseName(source) || source, ok: false, code: gate.code }
+      }
+      /*
+       * 【第 2 轮复审：C2 绕过】复制/移动的**来源**也要过系统区判定。
+       *
+       * 复审实测：fs:copy 能把 /data/local/tmp/secret.txt 复制到 /sdcard/Download
+       * （ok:true，cp -a 真的发出去了）—— 这等价于 C2 本来禁止的那条 pull 通道，
+       * 「fs 宽松、transfer 严格」的双轨只是把攻击面挪了个位置。
+       *
+       * 而且「fs 入参来自用户浏览位置」这个理由不成立：OpDialog 的目标目录是
+       * 自由文本框，用户可以手输任意路径。所以来源必须与传输通道同一强度。
+       *
+       * 用 isProtectedTransferPath（精确受保护 + 系统区子树）：
+       * /data、/data/local/tmp、/system/* 一律拒；/sdcard/** 不受影响。
+       */
+      if (isProtectedTransferPath(gate.path)) {
+        return { name: remoteBaseName(gate.path) || source, ok: false, code: E_PROTECTED_PATH }
       }
       const name = remoteBaseName(gate.path)
       if (name === '') {

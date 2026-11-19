@@ -1,8 +1,9 @@
 import { create } from 'zustand'
-import { opLabel, type OpItemResult } from '@shared/fs-ops'
+import type { OpItemResult } from '@shared/fs-ops'
 import type { FsRemoveFactsData } from '@shared/file-ops'
 import { EMPTY_OP_STATE, opReducer, summarizeWithBlocked, type OpAction, type OpState } from '@shared/op-view'
 import { toErrorCode } from '@shared/errors'
+import { runDownload } from '@shared/download-flow'
 
 /**
  * 文件操作状态与调用（任务 9）。
@@ -117,47 +118,23 @@ export const useOpStore = create<OpStoreState>((set, get) => {
      * 走 transfer.enqueue（**不是** fs.copy —— 跨端传输必须经过队列：
      * 大文件要有进度可取消，而同一设备内的 cp/mv 才允许直接走 shell）。
      */
-    download: async (serial, sources, localDir) => {
-      /*
-       * 【复审 M4】修前这里是「第一项失败就 return」，于是：
-       * 前面已经入队的 N-1 项用户完全不知道（它们真的会在队列里跑），
-       * 界面只弹一个错误码，看起来像「整批都没下」。用户会重试整批，
-       * 结果每一对都变成「目标已存在」。
-       *
-       * 现在改成逐项收集 + 复用 summarizeWithBlocked：结果对话框与
-       * fs.* 的操作结果完全同形（「N 成功 / M 失败」+ 失败项可展开），
-       * 用户一眼就能看出哪几个已经进了队列。
-       * 返回值仍然是「首个失败码或 null」，这样 FilesPage 的调用点不用改 ——
-       * 详细的分项信息走对话框（那是用户真正会看的地方），不是靠一个码去猜。
-       */
-      get().open({ type: 'setBusy', busy: true })
-      const results: OpItemResult[] = []
-      try {
-        for (const source of sources) {
-          const result = await window.api.transfer.enqueue({
-            serial,
-            direction: 'pull',
-            src: source,
-            dstDir: localDir,
-          })
-          results.push(result.ok
-            ? { name: opLabel(source), ok: true }
-            : { name: opLabel(source), ok: false, code: result.error })
-        }
-      } catch (err) {
-        results.push({ name: '', ok: false, code: toErrorCode(err) })
-      }
-      const firstFailure = results.find((item) => !item.ok)
-      /*
-       * 只有**出现失败**时才弹结果框。
-       * 全部成功时界面已有既有提示（「已加入下载队列，可在下方查看进度」），
-       * 再弹一个「N 项全部成功」纯属噪音 —— 下载成功本来就要用户去 dock 看进度。
-       */
-      if (firstFailure !== undefined) {
-        get().open({ type: 'finish', summary: summarizeWithBlocked(results) })
-        return firstFailure.code ?? null
-      }
-      return null
-    },
+    /*
+     * 下载流程本体在 shared/download-flow.ts。
+     *
+     * 【第 2 轮复审 N1】这段逻辑原来整个写在这里，于是它零测试覆盖 ——
+     * 测试工程（tsconfig.node，无 DOM）import 不进 src/store，
+     * 「成功路径忘记复位 busy」这种一跑就死机的缺陷只能靠复审手工发现。
+     * 抽成只依赖注入的纯函数后，状态机可以直接在 node 里跑完整流程。
+     */
+    download: async (serial, sources, localDir) =>
+      runDownload(
+        {
+          enqueue: (input) => window.api.transfer.enqueue(input),
+          dispatch: (action) => { get().open(action) },
+        },
+        serial,
+        sources,
+        localDir,
+      ),
   }
 })

@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { TransferRunner } from '../electron/transfer/runner'
 import { createTransferRunner } from '../electron/transfer/runner'
+import { AdbClient } from '../electron/adb/client'
+import { TransferService } from '../electron/transfer/service'
+import { E_PROTECTED_PATH } from '../src/shared/errors'
 
 /*
  * 裁决 9：真机集成用例（1 条 push + 1 条 pull，文件名含中文与空格）。
@@ -230,4 +233,62 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
     const listing = shell('ls -1 ' + JSON.stringify(REMOTE_DIR)).trim()
     expect(listing).not.toContain('.adbfm-part')
   }, 240_000)
+
+  /*
+   * 【第 2 轮复审 N2 / N3】传输通道的目标目录判定，真机验证两个方向：
+   *
+   *   - N2：/sdcard 是首屏默认目录（DEFAULT_CWD），往里上传必须**成功**。
+   *     修前它被当成「受保护对象」一并拒绝，于是用户在默认目录里上传任何文件
+   *     都得到 E_PROTECTED_PATH，文案还说「禁止删除或移动」—— 功能等于废掉。
+   *   - N3：往设备根 / 上传必须**失败**。修前它给 / 开了特例，
+   *     结果「往根写文件」放行、「往用户存储根写文件」被拒，判定自相矛盾。
+   */
+  it('N2：往 /sdcard（首屏默认目录）上传 → 成功落盘且内容一致', async () => {
+    const svc = new TransferService({
+      adbPath: () => ADB,
+      clientFor: (serial) => new AdbClient(serial),
+      localRoot: () => dir,
+      emit: () => {},
+    })
+    const name = '上传到存储根 测试.txt'
+    const localFile = path.join(dir, name)
+    writeFileSync(localFile, 'N2-OK')
+    const remote = '/sdcard/' + name
+    try { shell('rm -f -- ' + JSON.stringify(remote)) } catch { /* 不存在是常态 */ }
+
+    const task = await svc.controller.enqueue({ serial: SERIAL as string, direction: 'push', src: localFile, dstDir: '/sdcard' })
+    expect(task.dst).toBe(remote)
+
+    // 等到终态：真机 push 几毫秒就完成，但这里按状态轮询而不是盲目 sleep
+    const deadline = Date.now() + 60_000
+    let final = svc.controller.get(task.id)
+    while (final !== undefined && final.status !== 'done' && final.status !== 'failed' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100))
+      final = svc.controller.get(task.id)
+    }
+    expect(final?.status).toBe('done')
+    // 设备侧复核：内容真的到了，而不是只报成功
+    expect(shell('cat ' + JSON.stringify(remote)).trim()).toBe('N2-OK')
+
+    shell('rm -f -- ' + JSON.stringify(remote))
+    expect(shell('test -e ' + JSON.stringify(remote) + ' && echo yes || echo no').trim()).toBe('no')
+    svc.dispose()
+  }, 120_000)
+
+  it('N3：往设备根 / 上传 → E_PROTECTED_PATH（不再给 / 开特例）', async () => {
+    const svc = new TransferService({
+      adbPath: () => ADB,
+      clientFor: (serial) => new AdbClient(serial),
+      localRoot: () => dir,
+      emit: () => {},
+    })
+    const localFile = path.join(dir, 'root-upload.txt')
+    writeFileSync(localFile, 'N3-MUST-NOT-LAND')
+    await expect(
+      svc.controller.enqueue({ serial: SERIAL as string, direction: 'push', src: localFile, dstDir: '/' }),
+    ).rejects.toThrow(E_PROTECTED_PATH)
+    // 设备根上不得出现同名文件
+    expect(shell('test -e /root-upload.txt && echo yes || echo no').trim()).toBe('no')
+    svc.dispose()
+  }, 120_000)
 })

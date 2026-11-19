@@ -498,6 +498,31 @@ describe('裁决 3 / C3：不能复制或移动到自身子目录（无界递归
     expect(fs.has('/sdcard/AB/f.txt')).toBe(true)
   })
 
+  /*
+   * 【第 2 轮复审 C3 补充】别名盲区。
+   *
+   * /sdcard 与 /storage/emulated/0 是**同一个目录**的两个名字（真机上是 bind 挂载）。
+   * 修前只做字符串前缀比较，于是「从 /sdcard/A 复制到 /storage/emulated/0/A/inner」
+   * 看起来毫不相干，实际是写进自己的子目录 —— 复审在真机上实测 2 秒内目录数从 2 涨到 88。
+   * 现在比较前先做别名归一（path-guard 的 canonicalRemotePath）。
+   */
+  it('跨别名写自身子目录 → E_INTO_SELF（/sdcard 与 /storage/emulated/0 是同一个目录）', async () => {
+    const fs = fakeFs({ '/sdcard': 'dir', '/sdcard/A': 'dir', '/sdcard/A/inner': 'dir' })
+    const ops = new RemoteOps({ client: fs.client, adbPath: ADB })
+    expect(await ops.copy('/sdcard/A', '/storage/emulated/0/A/inner'))
+      .toEqual({ ok: false, code: E_INTO_SELF })
+    expect(await ops.copy('/storage/emulated/0/A', '/sdcard/A/inner'))
+      .toEqual({ ok: false, code: E_INTO_SELF })
+    // 一条 cp 都不能发出去 —— 真机上一发就是无界递归
+    expect(fs.commands.some((c) => c.startsWith('cp '))).toBe(false)
+  })
+
+  it('跨别名到兄弟目录照常放行（别名归一不能变成误杀）', async () => {
+    const fs = fakeFs({ '/sdcard': 'dir', '/sdcard/A': 'dir', '/storage/emulated/0/B': 'dir', '/sdcard/A/f.txt': 'file' })
+    const ops = new RemoteOps({ client: fs.client, adbPath: ADB })
+    expect(await ops.copy('/sdcard/A/f.txt', '/storage/emulated/0/B/f.txt')).toEqual({ ok: true })
+  })
+
   it('普通文件复制到别的目录 → 允许', async () => {
     const fs = fakeFs({ '/sdcard': 'dir', '/sdcard/A': 'dir', '/sdcard/B': 'dir', '/sdcard/A/f.txt': 'file' })
     const ops = new RemoteOps({ client: fs.client, adbPath: ADB })

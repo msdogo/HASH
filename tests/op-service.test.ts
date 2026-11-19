@@ -160,6 +160,48 @@ describe('裁决 4：3 项里第 2 项失败', () => {
     const result = await service(dev.client).remove('S', ['/sdcard/../../system'])
     expect(result.results[0].code).toBe('E_PATH_UNSAFE')
   })
+
+  /*
+   * 【第 2 轮复审 C2 补充】fs:* 复制/移动的**来源**也要过受保护检查。
+   *
+   * 修前只校验了路径形状（绝对路径、无 ..），于是一条合法的系统路径
+   * /data/local/tmp/secret.txt 能通过 fs:copy 被复制到 /sdcard/Download ——
+   * 复审实测 ok:true，cp -a 真的发出去了。
+   * 「fs 入参来自用户浏览位置」这个理由站不住：OpDialog 的目标目录是自由文本框，
+   * 渲染层可以传任何路径。现在 fs 与 transfer 用同一条判据（isProtectedTransferPath）。
+   */
+  it('从系统区复制出来 → E_PROTECTED_PATH，且一条 cp 都没发', async () => {
+    const dev = fakeDevice({
+      '/sdcard': 'dir', '/sdcard/Download': 'dir',
+      '/data': 'dir', '/data/local': 'dir', '/data/local/tmp': 'dir', '/data/local/tmp/secret.txt': 'file',
+    })
+    const result = await service(dev.client).copy('S', ['/data/local/tmp/secret.txt'], '/sdcard/Download')
+    expect(result.results).toEqual([
+      { name: 'secret.txt', ok: false, code: 'E_PROTECTED_PATH' },
+    ])
+    expect(dev.commands.some((c) => c.startsWith('cp '))).toBe(false)
+    expect(dev.tree()).not.toContain('/sdcard/Download/secret.txt')
+  })
+
+  it('从系统区移动出来同样被拒（不能只堵复制）', async () => {
+    const dev = fakeDevice({
+      '/sdcard': 'dir', '/sdcard/Download': 'dir',
+      '/data': 'dir', '/data/local': 'dir', '/data/local/tmp': 'dir', '/data/local/tmp/secret.txt': 'file',
+    })
+    const result = await service(dev.client).move('S', ['/data/local/tmp/secret.txt'], '/sdcard/Download')
+    expect(result.results[0].code).toBe('E_PROTECTED_PATH')
+    expect(dev.commands.some((c) => c.startsWith('mv '))).toBe(false)
+    // 源文件必须还在（移动被拒不能顺手把源毁了）
+    expect(dev.tree()).toContain('/data/local/tmp/secret.txt')
+  })
+
+  it('普通用户目录之间的复制不受影响（别把闸门焊死）', async () => {
+    const dev = fakeDevice({
+      '/sdcard': 'dir', '/sdcard/Download': 'dir', '/sdcard/DCIM': 'dir', '/sdcard/DCIM/p.jpg': 'file',
+    })
+    const result = await service(dev.client).copy('S', ['/sdcard/DCIM/p.jpg'], '/sdcard/Download')
+    expect(result.results).toEqual([{ name: 'p.jpg', ok: true }])
+  })
 })
 
 describe('删除确认事实（裁决 1）', () => {

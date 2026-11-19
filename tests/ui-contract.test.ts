@@ -208,8 +208,18 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
       expect(opStore, call).toContain(call)
     }
     // 裁决 7：下载必须走传输队列（不是自己 spawn / 不是 fs.copy）
+    /*
+     * 【第 2 轮复审 N1】下载流程搬进了 src/shared/download-flow.ts。
+     *
+     * 原因：busy 复位漏在下载成功路径上，而 opStore 在 tsconfig.node.json 里
+     * 不可 import（include 不含 src/），于是「下载」这条最容易卡死整个对话框的
+     * 路径零测试覆盖。流程抽到 shared 才能被单测直接打。
+     * 所以这里断言的位置跟着搬：opStore 只负责注入 window.api，真正的
+     * enqueue + direction 在 download-flow 里。
+     */
     expect(opStore).toContain('window.api.transfer.enqueue(')
-    expect(opStore).toContain("direction: 'pull'")
+    const downloadFlow = read('src/shared/download-flow.ts')
+    expect(downloadFlow).toContain('direction: \'pull\'')
     // 本地访问只经 local 命名空间
     expect(read('src/store/localStore.ts')).toContain('window.api.local.list(')
     expect(read('src/store/localStore.ts')).toContain('window.api.local.pickRoot(')

@@ -354,4 +354,66 @@ describe.skipIf(skip)('真机文件操作（裁决 9）', () => {
     shell('rm -rf -- ' + q(root))
     expect(exists(root)).toBe(false)
   }, 120_000)
+
+  /*
+   * 【第 2 轮复审 C3 别名】/sdcard 与 /storage/emulated/0 是同一个目录的两种写法。
+   *
+   * 复审真机实测（修前）：把 /sdcard/... 的目录复制到它自己的 /storage/emulated/0/... 子目录，
+   * 词法比较看不出包含关系，于是放行 —— 两秒内目录数从 2 涨到 88，仍然是无界递归。
+   * 因此这条必须打在真机上：别名是不是同一个 inode，只有设备能回答。
+   */
+  it('C3 别名：/sdcard 与 /storage/emulated/0 互写自身子目录 → E_INTO_SELF，设备上不产生递归产物', async () => {
+    const viaSdcard = '/sdcard/Download/adbfm-c3-alias'
+    const viaStorage = '/storage/emulated/0/Download/adbfm-c3-alias'
+    try { shell('rm -rf -- ' + q(viaStorage)) } catch { /* 不存在是常态 */ }
+    shell('mkdir -p -- ' + q(viaSdcard + '/A/inner'))
+    shell('touch -- ' + q(viaSdcard + '/A/f.txt'))
+
+    // 先证实两种写法确实是同一个目录（前提不成立就直接红，用例不能名不副实）
+    const devA = shell('stat -c %d:%i -- ' + q(viaSdcard)).trim()
+    const devB = shell('stat -c %d:%i -- ' + q(viaStorage)).trim()
+    expect(devA, '两种路径写法不是同一个目录，C3 别名用例失去验证对象').toBe(devB)
+
+    const result = await ops.copy(viaSdcard + '/A', '/storage/emulated/0/Download/adbfm-c3-alias/A/inner')
+    expect(result).toEqual({ ok: false, code: E_INTO_SELF })
+
+    // 目标目录必须仍然为空（一条 cp 都没发出去）
+    expect(lsNames(viaSdcard + '/A/inner')).toEqual([])
+    const depth = shell('cd ' + q(viaSdcard) + ' && find . -type d | awk -F/ "{print NF-1}" | sort -n | tail -1').trim()
+    expect(Number(depth)).toBeLessThanOrEqual(3)
+
+    shell('rm -rf -- ' + q(viaStorage))
+    expect(exists(viaSdcard)).toBe(false)
+  }, 120_000)
+
+  /*
+   * 【第 2 轮复审 C2 双轨绕过】fs 通道的**来源**必须和传输通道同一强度。
+   *
+   * 复审真机实测（修前）：fs:copy 能把 /data/local/tmp/secret.txt 复制到 /sdcard/Download，
+   * ok:true —— cp -a 真的发出去了。这与 C2 禁止的 pull 通道等价，
+   * 「fs 入参来自用户浏览位置」的理由也不成立（OpDialog 的目标目录是自由文本框）。
+   * 这里直接打真机：验证拒绝，同时证明目标目录里确实没多出文件。
+   */
+  it('C2：fs 复制从 /data/local/tmp 拉出来 → E_PROTECTED_PATH，目标目录无新文件', async () => {
+    const secret = '/data/local/tmp/adbfm-c2-secret.txt'
+    const dstDir = '/sdcard/Download/adbfm-c2-dst'
+    try { shell('rm -rf -- ' + q(dstDir)) } catch { /* 不存在是常态 */ }
+    try { shell('rm -f -- ' + q(secret)) } catch { /* 同上 */ }
+    shell('echo TOP-SECRET > ' + q(secret))
+    shell('mkdir -p -- ' + q(dstDir))
+    const before = lsNames(dstDir)
+
+    const result = await service.copy(SERIAL as string, [secret], dstDir)
+
+    expect(result.results).toHaveLength(1)
+    expect(result.results[0].ok).toBe(false)
+    expect(result.results[0].code).toBe(E_PROTECTED_PATH)
+    // 关键：目标目录里一个文件都不能多出来（拒绝必须发生在执行之前）
+    expect(lsNames(dstDir)).toEqual(before)
+
+    shell('rm -f -- ' + q(secret))
+    shell('rm -rf -- ' + q(dstDir))
+    expect(exists(secret)).toBe(false)
+    expect(exists(dstDir)).toBe(false)
+  }, 120_000)
 })

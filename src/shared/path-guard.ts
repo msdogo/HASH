@@ -257,6 +257,92 @@ export function isProtectedTransferPath(path: string): boolean {
 }
 
 /**
+ * 设备上「同一个目录的多个别名」归一成同一个规范路径（复审 C3 别名盲区）。
+ *
+ * Android 上 /sdcard、/storage/self/primary、/storage/emulated/0、/mnt/sdcard
+ * 全都是**同一批 inode** 的软链别名。纯词法比较会把它们当成两个不同目录，
+ * 于是 `cp -a /sdcard/A /storage/emulated/0/A/inner` 绕过了自包含判定 ——
+ * 复审真机实测 2 秒内目录数从 2 涨到 88。
+ *
+ * 归一放在**一个函数**里集中做，不在各个调用点各写一份前缀表
+ * （那样加一个新别名就要改 N 处，必然漏）。
+ *
+ * 只处理「用户存储区」这一族别名：/data、/system 等系统区没有等价的用户区别名，
+ * 它们由受保护名单拦住，不需要归一。
+ */
+const USER_STORAGE_ALIASES: readonly string[] = [
+  '/sdcard',
+  '/storage/self/primary',
+  '/storage/emulated/0',
+  '/mnt/sdcard',
+  '/mnt/user/0/emulated/0',
+  '/mnt/runtime/default/emulated/0',
+]
+
+/** 用户存储区的规范路径（归一后的唯一名字）。 */
+export const CANONICAL_USER_STORAGE = '/storage/emulated/0'
+
+/**
+ * 路径归一（词法 + 别名）。只在比较前用，**不改变实际执行的路径** ——
+ * 执行时仍用用户/系统给的原路径，否则会改变用户看到的目录名。
+ */
+export function canonicalRemotePath(path: string): string {
+  const normalized = normalizeSegments(path)
+  for (const alias of USER_STORAGE_ALIASES) {
+    if (normalized === alias) return CANONICAL_USER_STORAGE
+    if (normalized.startsWith(alias + '/')) {
+      return CANONICAL_USER_STORAGE + normalized.slice(alias.length)
+    }
+  }
+  return normalized
+}
+
+/**
+ * 受保护的**系统区子树**：写文件进去一定失败（或危险），而且与「用户存储区根」不同。
+ *
+ * 与 PROTECTED_REMOTE_SUBTREES 的区别：这里额外把根 `/` 与 `/storage`、`/mnt`
+ * 这类**挂载点容器**算进来（往 /storage 里写文件没有意义，只会落到某个挂载点的根部），
+ * 但**不**包含 /sdcard、/storage/emulated/0 这类用户可见的存储根 —— 那些必须可写。
+ */
+function isSystemSubtree(path: string): boolean {
+  const normalized = normalizeSegments(path)
+  if (normalized === '/') return true
+  if (normalized === '/storage' || normalized === '/mnt') return true
+  for (const root of PROTECTED_REMOTE_SUBTREES) {
+    if (normalized === root || normalized.startsWith(root + '/')) return true
+  }
+  return false
+}
+
+/**
+ * 这个**目录**能不能作为传输/复制的目标目录（复审 N2 / N3）。
+ *
+ * 与 isProtectedTransferPath 的分工：
+ *   - isProtectedTransferPath 判「**这个对象本身**能不能被读/写/删」——
+ *     `/sdcard` 是一个受保护对象（不能删它、不能把它当文件写）；
+ *   - 本函数判「**能不能往这个目录里放一个文件**」——`/sdcard` 是用户存储区的根，
+ *     往里放文件完全正常（首屏默认目录就是它），必须放行。
+ *
+ * 修前把两者混成一个判定，结果是「在首屏默认目录上传文件」直接
+ * E_PROTECTED_PATH，文案还说「禁止删除或移动」——用户明明在做上传。
+ *
+ * 但两类仍然禁止：系统区（/data、/system…）与挂载点容器（/、/storage、/mnt）；
+ * 以及 `/sdcard/Android` 这类受保护的存储子目录（往里丢文件没有合理场景）。
+ */
+export function isProtectedTransferDirectory(dir: string): boolean {
+  const normalized = canonicalRemotePath(dir)
+  if (isSystemSubtree(normalized)) return true
+  /*
+   * 用户存储区**根本身**可写（首屏默认目录就是它），
+   * 但它的受保护子目录（/storage/emulated/0/Android 等）不可写 ——
+   * 归一后按 /sdcard 那一族名字去查同一份名单，避免维护两份。
+   */
+  if (normalized === CANONICAL_USER_STORAGE) return false
+  const asUserPath = '/sdcard' + normalized.slice(CANONICAL_USER_STORAGE.length)
+  return PROTECTED_REMOTE_PATHS.includes(asUserPath)
+}
+
+/**
  * child 是否落在 parent 之内（含相等）—— 复制/移动的自包含判定（裁决 3 / C3）。
  *
  * ===== 为什么必须有这一条 =====
@@ -276,8 +362,20 @@ export function isRemoteInside(parent: string, child: string): boolean {
   const parentSeg = parent.split('/')
   const childSeg = child.split('/')
   if (parentSeg.some((seg) => seg === '..') || childSeg.some((seg) => seg === '..')) return true
-  const p = normalizeSegments(parent)
-  const c = normalizeSegments(child)
+  /*
+   * 【复审 C3 别名盲区】比较前先做**别名归一**。
+   *
+   * /sdcard 与 /storage/emulated/0 是同一批 inode 的软链别名，纯词法比较会把
+   * `cp -a /sdcard/A /storage/emulated/0/A/inner` 判成「不在自己里面」而放行 ——
+   * 复审真机实测 2 秒内目录数从 2 涨到 88。
+   * 归一集中在 canonicalRemotePath 里做，这里只调用它。
+   *
+   * 已知边界（做不了完全防御）：路径**中间**的符号链接（如 /data/link -> real）
+   * 词法上完全看不出来，需要真机 realpath 才能识别。已在报告里如实记录；
+   * 这类输入要求用户手输一条带中间链接的路径，触发面远小于别名。
+   */
+  const p = canonicalRemotePath(parent)
+  const c = canonicalRemotePath(child)
   if (p === c) return true
   // 父是根时一切都是它的后代（/ 的唯一特殊情形）
   if (p === '/') return true

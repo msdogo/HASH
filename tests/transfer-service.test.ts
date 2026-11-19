@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { TransferService, fileNameOf, resolveTargetPath, listLocalFiles } from '../electron/transfer/service'
 import {
-  E_CROSS_DEVICE,
   E_INVALID_PATH,
+  E_NOT_FOUND,
   E_OUTSIDE_ROOT,
   E_PATH_UNSAFE,
   E_PROTECTED_PATH,
@@ -77,8 +77,27 @@ describe('路径解析', () => {
     expect(() => resolveTargetPath('/sdcard/Download', '')).toThrow(E_INVALID_PATH)
   })
 
-  it('根目录下的目标是 /name 而不是 //name', () => {
-    expect(resolveTargetPath('/', 'a.bin')).toBe('/a.bin')
+  /*
+   * 【第 2 轮复审 N3】这里原来断言「根目录下的目标是 /name 而不是 //name」，
+   * 也就是把「往设备根写文件」当成合法路径来测。
+   * 但同一份代码又拒绝 /sdcard（用户存储根）—— 两个判定自相矛盾，
+   * 而真正危险的那一侧（/）反而是放行的。往设备根写文件没有任何合理场景，
+   * 现在显式拒绝；用例改为断言拒绝。
+   */
+  it('往设备根目录写文件 → E_PROTECTED_PATH（不再为 / 开特例）', () => {
+    expect(() => resolveTargetPath('/', 'a.bin')).toThrow(E_PROTECTED_PATH)
+  })
+
+  /*
+   * 【第 2 轮复审 N2】用户存储根必须可写：它是首屏默认目录（file-view.ts 的
+   * DEFAULT_CWD='/sdcard'），往里放文件是完全正常的操作。
+   * 修前它被 isProtectedTransferPath 判成受保护对象而拒绝，
+   * 结果是「打开应用第一屏就上传不了文件」。
+   */
+  it('用户存储根 /sdcard 可以作为上传目标目录（N2：首屏默认目录必须能传）', () => {
+    expect(resolveTargetPath('/sdcard', 'a.bin')).toBe('/sdcard/a.bin')
+    expect(resolveTargetPath('/storage/emulated/0', 'a.bin')).toBe('/storage/emulated/0/a.bin')
+    expect(resolveTargetPath('/sdcard/Download', 'a.bin')).toBe('/sdcard/Download/a.bin')
   })
 
   it('【C2】resolveTargetPath 走严格闸门：含 .. 一律 E_PATH_UNSAFE（不再容错折叠）', () => {
@@ -106,12 +125,15 @@ describe('裁决 5 / C1：本地写入必须落在用户选定的根目录内', 
    * 错误码是笼统的 E_SYNC_FAILED，用户看到「传输没有完成」而不是「目录不存在」。
    * 在入队时拒绝，错误落在正确的位置，且界面（本地栏）本来就是从真实存在的目录发起下载的。
    */
-  it('根内的目标目录不存在 → 拒绝（错误必须落在入队，而不是执行阶段的笼统 E_SYNC_FAILED）', async () => {
+  it('根内的目标目录不存在 → E_NOT_FOUND（错误必须落在入队，且文案要说「不存在」）', async () => {
     const svc = service()
     await expect(svc.enqueue({
       serial: 'S1', direction: 'pull', src: '/sdcard/a.bin',
       dstDir: path.join(localRoot, '还不存在的子目录'),
-    })).rejects.toThrow(E_INVALID_PATH)
+    // 【第 2 轮复审 C1】原来断言 E_INVALID_PATH（文案「路径含非法字符」），
+    // 但真实语义是「这个目录不存在」。用户看到「路径不合法」会去检查拼写，
+    // 而正确的动作是「先建这个目录」。
+    })).rejects.toThrow(E_NOT_FOUND)
   })
 
   it('完全在根外的 dstDir → E_OUTSIDE_ROOT（不复审那次「根外临时目录被接受」）', async () => {
@@ -293,27 +315,12 @@ describe('listLocalFiles', () => {
 })
 
 /*
- * 【审查 I4】跨文件系统移动：显式拒绝，而不是让 toybox 退化成不可回滚的「复制+删除」。
+ * 【第 2 轮复审】这里原本有一组针对 assertSameDevice 的用例。
+ * 那个函数生产代码一次都没调用（真正生效的跨 FS 判定在 RemoteOps.move 内部，
+ * 那里能拿到 client、也在同一次 shell 往返里做判定），属于只被测试调用的死代码，
+ * 已删除。
  *
- * 这一组只用纯函数判定（deviceOf 注入），真机证据见报告 I4 章节。
+ * I4 的行为断言仍然在：`tests/operations.test.ts` 的
+ * `describe('审查 I4：跨文件系统移动必须拒绝（不可回滚）')` 走的是真实的
+ * RemoteOps.move（假 fs 提供 stat -c %d），真机证据见 tests/ops-real.test.ts。
  */
-describe('审查 I4：跨文件系统移动必须显式拒绝', () => {
-  it('设备号不同 → E_CROSS_DEVICE（不执行任何命令）', async () => {
-    const { assertSameDevice } = await import('../electron/transfer/service')
-    // 假 runner 提供 deviceOf：源在 /data（dev 2），目标在 /sdcard（dev 1）
-    const fake = async (p: string): Promise<number> => (p.startsWith('/data') ? 2 : 1)
-    await expect(assertSameDevice(fake, '/data/local/tmp/a', '/sdcard/Download/a')).rejects.toThrow(E_CROSS_DEVICE)
-  })
-
-  it('设备号相同 → 放行（同 FS 的 mv 是内核 rename，原子）', async () => {
-    const { assertSameDevice } = await import('../electron/transfer/service')
-    const fake = async (): Promise<number> => 7
-    await expect(assertSameDevice(fake, '/sdcard/A', '/sdcard/B')).resolves.toBeUndefined()
-  })
-
-  it('探测不到设备号时保守放行（取不到不构成本次操作的新风险）', async () => {
-    const { assertSameDevice } = await import('../electron/transfer/service')
-    const fake = async (): Promise<number | undefined> => undefined
-    await expect(assertSameDevice(fake, '/sdcard/A', '/sdcard/B')).resolves.toBeUndefined()
-  })
-})

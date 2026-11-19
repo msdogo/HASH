@@ -3,12 +3,18 @@ import { readdirSync, statSync } from 'node:fs'
 import type { AdbClient } from '../adb/client'
 import type { TransferTask } from '../../src/shared/transfer'
 import {
-  E_CROSS_DEVICE,
   E_DEVICE_OFFLINE,
   E_INVALID_PATH,
   E_NOT_A_DIRECTORY,
+  E_NOT_FOUND,
+  E_PROTECTED_PATH,
 } from '../../src/shared/errors'
-import { assertSafeRemotePath, isProtectedTransferPath, remoteJoin } from '../../src/shared/path-guard'
+import {
+  assertSafeRemotePath,
+  isProtectedTransferDirectory,
+  isProtectedTransferPath,
+  remoteJoin,
+} from '../../src/shared/path-guard'
 import { checkLocalAccess } from '../fs/local'
 import { TransferManager, type TransferEvent } from './manager'
 import { TransferRunner, type RunContext, type TransferRun } from './runner'
@@ -55,15 +61,26 @@ export function assertPlainName(name: string): string {
 export function resolveTargetPath(dir: string, name: string): string {
   assertPlainName(name)
   /*
-   * 根目录是特例：assertSafeRemotePath('/') 会把根判成「不是可操作对象」，
-   * 但「往根目录下放一个文件」（/a.bin）在语义上是合法的。
-   * 所以根单独放行，后面对**拼出来的完整路径**再做严格校验 ——
-   * 完整路径一定不是根，仍然会被闸门挡住 '/../x' 这类写法。
+   * 【复审 N3】根必须拒绝。
+   *
+   * 修前这里给 '/' 开了特例（"往根下放一个文件语义上合法"），
+   * 结果是 /sdcard（用户存储根）被拒而 /（真正的系统根）反而能写 ——
+   * 完全自相矛盾的判定。往设备根写文件没有任何合理场景，直接拒。
    */
-  const safeDir = dir === '/' ? '/' : assertSafeRemotePath(dir)
-  if (safeDir !== '/' && isProtectedTransferPath(safeDir)) throw new Error('E_PROTECTED_PATH')
+  if (dir === '/') throw new Error(E_PROTECTED_PATH)
+  const safeDir = assertSafeRemotePath(dir)
+  /*
+   * 【复审 N2】目标**目录**的可写判定 ≠ 对象本身是否受保护。
+   *
+   * /sdcard 是「不能删/不能移」的受保护对象，但它同时是用户存储区的根 ——
+   * 首屏默认目录（file-view.ts 的 DEFAULT_CWD）就是它，往里放文件完全正常。
+   * 修前把两者混成一个判定，导致「在首屏默认目录上传文件」直接失败，
+   * 文案还说「禁止删除或移动」。改用 isProtectedTransferDirectory。
+   */
+  if (isProtectedTransferDirectory(safeDir)) throw new Error(E_PROTECTED_PATH)
   const target = assertSafeRemotePath(remoteJoin(safeDir, name))
-  if (isProtectedTransferPath(target)) throw new Error('E_PROTECTED_PATH')
+  // 目标本身（一个具体文件）仍要过对象级闸门：不能覆盖 /sdcard/Android 这类受保护对象
+  if (isProtectedTransferPath(target)) throw new Error(E_PROTECTED_PATH)
   return target
 }
 
@@ -75,33 +92,18 @@ export function resolveTargetPath(dir: string, name: string): string {
  */
 export function assertRemoteSource(src: string): string {
   const safe = assertSafeRemotePath(src)
-  if (isProtectedTransferPath(safe)) throw new Error('E_PROTECTED_PATH')
+  if (isProtectedTransferPath(safe)) throw new Error(E_PROTECTED_PATH)
   // 源必须是具体文件：最后一段不能是 . / ..（否则拼出来的本地目标会跑偏）
   assertPlainName(fileNameOf(safe))
   return safe
 }
 
-/**
- * 【审查 I4】跨文件系统移动必须显式拒绝。
- *
- * toybox 的 mv 在跨 FS 时会退化成「逐文件复制 + 删除」：真机实测从
- * /data/local/tmp 移到 /sdcard/Download（源含一个不可读子目录）时，
- * mv 返回 1，**源里的 top.txt 已经消失**、目标侧留下半棵树 —— 这是唯一
- * 无法回滚的移动形态。拒绝它，让用户改走「复制到目标 + 确认后删除源」两步，
- * 那是可回滚的（复制失败时源完好；删除是用户显式确认的第二步）。
- *
- * 探测不到设备号时放行：取不到不构成本次操作的新风险，而把「探测失败」
- * 当成拒绝会让正常移动在网络抖动时莫名其妙失败。
- */
-export async function assertSameDevice(
-  deviceOf: (pathValue: string) => Promise<number | undefined>,
-  from: string,
-  to: string,
-): Promise<void> {
-  const [a, b] = await Promise.all([deviceOf(from), deviceOf(to)])
-  if (a === undefined || b === undefined) return
-  if (a !== b) throw new Error(E_CROSS_DEVICE)
-}
+/*
+ * 【第 2 轮复审】这里原本有一个 assertSameDevice（跨 FS 判定），但生产代码
+ * 一次都没调用它 —— 真正生效的那份在 RemoteOps.move 内部（那里能拿到 client、
+ * 也就在同一次 shell 往返里做判定）。只被测试调用的导出函数是死代码：
+ * 它让「跨 FS 已防护」看起来有两处实现，实际只有一处。
+ * 已删除；I4 的行为断言仍在 tests/operations.test.ts（走真实的 move）。 */
 
 /** 传输服务依赖。 */
 export interface TransferServiceDeps {
@@ -270,7 +272,12 @@ export class TransferService {
     try {
       dirInfo = statSync(localAccess.path)
     } catch {
-      throw new Error(E_INVALID_PATH)
+      /*
+       * 【复审 C1 错误码】这里原来说是 E_INVALID_PATH（文案「路径含非法字符」），
+       * 但真实语义是「这个目录不存在」。用户看到「路径不合法」会去检查拼写，
+       * 而正确的动作是「先建这个目录 / 换一个已存在的目录」。
+       */
+      throw new Error(E_NOT_FOUND)
     }
     if (!dirInfo.isDirectory()) throw new Error(E_NOT_A_DIRECTORY)
 

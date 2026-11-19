@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CANONICAL_USER_STORAGE,
   MAX_NAME_BYTES,
   MAX_PATH_BYTES,
   PROTECTED_REMOTE_PATHS,
   assertSafeRemotePath,
+  canonicalRemotePath,
   checkName,
   checkRemotePath,
   isInsideRoot,
   isProtectedRemotePath,
+  isProtectedTransferDirectory,
   isRemoteInside,
   normalizeLocalPath,
   remoteBaseName,
@@ -248,5 +251,64 @@ describe('裁决 5：本地路径必须落在用户选定根目录内', () => {
   it('根目录本身为 / 时一切都算在内（但仍要防 .. 逃逸到根之外）', () => {
     expect(isInsideRoot('/', '/')).toBe(true)
     expect(isInsideRoot('/', '/..')).toBe(true) // 根之上仍是根（POSIX 语义）
+  })
+})
+
+describe('第 2 轮复审 C3：存储别名归一（/sdcard 与 /storage/emulated/0 是同一目录）', () => {
+  it('canonicalRemotePath 把用户存储区别名归一成同一个规范路径', () => {
+    expect(CANONICAL_USER_STORAGE).toBe('/storage/emulated/0')
+    for (const alias of ['/sdcard', '/storage/self/primary', '/storage/emulated/0', '/mnt/sdcard']) {
+      expect(canonicalRemotePath(alias), alias).toBe('/storage/emulated/0')
+    }
+    expect(canonicalRemotePath('/sdcard/Download/x.txt')).toBe('/storage/emulated/0/Download/x.txt')
+    expect(canonicalRemotePath('/mnt/sdcard/DCIM')).toBe('/storage/emulated/0/DCIM')
+  })
+
+  it('非别名的系统路径原样返回（不要误伤 /data、/system）', () => {
+    expect(canonicalRemotePath('/data/local/tmp')).toBe('/data/local/tmp')
+    expect(canonicalRemotePath('/system/bin')).toBe('/system/bin')
+    // 前缀相同但不是别名的兄弟目录不能被改写
+    expect(canonicalRemotePath('/sdcardx')).toBe('/sdcardx')
+    expect(canonicalRemotePath('/storage/emulated/1')).toBe('/storage/emulated/1')
+  })
+
+  it('跨别名写到自身子目录 → 判定为自包含（真机实测会无界递归）', () => {
+    // 复审实测：2 秒内目录数从 2 涨到 88
+    expect(isRemoteInside('/sdcard/A', '/storage/emulated/0/A/inner')).toBe(true)
+    expect(isRemoteInside('/storage/emulated/0/A', '/sdcard/A/inner')).toBe(true)
+    expect(isRemoteInside('/sdcard/A', '/mnt/sdcard/A/inner')).toBe(true)
+    // 别名归一后仍是兄弟目录 → 放行（不能误杀）
+    expect(isRemoteInside('/sdcard/A', '/storage/emulated/0/B')).toBe(false)
+  })
+
+  it('同一目录的不同别名写法判为相等', () => {
+    expect(isRemoteInside('/sdcard/A', '/storage/emulated/0/A')).toBe(true)
+    expect(isRemoteInside('/sdcard', '/storage/emulated/0')).toBe(true)
+  })
+})
+
+describe('第 2 轮复审 N2 / N3：目标目录的可写判定', () => {
+  it('用户存储根与其子目录可写（首屏默认目录就是 /sdcard）', () => {
+    for (const dir of ['/sdcard', '/storage/emulated/0', '/storage/self/primary', '/sdcard/Download', '/sdcard/DCIM']) {
+      expect(isProtectedTransferDirectory(dir), dir).toBe(false)
+    }
+  })
+
+  it('设备根与挂载点容器不可写（N3：/ 必须拒）', () => {
+    for (const dir of ['/', '/storage', '/mnt']) {
+      expect(isProtectedTransferDirectory(dir), dir).toBe(true)
+    }
+  })
+
+  it('系统区子树不可写（C2 绕过的来源侧同一条判据）', () => {
+    for (const dir of ['/data', '/data/local/tmp', '/system', '/system/bin', '/vendor/lib', '/proc']) {
+      expect(isProtectedTransferDirectory(dir), dir).toBe(true)
+    }
+  })
+
+  it('受保护的存储子目录不可写，但其下的具体 App 目录可写', () => {
+    expect(isProtectedTransferDirectory('/sdcard/Android')).toBe(true)
+    expect(isProtectedTransferDirectory('/storage/emulated/0/Android')).toBe(true)
+    expect(isProtectedTransferDirectory('/sdcard/Android/data/com.example.app')).toBe(false)
   })
 })
