@@ -128,10 +128,19 @@ describe('传输 IPC：入参校验', () => {
 describe('传输 IPC：取消 / 重试 / 快照 / 清除', () => {
   it('cancel 成功回任务，非法 id 回 E_BAD_ARGS，不存在回 E_NOT_FOUND', async () => {
     const h = harness()
-    await h.invoke(CH.TRANSFER_ENQUEUE, { serial: 'S1', direction: 'push', src: 'C:/a.bin', dstDir: '/x' })
-    const ok = await h.invoke(CH.TRANSFER_CANCEL, { id: 'task-x' })
-    // 假调度器只认得 enqueue 时塞进去的 x1；这里用 get 判断比猜 id 更稳
-    expect(ok).toBeDefined()
+    /* 【审查 M1】修前这里用了硬编码的 'task-x' 再断言 toBeDefined() ——
+     * 那个断言对任何返回值都成立（包括 {ok:false}），等于没测。
+     * 现在用 enqueue 真实返回的 id，并断言 canceled 状态。 */
+    const enqueued = await h.invoke(CH.TRANSFER_ENQUEUE, {
+      serial: 'S1', direction: 'push', src: 'C:/a.bin', dstDir: '/x',
+    }) as { ok: boolean; data: TransferTask }
+    expect(enqueued.ok).toBe(true)
+    const ok = await h.invoke(CH.TRANSFER_CANCEL, { id: enqueued.data.id }) as {
+      ok: boolean; data: TransferTask
+    }
+    expect(ok.ok).toBe(true)
+    expect(ok.data.id).toBe(enqueued.data.id)
+    expect(ok.data.status).toBe('canceled')
     expect((await h.invoke(CH.TRANSFER_CANCEL, {})) as { error: string }).toMatchObject({ ok: false, error: E_BAD_ARGS })
     expect((await h.invoke(CH.TRANSFER_CANCEL, { id: 'nope' })) as { error: string }).toMatchObject({ ok: false, error: 'E_NOT_FOUND' })
   })

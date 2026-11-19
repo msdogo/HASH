@@ -138,10 +138,20 @@ describe('裁决 2：运行中 abort 的语义', () => {
     controller.abort()
     await expect(pending).rejects.toThrow(E_ABORTED)
 
-    // 500ms 后系统层必须归零
-    await wait(500)
+    /*
+     * 【审查 I】更强断言：reject 返回的那一刻就查进程表，不 sleep。
+     *
+     * 修前 killTree 是 fire-and-forget，所以「取消后 500ms 归零」是概率性的 ——
+     * 机器一忙，taskkill 还在排队。现在 killTree 返回 Promise 且 abort 路径
+     * 等它完成才 reject，于是「reject 已返回 ⇒ 进程树已死」应当是**确定性**的。
+     *
+     * 保留 500ms 那条作为兜底（防止将来又退回 fire-and-forget 时这里偶然变绿）。
+     */
     expect(liveProcessesWithTag(tag)).toBe(0)
     expect(adbChildCount()).toBe(0)
+
+    await wait(500)
+    expect(liveProcessesWithTag(tag)).toBe(0)
   }, 30_000)
 
   it('abort 之后不会因为 close 迟到而 resolve（settle 只发生一次）', async () => {

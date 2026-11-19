@@ -103,6 +103,22 @@ describe('底栏行构造', () => {
     const many = Array.from({ length: 20 }, (_, i) => task({ id: 'x' + i, status: 'done' }))
     expect(dockRows(snap(many))).toHaveLength(MAX_ROWS)
   })
+
+  /*
+   * 【审查 M6】修前是整个数组 slice(0, MAX_ROWS)：一次上传 8 个文件时，
+   * 第 7、8 个任务即使正在跑也会从底栏消失，用户会以为没传。
+   * 现在 MAX_ROWS 只截断终态行，活跃行永不截断。
+   */
+  it('活跃任务不受 MAX_ROWS 限制（一次传 8 个文件时必须全看得到）', () => {
+    const many = [
+      ...Array.from({ length: 8 }, (_, i) => task({ id: 'run' + i, status: 'running' as const })),
+      ...Array.from({ length: 5 }, (_, i) => task({ id: 'done' + i, status: 'done' as const })),
+    ]
+    const rows = dockRows(snap(many))
+    // 8 个在跑的全在，终态一条都放不下（预算 6-8 < 0）
+    expect(rows.filter((r) => r.status === 'running')).toHaveLength(8)
+    expect(rows.filter((r) => r.status === 'done')).toHaveLength(0)
+  })
 })
 
 describe('快照派生判断', () => {

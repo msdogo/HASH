@@ -48,7 +48,10 @@ export function serialTail(serial: string): string {
  *
  * 排序规则：正在跑的在最前（用户最关心），然后是排队中，最后是终态；
  * 同组内保持入队顺序（快照本身就是按入队顺序给的）。
- * 终态任务全部显示会把底栏撑爆，所以只保留最近 MAX_ROWS 条终态。
+ *
+ * 【审查 M6】MAX_ROWS 只截断【终态】行，活跃行永不截断。
+ * 修前是整个数组 slice(0, MAX_ROWS)：一次上传 8 个文件时，第 7、8 个任务
+ * 即使正在跑也会从底栏消失 —— 用户会以为没传。
  */
 export const MAX_ROWS = 6
 
@@ -63,7 +66,9 @@ export function dockRows(snapshot: TransferSnapshot, offlineSerials: readonly st
     else if (task.status === 'queued') queued.push(row)
     else finished.push(row)
   }
-  return [...running, ...queued, ...finished].slice(0, MAX_ROWS)
+  // 活跃行全留；终态只用剩余额度补足（running + queued 本身超过上限时，终态一条都不显示）
+  const budget = Math.max(0, MAX_ROWS - running.length - queued.length)
+  return [...running, ...queued, ...finished.slice(0, budget)]
 }
 
 function toRow(task: TransferTask, offline: Set<string>): DockRow {
@@ -71,7 +76,12 @@ function toRow(task: TransferTask, offline: Set<string>): DockRow {
     id: task.id,
     serialTail: serialTail(task.serial),
     direction: task.direction,
-    fileName: baseNameOf(task.direction === 'push' ? task.src : task.src),
+    /*
+     * 【审查 M4】push 与 pull 的文件名都在 src 一侧：
+     * push 的 src 是本地源文件、pull 的 src 是远程源文件；dst 是落点（目录或完整路径）。
+     * 修前这里是个两个分支相同、毫无作用的三元，容易让人误以为取错了字段。
+     */
+    fileName: baseNameOf(task.src),
     status: task.status,
     progress: progressView(task.doneBytes, task.totalBytes),
     progressText: progressLabel(task),

@@ -349,12 +349,19 @@ describe('裁决 4：万级条目排序性能', () => {
     expect(bestOfSortMs(bigDirectory(10_000), 'size', 'desc')).toBeLessThan(100)
   })
 
+  /* 【审查 M】这条原来还是单次测量 —— 上一条改成 best-of-N 后漏了它，
+   * 并行负载下同样会偶发假红。口径统一，理由同 bestOfSortMs 的注释。 */
   it('1 万条按时间排序 + 过滤 < 100ms', () => {
     const list = bigDirectory(10_000)
-    const start = performance.now()
-    const sorted = sortEntries(filterEntries(list, { showHidden: false }), 'time', 'asc')
-    expect(sorted.length).toBeGreaterThan(0)
-    expect(performance.now() - start).toBeLessThan(100)
+    let best = Number.POSITIVE_INFINITY
+    for (let i = 0; i < PERF_RUNS; i++) {
+      const start = performance.now()
+      const sorted = sortEntries(filterEntries(list, { showHidden: false }), 'time', 'asc')
+      const elapsed = performance.now() - start
+      expect(sorted.length).toBeGreaterThan(0)
+      if (elapsed < best) best = elapsed
+    }
+    expect(best).toBeLessThan(100)
   })
 })
 

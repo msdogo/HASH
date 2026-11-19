@@ -75,28 +75,10 @@ export class AdbClient {
         reject(new Error(E_SHUTDOWN))
         return
       }
-
       let stdout = ''
       let stderr = ''
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
-      /**
-       * 【裁决 2 / 任务 2 遗留债】取消必须 reject E_ABORTED。
-       *
-       * 修前的 bug：onAbort 只 killTree 不 settle。子进程被杀后照常触发 close，
-       * 走的是 child.on('close') → resolve({ code: null }) ——
-       * 「被用户取消的命令」在调用方看来是**成功返回**。
-       * 传输调度器据此把任务判成完成、把 doneBytes 写满，进度条直接跳到 100%。
-       *
-       * 现在：abort 立即经 finish 以 E_ABORTED settle（finish 的 settled 断言
-       * 让随后迟到的 close/error 一律变成 no-op），再杀进程树。
-       * 先 settle 再杀是刻意的：killTree 在 Windows 上走异步 taskkill，
-       * 等它返回才 settle 会让用户感到取消有明显的延迟。
-       */
-      const onAbort = (): void => {
-        finish(() => { reject(new Error(E_ABORTED)) })
-        killTree(child)
-      }
 
       // 单一出口：所有 settle 路径（close / error / 超时 / 预取消）必须经过这里，
       // 清理逻辑（定时器、abort 监听器、在手登记）只写在这一处。
@@ -108,6 +90,40 @@ export class AdbClient {
         untrackChild(child)
         fn()
       }
+
+      /**
+       * 【审查 I】先标记 settled（挡住迟到的 close/error），再杀进程树，
+       * **等 taskkill 真正退出之后**才 reject。
+       *
+       * 为什么要等到杀完：killTree 在 Windows 上是 taskkill /T /F，异步的。
+       * 修前是 fire-and-forget，于是「取消 Promise 返回时进程已死」只是概率性成立 ——
+       * 审查实测：机器一忙，调用方数进程时 taskkill 还在排队。
+       * 现在 reject 与「进程树确实死透」是同一个时刻，调用方可以**立刻**查进程表。
+       *
+       * 为什么仍要先把 settled 置位：如果等杀完再置位，子进程的 close 事件可能先到，
+       * 走进 resolve({code}) 分支 —— 那正是本任务修掉的「取消被当成成功」的老 bug。
+       * 所以顺序必须是：先封口（settled），再杀，最后 reject。
+       */
+      const abortOrTimeout = (code: string): void => {
+        if (settled) return
+        settled = true
+        if (timer !== undefined) clearTimeout(timer)
+        opts.signal?.removeEventListener('abort', onAbort)
+        untrackChild(child)
+        const killed = killTree(child)
+        const fail = (): void => { reject(new Error(code)) }
+        killed.then(fail, fail)
+      }
+
+      /**
+       * 【裁决 2 / 任务 2 遗留债】取消必须 reject E_ABORTED。
+       *
+       * 修前的 bug：onAbort 只 killTree 不 settle。子进程被杀后照常触发 close，
+       * 走的是 child.on('close') → resolve({ code: null }) ——
+       * 「被用户取消的命令」在调用方看来是**成功返回**。
+       * 传输调度器据此把任务判成完成、把 doneBytes 写满，进度条直接跳到 100%。
+       */
+      const onAbort = (): void => { abortOrTimeout(E_ABORTED) }
 
       // setEncoding 走 StringDecoder，多字节字符跨 chunk 时自动拼接，
       // 不会像 buf.toString('utf8') 那样把半个汉字变成 U+FFFD 且无法回补。
@@ -128,12 +144,15 @@ export class AdbClient {
       // 只挂监听不会误触发，而反过来的顺序会漏掉「检查通过、挂监听之前」那次 abort。
       opts.signal?.addEventListener('abort', onAbort)
       if (opts.signal?.aborted) {
-        finish(() => { killTree(child); reject(new Error(E_ABORTED)) })
+        abortOrTimeout(E_ABORTED)
         return
       }
 
+      timer = setTimeout(() => { abortOrTimeout(E_TIMEOUT) }, timeoutMs)
+
       timer = setTimeout(() => {
-        finish(() => { killTree(child); reject(new Error(E_TIMEOUT)) })
+        void killTree(child)
+        finish(() => { reject(new Error(E_TIMEOUT)) })
       }, timeoutMs)
     })
   }

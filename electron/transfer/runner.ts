@@ -1,7 +1,8 @@
 import { statSync, existsSync } from 'node:fs'
+import { cleanupPartFile, makePartPath, promotePartFile } from './atomic'
 import { AdbClient, E_ABORTED, type RunResult } from '../adb/client'
 import { E_INVALID_PATH, shellQuote } from '../adb/shellsafe'
-import { E_NO_PERMISSION, E_NOT_FOUND, E_SYNC_FAILED, E_TIMEOUT } from '../../src/shared/errors'
+import { E_ADB_NOT_FOUND, E_NO_PERMISSION, E_NOT_FOUND, E_SYNC_FAILED, E_TIMEOUT } from '../../src/shared/errors'
 import { joinPath } from '../fs/remote'
 import type { Direction } from '../../src/shared/transfer'
 import { parseTransferSummary } from '../../src/shared/transfer'
@@ -36,8 +37,20 @@ export const TRANSFER_TIMEOUT_MS = 6 * 60 * 60 * 1000
 
 /** 执行所需的依赖。 */
 export interface RunnerDeps {
-  /** 已定位的 adb 绝对路径。 */
-  adbPath: string
+  /**
+   * 取【当前】adb 绝对路径，**每次执行时现取**。
+   *
+   * 【审查 C1】这里原来是一个 string，由构造函数取值固化。
+   * 生产装配（main.ts）在模块顶层就 new TransferService，那一刻 adb 自检还是
+   * checking，getter 返回 ''，于是 runner 里永久存着 ''；
+   * 之后自检成功也再没人更新它 → spawn('') 抛 ERR_INVALID_ARG_VALUE
+   * → 被 catch 吞成 E_SYNC_FAILED → **真实应用里每一次传输都必然失败**。
+   * 单测全部注入了 runner 或直接用 createTransferRunner，恰好绕开了这条路径。
+   *
+   * 改成 getter 后，「构造时未就绪、执行时已就绪」能正常工作。
+   * 注释里原本就写着这个意图，但代码没做到 —— 现在代码与注释一致。
+   */
+  adbPath: () => string
   /**
    * 按 serial 造 client。
    * 单独注入而不是直接收一个 client，是为了让一个 runner 服务多台设备。
@@ -209,7 +222,7 @@ export class TransferRunner {
    */
   async resolveTotalBytes(direction: Direction, src: string, serial: string): Promise<number | null> {
     if (direction === 'push') return localSize(src)
-    return remoteSize(this.deps.clientFor(serial), this.deps.adbPath, src)
+    return remoteSize(this.deps.clientFor(serial), this.deps.adbPath(), src)
   }
 
   /**
@@ -223,7 +236,14 @@ export class TransferRunner {
    */
   async run(task: TransferRun, ctx: RunContext): Promise<RunOutcome> {
     const client = this.deps.clientFor(task.serial)
-    const adbPath = this.deps.adbPath
+    // 【审查 C1】每次 run 现取，绝不在构造时固化：
+    // 服务在 adb 自检完成之前就构造好了，那一刻路径还是空串。
+    const adbPath = this.deps.adbPath()
+    if (adbPath === '') {
+      // 明确失败而不是让 spawn('') 抛 ERR_INVALID_ARG_VALUE 再被吞成 E_SYNC_FAILED：
+      // 「adb 还没就绪」与「传输失败」对用户是两件事，错误码必须能区分。
+      return { ok: false, code: E_ADB_NOT_FOUND }
+    }
     const pollMs = this.deps.pollMs ?? PROGRESS_POLL_MS
     const sleep = this.deps.sleep ?? defaultSleep
 
@@ -235,16 +255,28 @@ export class TransferRunner {
       return { ok: false, code: E_INVALID_PATH }
     }
 
+    /*
+     * 【审查 I2】一律先写临时文件，成功后再原子改名到目标名。
+     *
+     * 修前直接写目标名，而 adb 是「先截断目标再写」：
+     * 取消/中断会留下一个同名截断文件；若原来是覆盖已有文件，
+     * **旧文件已经被截断**，等于既没传完又把原文件毁了（数据丢失级）。
+     * 现在目标文件在传输成功之前完全不会被碰。
+     */
+    const partPath = makePartPath(task.dst)
+
     // 覆盖提示（裁决 7）：默认覆盖，但要告诉用户覆盖了。
     // 探测失败一律当「不存在」，绝不因为探测问题阻止传输。
+    // 探测的是【最终目标】而不是临时文件 —— 用户关心的是会不会盖掉他的东西。
     const preexisting =
       task.direction === 'push'
         ? await remoteExists(client, adbPath, task.dst)
         : existsSync(task.dst)
 
+    // 传输写到临时路径
     const args = task.direction === 'push'
-      ? ['push', task.src, task.dst]
-      : ['pull', task.src, task.dst]
+      ? ['push', task.src, partPath]
+      : ['pull', task.src, partPath]
 
     let polling = true
     let lastDone = 0
@@ -253,9 +285,11 @@ export class TransferRunner {
       while (polling) {
         await sleep(pollMs)
         if (!polling) return
+        // 轮询的是【临时文件】：内容先落到 .adbfm-part，改名之后才叫目标名。
+        // 盯错对象会让进度一直读到旧目标文件的大小（甚至读到 0）。
         const size = task.direction === 'push'
-          ? await remoteSize(client, adbPath, task.dst)
-          : localSize(task.dst)
+          ? await remoteSize(client, adbPath, partPath)
+          : localSize(partPath)
         if (size === null) continue
         // 单调：轮询偶尔会读到旧值（缓存/延迟），回退会让进度条来回跳
         if (size < lastDone) continue
@@ -276,6 +310,8 @@ export class TransferRunner {
     } catch (err) {
       polling = false
       await pollingPromise
+      // 【审查 I2】取消/失败：只删临时文件，目标文件保持原样
+      await this.discardPart(client, adbPath, task.direction, partPath)
       const message = err instanceof Error ? err.message : String(err)
       if (message.includes(E_ABORTED)) return { ok: false, code: E_ABORTED }
       if (message.includes(E_TIMEOUT)) return { ok: false, code: E_TIMEOUT }
@@ -286,26 +322,114 @@ export class TransferRunner {
     await pollingPromise
 
     const failed = classifyTransferError(result.code, result.stderr)
-    if (failed !== null) return { ok: false, code: failed }
+    if (failed !== null) {
+      await this.discardPart(client, adbPath, task.direction, partPath)
+      return { ok: false, code: failed }
+    }
 
-    // 汇总行在 **stderr**（真机实测），不在 stdout
+    /*
+     * 传输成功 → 把临时文件原子改名成目标名。
+     *
+     * 这是 I2 的另一半：正因为写的是临时名，这里改名才是「一次性生效」的，
+     * 用户永远看不到「目标文件只写了一半」的中间态。
+     */
+    const promoted = await this.promote(client, adbPath, task.direction, partPath, task.dst)
+    if (!promoted) {
+      await this.discardPart(client, adbPath, task.direction, partPath)
+      return { ok: false, code: E_SYNC_FAILED }
+    }
+
+    // 汇总行在 stderr（真机实测），不在 stdout
     const summary = parseTransferSummary(result.stderr)
     const bytes = summary?.bytes ?? task.totalBytes ?? lastDone
     ctx.onProgress(bytes, task.totalBytes)
 
     return { ok: true, bytes, overwrote: preexisting }
   }
+
+  /**
+   * 把临时文件改名为目标文件。
+   *
+   * push：设备侧改名，走 adb shell mv。必须用 shellQuote —— 文件名可以有中文、
+   *       空格、括号，不转义会被 shell 拆成多个单词。
+   * pull：本地改名，fs.renameSync 在同一文件系统上是原子的。
+   *
+   * 返回是否成功。失败时调用方负责清理临时文件。
+   */
+  private async promote(
+    client: AdbClient,
+    adbPath: string,
+    direction: Direction,
+    partPath: string,
+    targetPath: string,
+  ): Promise<boolean> {
+    if (direction === 'pull') {
+      try {
+        promotePartFile(partPath, targetPath)
+        return true
+      } catch {
+        return false
+      }
+    }
+    try {
+      // -f：目标已存在时直接覆盖（这正是裁决 7 的「默认覆盖」）
+      const result = await client.run(
+        ['shell', 'mv -f -- ' + shellQuote(partPath) + ' ' + shellQuote(targetPath)],
+        { adbPath, timeoutMs: 60_000 },
+      )
+      return result.code === 0
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 丢弃临时文件（取消 / 失败路径）。
+   *
+   * 红线：**只删临时文件，绝不碰目标文件**。这是 I2 的核心不变量 ——
+   * 覆盖场景下目标就是用户的原文件，删了就真没了。
+   *
+   * 这里刻意用独立的 adb 命令而不是 ctx.signal 上的那个进程：
+   * 传输进程已经被 abort 杀掉了，清理必须另起一条（且不带 signal）。
+   */
+  private async discardPart(
+    client: AdbClient,
+    adbPath: string,
+    direction: Direction,
+    partPath: string,
+  ): Promise<void> {
+    if (direction === 'pull') {
+      cleanupPartFile(partPath)
+      return
+    }
+    try {
+      await client.run(['shell', 'rm -f -- ' + shellQuote(partPath)], {
+        adbPath,
+        timeoutMs: 30_000,
+      })
+    } catch {
+      // 清理失败不该覆盖掉真正的失败原因：残留的 .adbfm-part 有固定后缀，
+      // 既会被下次传输覆盖，也能被用户/诊断识别出来。
+    }
+  }
 }
 
-/** 造一个 runner（clientFor 缺省用 AdbClient）。 */
+/**
+ * 造一个 runner（clientFor 缺省用 AdbClient）。
+ *
+ * adbPath 既接受 string 也接受 getter：传 string 是最常见的便利写法，
+ * 内部包成常量 getter —— 但**生产代码必须传 getter**，
+ * 否则就退回 C1 那个「构造时固化空路径」的坑。
+ */
 export function createTransferRunner(deps: {
-  adbPath: string
+  adbPath: string | (() => string)
   clientFor?: (serial: string) => AdbClient
   pollMs?: number
   sleep?: (ms: number) => Promise<void>
 }): TransferRunner {
+  const resolvePath = typeof deps.adbPath === 'function' ? deps.adbPath : () => deps.adbPath as string
   return new TransferRunner({
-    adbPath: deps.adbPath,
+    adbPath: resolvePath,
     clientFor: deps.clientFor ?? ((serial: string) => new AdbClient(serial)),
     pollMs: deps.pollMs,
     sleep: deps.sleep,

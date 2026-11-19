@@ -11,6 +11,7 @@ import { DeviceManager } from './devices/manager'
 import { applyCsp } from './csp'
 import { CH } from './ipc/channels'
 import { registerHandlers } from './ipc/handlers'
+import { applyOnlineDiff, diffOnlineSerials } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
 import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
@@ -204,7 +205,25 @@ app.whenReady().then(async () => {
           // adb 状态随每次推送下发（I8 已把该字段改成必填）。
           adbState: () => adbState,
         })
-        tracking.onDevicesChanged((batch) => { broadcast(batch) })
+        /*
+         * 【审查 I1】设备上下线必须接到传输队列上。
+         *
+         * 修前这里只 broadcast 给渲染层，transfer.setDeviceOnline 全仓没有生产调用方：
+         * 设备拔掉后在跑的任务会挂到 6 小时超时，排队任务也不会暂停，
+         * 「离线，等待重连」的界面状态永远不会出现 —— 裁决 4 只是纸面满足。
+         *
+         * 用「上一次推送的设备表」与「本次推送后的设备表」做差分：
+         * 只有真正发生状态翻转的设备才会触发暂停/恢复，避免设备表全量重发时抖动。
+         */
+        tracking.onDevicesChanged((batch) => {
+          const before = devices.list()
+          // 先让 DeviceManager 落库，再取一次最新表——差分要的是「变化后」的状态
+          broadcast(batch)
+          const after = devices.list()
+          applyOnlineDiff(diffOnlineSerials(before, after), transfer)
+          // 设备状态变化可能让排队任务可以继续，也可能改动了进度提示
+          broadcastTransfer()
+        })
         tracking.start()
       },
       notifyAdbState: () => {

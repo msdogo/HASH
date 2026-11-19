@@ -6,3 +6,5 @@ resources/platform-tools/
 .superpowers/
 *.log
 *.tsbuildinfo
+# 假 adb 是测试替身：源码随仓库走（保证用例可复现），编译产物不入库
+.fakeadbfiles/*.exe

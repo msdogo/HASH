@@ -45,8 +45,13 @@ export interface TransferServiceDeps {
   /** 单设备 / 全局并发。 */
   maxPerDevice?: number
   maxGlobal?: number
-  /** 仅测试注入。 */
-  runner?: (adbPath: string) => TransferRunner
+  /**
+   * 仅测试注入。
+   *
+   * 参数是 **getter** 而不是取好的字符串：这样才能测出「构造时未就绪、
+   * 执行时就绪」这条生产路径（C1 的回归用例正是这么造的）。
+   */
+  runner?: (adbPath: () => string) => TransferRunner
 }
 
 export class TransferService {
@@ -69,10 +74,20 @@ export class TransferService {
   }
 
   constructor(private readonly deps: TransferServiceDeps) {
+    /*
+     * 【审查 C1】这里**不能**调 deps.adbPath() 把值取出来固化。
+     *
+     * 生产里 TransferService 是在 main.ts 模块顶层构造的，此刻 adb 自检还在
+     * checking、getter 返回 ''。修前正是把 '' 存进了 runner，导致真实应用里
+     * 每一次传输都 spawn('') 失败（E_SYNC_FAILED），而所有单测都注入了 runner
+     * 或直连 createTransferRunner，恰好把这条路径全绕开了。
+     *
+     * 现在原样传 getter，由 runner 在每次执行时现取。
+     */
     this.runner = deps.runner !== undefined
-      ? deps.runner(deps.adbPath())
+      ? deps.runner(deps.adbPath)
       : new TransferRunner({
-          adbPath: deps.adbPath(),
+          adbPath: deps.adbPath,
           clientFor: deps.clientFor,
         })
 
@@ -147,7 +162,12 @@ export class TransferService {
     })
   }
 
-  /** 设备上下线（由设备跟踪器调用）。 */
+  /**
+   * 设备上下线（由 main.ts 的 tracker 推送调用，见 electron/app/transfer-wiring.ts）。
+   *
+   * 【审查 I1】这个方法在首版里没有任何生产调用方，导致「掉线暂停」只在测试里成立。
+   * 现在 main.ts 的 onDevicesChanged 会做快照差分并调到这里。
+   */
   setDeviceOnline(serial: string, online: boolean): void {
     this.manager.setDeviceOnline(serial, online)
   }

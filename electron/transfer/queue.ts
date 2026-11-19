@@ -69,8 +69,13 @@ export class TransferQueue {
       direction: input.direction,
       src: input.src,
       dst: input.dst,
-      // 负总量/非有限数一律当未知，绝不留下会让百分比算疯的值
-      totalBytes: total !== null && Number.isFinite(total) && total >= 0 ? total : null,
+      /*
+       * 负总量/非有限数/超安全整数一律当未知，绝不留下会让百分比算疯的值。
+       * 【审查 M9】补 isSafeInteger：与 runner 的 parseByteCount 保持一致。
+       * 显示层 progressView 虽然也兜了这个，但任务对象本身不该携带一个
+       * 超出 JS 精确整数范围的大小 —— 那是脏数据，不该指望下游每处都防。
+       */
+      totalBytes: total !== null && Number.isSafeInteger(total) && total >= 0 ? total : null,
       doneBytes: 0,
       status: 'queued',
       attempt: 0,

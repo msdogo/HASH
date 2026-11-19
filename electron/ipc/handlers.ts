@@ -167,14 +167,33 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     if (deps.devices.get(serial) === undefined) return fail(E_NO_SERIAL)
     if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
 
-    const target = deps.transfer.enqueue({ serial, direction, src, dstDir })
-    return { ok: true, data: target }
+    /*
+     * 【审查 I3】必须包 try/catch。
+     *
+     * service.enqueue 会为真实场景抛错：本地文件不存在（statSync ENOENT）、
+     * 是指向目录（E_NOT_A_DIRECTORY）、路径非法（E_INVALID_PATH）。
+     * 修前这里直接 throw，穿过 ipcMain.handle 被 Electron 包成
+     * "Error invoking remote method"，渲染层 store 只处理 result.ok === false，
+     * 于是 await 直接抛、**界面没有任何提示**，只留下一个未捕获 Promise。
+     *
+     * 现在与 fs:list 一致：收敛成 { ok:false, error:<码> }。
+     */
+    try {
+      const target = deps.transfer.enqueue({ serial, direction, src, dstDir })
+      return { ok: true, data: target }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
   })
 
   handle(CH.TRANSFER_CANCEL, (_event, payload): IpcResult<TransferTask> => {
     const parsed = TRANSFER_ID_INPUT.safeParse(payload)
     if (!parsed.success) return fail(E_BAD_ARGS)
-    if (!deps.transfer.cancel(parsed.data.id)) return fail(E_NOT_FOUND)
+    try {
+      if (!deps.transfer.cancel(parsed.data.id)) return fail(E_NOT_FOUND)
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
     const task = deps.transfer.get(parsed.data.id)
     if (task === undefined) return fail(E_NOT_FOUND)
     return { ok: true, data: task }

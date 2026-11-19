@@ -62,7 +62,12 @@ const messages: Record<string, string> = {
   'transfer.title': '传输',
   'transfer.idle': '传输空闲',
   'transfer.upload': '上传到当前目录',
-  'transfer.download': '下载到本地',
+  /*
+   * 【审查 M5】原有一条 'transfer.download': '下载到本地' 已删除：
+   * 渲染层没有下载入口（审查 I4 已记为跨任务缺口），留着就是一个没人引用的
+   * 「许愿池」key，会让人误以为功能已经接好了。
+   * 下载 UI 落地时（任务 9 本地双栏）再连同入口一起加回来。
+   */
   'transfer.cancel': '取消',
   'transfer.retry': '重试',
   'transfer.clearFinished': '清除已完成',
@@ -77,9 +82,7 @@ const messages: Record<string, string> = {
   'transfer.overwrote': '已覆盖同名文件',
   'transfer.summary': '{running} 个传输中 · {queued} 个排队',
   'transfer.queuedOnOffline': '设备离线，等待重连',
-  'transfer.created': '已加入传输队列',
   'transfer.noDevice': '请先选择设备',
-  'transfer.pickFailed': '打开文件选择框失败',
 }
 
 /**

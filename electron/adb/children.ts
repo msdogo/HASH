@@ -80,26 +80,53 @@ export function spawnTracked(
  * Windows 上 child.kill() 只终结直接子进程，cmd/adb 派生的孙进程会存活，必须走 taskkill /T /F；
  * POSIX 上用 detached 建立的进程组，对 -pid 发信号即可整组终结。
  */
-export function killTree(child: ChildProcess): void {
+export function killTree(child: ChildProcess): Promise<void> {
   const pid = child.pid
   if (pid === undefined) {
     child.kill()
-    return
+    return Promise.resolve()
   }
   if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
-    return
+    /*
+     * 【任务 8 审查 I】这里原来是 fire-and-forget：spawn('taskkill') 之后立刻返回，
+     * 于是「取消后 500ms 系统层归零」是**概率性**的 —— 机器一忙，taskkill 还没跑完
+     * 调用方就已经在数进程了。审查用变异实测过这个窗口确实存在。
+     *
+     * 现在返回 Promise，等 taskkill 真正退出（close/error）再 resolve，
+     * 调用方可以 await 它，从而把「取消返回时进程确实已死」变成确定性保证，
+     * 而不是靠 sleep 500ms 撞运气。
+     *
+     * 注意：这里的 spawn 不走 spawnTracked —— killTree 是**清理**动作，
+     * 必须能在关闭闸门（closed）置位之后照常执行，否则退出流程就杀不掉进程了。
+     * 这是既有的有意设计，不是遗漏。
+     */
+    return new Promise<void>((resolve) => {
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+      killer.on('close', () => { resolve() })
+      killer.on('error', () => {
+        // taskkill 起不来（极罕见）：退回只杀直接子进程，然后照常 resolve
+        try { child.kill() } catch { /* 已经死了 */ }
+        resolve()
+      })
+    })
   }
   try {
     process.kill(-pid, 'SIGKILL')
   } catch {
     child.kill('SIGKILL')
   }
+  return Promise.resolve()
 }
 
 /** 回收全部在手 adb 子进程（不置位闸门；用于测试重置与普通清理）。 */
 export function killAllAdbChildren(): void {
-  for (const child of live) killTree(child)
+  // killTree 现在是异步的，这里刻意不 await：killAllAdbChildren 的调用方
+  // （测试清理、before-quit）是同步上下文，且它们不关心「何时死透」，
+  // 只关心「已经发出击杀」。需要确定性等待的地方请直接用 killTree 的 Promise。
+  for (const child of live) { void killTree(child) }
   live.clear()
 }
 

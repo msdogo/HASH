@@ -140,7 +140,21 @@ describe('AdbClient', () => {
       await expect(
         client.run(hangThenWriteArgs(marker), { adbPath: SHELL, timeoutMs: 100 }),
       ).rejects.toThrow(E_TIMEOUT)
-      expect(Date.now() - startedAt).toBeLessThan(900)
+      /*
+       * 【任务 8 审查 I 之后语义变了，断言随之调整（不是放宽，是换了度量对象）】
+       *
+       * 修前：killTree 是 fire-and-forget，settle 立刻发生，所以「<900ms」度量的是
+       *       「finish() 不等子进程自然退出」。
+       * 修后：按审查要求，reject 发生在 **killTree 的 Promise 完成之后** ——
+       *       于是「调用方拿到 reject 时，进程树确实已经死透」成为确定性保证
+       *       （这正是审查要的「取消后立刻查进程也不该存在」）。
+       *       代价是 settle 时间多了 taskkill 的实际耗时（并行负载下约 1s）。
+       *
+       * 这条断言真正要守的性质没变：**绝不等子进程自然退出**。
+       * 夹具挂起 5 秒（ping -n 6），所以只要 settle 明显早于 5 秒就成立。
+       * 留 4.5s 上限：既远小于夹具的 5s，又给 taskkill 在重负载下留足余量。
+       */
+      expect(Date.now() - startedAt).toBeLessThan(4500)
       // finish 是唯一出口：超时路径必须完成清理，无需等 close
       expect(adbChildCount()).toBe(0)
       /*
