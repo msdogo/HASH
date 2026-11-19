@@ -325,6 +325,7 @@ export function openTarget(
   entry: FileEntry,
   cwd: string,
   trail: readonly string[],
+  hops = 0,
 ): OpenTarget {
   if (!entry.isLink) {
     if (!entry.isDir) return { kind: 'noop', reason: 'file' }
@@ -336,13 +337,32 @@ export function openTarget(
     return { kind: 'error', code: E_LINK_UNRESOLVED }
   }
   const resolved = normalizePath(target)
-  // 防环三件套：走到上限、指回已走过的目录、指回当前目录
-  if (trail.length >= MAX_LINK_HOPS) return { kind: 'error', code: E_LINK_CYCLE }
+  // 防环三件套（N2：三条都真的能生效，trail 与 hops 由 navigate 真正累加）：
+  // 1. 跳数上限；2. 指回当前目录（自引用）；3. 目标已在走过轨迹里（A→B→A 这种多跳环）
+  if (hops >= MAX_LINK_HOPS) return { kind: 'error', code: E_LINK_CYCLE }
   if (resolved === normalizePath(cwd)) return { kind: 'error', code: E_LINK_CYCLE }
   if (trail.some((visited) => normalizePath(visited) === resolved)) {
     return { kind: 'error', code: E_LINK_CYCLE }
   }
   return { kind: 'enter', path: resolved, followedLink: true }
+}
+
+/**
+ * 把「跟随链接后 fs:list 的失败」翻译成更准确的错误码（N4）。
+ *
+ * 场景（真机实测）：`adb_keys -> /product/etc/security/adb_keys` 是个指向**普通文件**的快捷方式。
+ * 双击它时我们按目录去列举，主进程返回 E_NOT_FOUND（ls 说 "Not a directory"），
+ * 界面于是显示「这个路径不存在」—— 但路径明明存在，只是不是目录，文案把人带偏了。
+ *
+ * 因此：只要失败的是「跟随链接进入」这个动作，E_NOT_FOUND 一律升级为 E_NOT_A_DIRECTORY。
+ * 普通目录的真实失败（打错字、目录被删）保持原样，不受影响。
+ */
+export function mapListError(code: string, entryName: string, target: string): string {
+  // entryName / target 参与签名是为了让调用点必须显式交待「这次是跟随哪个链接」，
+  // 也方便将来按目标类型（文件 / 设备节点 / 断链）细分文案。
+  if (code !== 'E_NOT_FOUND') return code
+  if (entryName === '' && target === '') return code
+  return 'E_NOT_A_DIRECTORY'
 }
 
 /* ============ I7：键盘命令 ============ */
@@ -457,8 +477,16 @@ export interface FileViewState {
   selected: string[]
   /** 列表滚动位置（切设备回来要恢复）。 */
   scrollTop: number
-  /** 本次会话里跟随过的链接目标（防环用；换目录成功后按新目录重置）。 */
+  /**
+   * 本次链接跟随链上走过的路径（防环用）。
+   *
+   * 【审查轮 2 / N2】上一轮只声明、从没写入 —— 于是「轨迹检查」和「跳数上限」都是死代码，
+   * 真机上 A→B→A 两跳环会被完整放行。现在由 navigate action 的 linkTarget 真正写入：
+   * 每次跟随链接都把「出发目录 + 目标」追加进来，导航到普通目录时清空。
+   */
   linkTrail: string[]
+  /** 连续跟随链接的跳数（防环第二道；导航到普通目录时归零）。 */
+  linkHops: number
   /** 是否已经成功加载过至少一次（区分「首次就失败=整页错误」与「有内容时失败=行内提示」）。 */
   loadedOnce: boolean
 }
@@ -474,7 +502,7 @@ export interface FileViewState {
  */
 export type FileViewSlice = Omit<
   FileViewState,
-  'generation' | 'scrollTop' | 'pendingCwd' | 'linkTrail'
+  'generation' | 'scrollTop' | 'pendingCwd' | 'linkTrail' | 'linkHops'
 >
 
 /** fs:list 的返回数据（只取视图需要的字段，避免 store 依赖主进程实现细节）。 */
@@ -489,8 +517,13 @@ export interface ListResultData {
 }
 
 export type FileViewAction =
-  /** 请求跳转（进入子目录 / 面包屑 / 地址栏 / 上一级）：只登记目标，成功后由 resolve 提交 cwd。 */
-  | { type: 'navigate'; cwd: string }
+  /**
+   * 请求跳转（进入子目录 / 面包屑 / 地址栏 / 上一级）：只登记目标，成功后由 resolve 提交 cwd。
+   *
+   * linkTarget 只在「跟随符号链接」时给：它是解析后的目标路径，
+   * 用于把「出发目录 + 目标」真正写进 linkTrail（N2：轨迹与跳数必须由这里累加）。
+   */
+  | { type: 'navigate'; cwd: string; linkTarget?: string }
   /** 重新加载当前目录（刷新）：保留条目、选中与滚动位置，只推进代次。 */
   | { type: 'beginLoad' }
   /** 加载成功；generation 不符即为过期响应，整个状态原样返回。 */
@@ -526,8 +559,24 @@ export function createFileView(): FileViewState {
     selected: [],
     scrollTop: 0,
     linkTrail: [],
+    linkHops: 0,
     loadedOnce: false,
   }
+}
+
+/**
+ * 把「出发目录 + 链接目标」追加进轨迹（N2）。
+ *
+ * 为什么要存【出发目录】而不只是目标：A→B→A 这种两跳环里，
+ * 第二次站在 B 上点一个指回 A 的链接时，「A」必须已经在轨迹里才拦得住。
+ * 只存目标的话，第一跳只记下 B，回到 A 时无从判断。
+ *
+ * 上限：保留最近 MAX_LINK_HOPS*2 条，避免长会话里数组无限增长；
+ * 超出后从头部丢最旧的（旧轨迹已不可能再被走到）。
+ */
+function appendLinkTrail(trail: readonly string[], from: string, to: string): string[] {
+  const next = [...trail, normalizePath(from), normalizePath(to)]
+  return next.length > MAX_LINK_HOPS * 2 ? next.slice(next.length - MAX_LINK_HOPS * 2) : next
 }
 
 /** 选中项与新条目求交集（I2：刷新后不对看不见的条目执行操作）。 */
@@ -550,18 +599,37 @@ function intersectSelected(selected: readonly string[], entries: readonly FileEn
  */
 export function fileViewReducer(state: FileViewState, action: FileViewAction): FileViewState {
   switch (action.type) {
-    case 'navigate':
+    case 'navigate': {
+      const target = normalizePath(action.cwd)
+
+      /*
+       * 【N1】目标就是当前目录（且已加载过）→ 什么都不做，原样返回。
+       *
+       * 修前的 bug：这里先把 status 置成 loading 再让调用方早退不发请求，
+       * 于是没有任何 resolve/fail 来落状态 —— 点当前层面包屑或地址栏输入当前路径后，
+       * 刷新图标会一直转、列表永远停在 loading（真机实测 4-5 秒后仍如此）。
+       * 现在在 reducer 里就短路：引用都不变，连重渲染都不会发生。
+       */
+      if (target === state.cwd && state.loadedOnce) return state
+
       // 【C1】只登记目标：不清空 entries，不动 cwd / selected / scrollTop。
       // 用户打错一个字母时，当前目录与列表必须原样还在（裁决 6 的「不要整页替换」）。
+      //
+      // 【N2】跟随链接时把「出发目录 + 目标」真正写进 linkTrail 并累加跳数；
+      // 导航到普通目录（面包屑、子目录、地址栏）则重置轨迹与跳数。
+      const following = action.linkTarget !== undefined
       return {
         ...state,
-        pendingCwd: normalizePath(action.cwd),
+        pendingCwd: target,
         status: 'loading',
         error: null,
         addressError: null,
         noticeDismissed: false,
         generation: state.generation + 1,
+        linkTrail: following ? appendLinkTrail(state.linkTrail, state.cwd, target) : [],
+        linkHops: following ? state.linkHops + 1 : 0,
       }
+    }
     case 'beginLoad':
       return {
         ...state,
@@ -590,10 +658,12 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         tzOffsetMinutes: data.tzOffsetMinutes,
         notice: noticeFromList(data),
         noticeDismissed: false,
-        // 换目录：选中清空、滚动归零、链接轨迹重置；同目录刷新：只把消失的选中项剔除
+        // 换目录：选中清空、滚动归零；同目录刷新：只把消失的选中项剔除。
+        // 注意：链接轨迹【不在这里重置】—— 它由 navigate action 管理（跟随链接时追加、
+        // 普通导航时清空）；若在 resolve 里按「目录变了」清空，刚追加进去的轨迹会被立即抹掉，
+        // 防环又变回死代码（这正是审查轮 2 / N2 报的问题）。
         selected: sameDir ? intersectSelected(state.selected, data.entries) : [],
         scrollTop: sameDir ? state.scrollTop : 0,
-        linkTrail: sameDir ? state.linkTrail : [],
         loadedOnce: true,
       }
     }
@@ -837,8 +907,12 @@ export interface FileViewsModel {
   getViews: () => FileViews
   ensure: (serial: string) => void
   dispatch: (serial: string, action: FileViewAction) => void
-  /** 请求跳转（成功后由 resolve 提交 cwd）。 */
-  openDir: (serial: string, dir: string) => Promise<void>
+  /**
+   * 请求跳转（成功后由 resolve 提交 cwd）。
+   *
+   * linkTarget 只在跟随符号链接时传（N2）：它让 reducer 把轨迹与跳数真正累加起来。
+   */
+  openDir: (serial: string, dir: string, linkTarget?: string) => Promise<void>
   /** 刷新当前目录。 */
   refresh: (serial: string) => Promise<void>
   /** 加载当前请求目标。 */
@@ -877,11 +951,36 @@ export function createFileViewsModel(deps: FileViewsModelDeps): FileViewsModel {
     order = [serial, ...order.filter((s) => s !== serial)]
   }
 
-  /** 超过上限就淘汰最久未使用的分片（正在显示的设备由调用方通过 ensure 刷新顺序）。 */
+  /** 当前仍然在线的设备（由 syncDevices 维护；用于淘汰时保护，裁决 7 的「切回各自恢复」）。 */
+  let online = new Set<string>()
+
+  /**
+   * 超过上限就淘汰最久未使用的分片。
+   *
+   * 【审查轮 2 / N3】修前两个问题：
+   * 1. evict 不立 tombstone、也不 reset 协调器 —— 被淘汰分片的在飞响应回来时
+   *    会把它**重新建出来**（实测 views 有三个键而 serials() 只有两个）。
+   * 2. 淘汰不区分在线设备 —— 超过上限时可能把「仍然在线」的分片挤掉，
+   *    与裁决 7「切回各自恢复」直接冲突。
+   *
+   * 现在：淘汰 = forget（含 tombstone + reset 协调器）；且**在线设备优先保留**，
+   * 只有当「非在线」的候选都淘汰完、仍超限时，才退而淘汰最久未用的在线分片。
+   */
   const evict = (): void => {
     while (order.length > maxSerials) {
-      const victim = order[order.length - 1]
-      order = order.slice(0, -1)
+      // 只淘汰【非在线】分片：在线设备的视图状态必须保留（裁决 7「切回各自恢复」）。
+      // 若超限的全是在线设备，宁可不淘汰 —— 内存让位于正确性，
+      // 这些分片会在设备断开时由 syncDevices → forget 释放。
+      let victimIndex = -1
+      for (let i = order.length - 1; i >= 0; i--) {
+        if (!online.has(order[i])) { victimIndex = i; break }
+      }
+      if (victimIndex < 0) return
+      const victim = order[victimIndex]
+      order = [...order.slice(0, victimIndex), ...order.slice(victimIndex + 1)]
+      // 与 forget 同款处理：立 tombstone，迟到响应不许复活
+      tombstones.add(victim)
+      coordinator.reset(victim)
       const next = { ...views }
       delete next[victim]
       views = next
@@ -924,13 +1023,19 @@ export function createFileViewsModel(deps: FileViewsModelDeps): FileViewsModel {
       touch(serial)
       publish()
     },
-    openDir: (serial, dir) => {
+    openDir: (serial, dir, linkTarget) => {
       if (tombstones.has(serial)) return Promise.resolve()
       const normalized = normalizePath(dir)
       const view = viewOf(views, serial)
-      model.dispatch(serial, { type: 'navigate', cwd: normalized })
-      // 目标与当前目录相同且已加载过：不必再请求（点面包屑的当前层是常见操作）
+      // 【N1】目标就是当前目录且已加载过：什么都不做（不置 loading、不发请求）。
+      // reducer 里也会短路，这里提前返回是为了不走到 coordinator.load。
       if (normalized === view.cwd && view.loadedOnce) return Promise.resolve()
+      model.dispatch(serial, {
+        type: 'navigate',
+        cwd: normalized,
+        // 【N2】跟随链接时把目标交给 reducer，由它写轨迹与跳数
+        ...(linkTarget === undefined ? {} : { linkTarget: normalizePath(linkTarget) }),
+      })
       return coordinator.load(serial)
     },
     refresh: (serial) => {
@@ -955,6 +1060,8 @@ export function createFileViewsModel(deps: FileViewsModelDeps): FileViewsModel {
     inflight: () => coordinator.inflight(),
     syncDevices: (serials) => {
       const alive = new Set(serials)
+      // 【N3】先更新在线集合，再 ensure（ensure 里的 evict 要据此保护在线设备）
+      online = alive
       for (const serial of serials) model.ensure(serial)
       for (const serial of Object.keys(views)) {
         if (!alive.has(serial)) model.forget(serial)

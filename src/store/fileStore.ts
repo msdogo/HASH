@@ -27,7 +27,7 @@ interface FileStoreState {
   /** 派发一个视图 action。 */
   dispatch: (serial: string, action: FileViewAction) => void
   /** 请求跳转到目录（成功后 cwd 才提交，失败保留当前目录：C1）。 */
-  openDir: (serial: string, dir: string) => Promise<void>
+  openDir: (serial: string, dir: string, linkTarget?: string) => Promise<void>
   /** 重新加载当前目录（条目不清空，新结果到了再替换）。 */
   refresh: (serial: string) => Promise<void>
   /** 加载当前请求目标（首次进入 / 重试）。同目录的在飞请求会复用。 */
@@ -58,7 +58,7 @@ export function createFileStore() {
       views: {},
       ensure: (serial) => { model.ensure(serial) },
       dispatch: (serial, action) => { model.dispatch(serial, action) },
-      openDir: (serial, dir) => model.openDir(serial, dir),
+      openDir: (serial, dir, linkTarget) => model.openDir(serial, dir, linkTarget),
       refresh: (serial) => model.refresh(serial),
       load: (serial) => model.load(serial),
       forget: (serial) => { model.forget(serial) },

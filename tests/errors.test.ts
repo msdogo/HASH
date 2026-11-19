@@ -33,6 +33,8 @@ describe('共享错误码', () => {
       // 审查轮 1（任务 7）：跟随符号链接目录时的两种新增失败
       'E_LINK_UNRESOLVED',
       'E_LINK_CYCLE',
+      // 审查轮 2（任务 7）：指向文件的快捷方式需要单独的文案
+      'E_NOT_A_DIRECTORY',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

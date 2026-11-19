@@ -4,6 +4,7 @@ import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
   isHiddenName,
+  mapListError,
   navKeyCommand,
   openTarget,
   summarizeEntries,
@@ -100,10 +101,16 @@ export function FilesPage() {
 
   const summary = useMemo(() => summarizeEntries(entries), [entries])
 
-  // 链接轨迹（防环）：从 store 现取，不订阅（它只在导航时变，不必触发重渲染）
-  const linkTrailRef = useRef<string[]>([])
+  /*
+   * 链接轨迹与跳数（防环，N2）：从 store 现取，不订阅（只在导航时变，不必触发重渲染）。
+   *
+   * 为什么不放进订阅：它们是导航的中间状态，订阅会让每次跟随链接都多一次整页重渲染；
+   * 而点击处理是事件回调，读 store 的最新值即可。
+   */
+  const linkStateRef = useRef<{ trail: string[]; hops: number }>({ trail: [], hops: 0 })
   useEffect(() => {
-    linkTrailRef.current = serial === null ? [] : useFileStore.getState().views[serial]?.linkTrail ?? []
+    const view = serial === null ? undefined : useFileStore.getState().views[serial]
+    linkStateRef.current = { trail: view?.linkTrail ?? [], hops: view?.linkHops ?? 0 }
   }, [serial, current.cwd])
 
   const reportLinkError = useCallback(
@@ -119,9 +126,27 @@ export function FilesPage() {
     (entry: FileEntry) => {
       if (serial === null) return
       // 【I4】链接目录也要能进：目标解析、无法解析、成环三种情况都在 openTarget 里判（有单测）
-      const target = openTarget(entry, current.cwd, linkTrailRef.current)
+      const { trail, hops } = linkStateRef.current
+      const target = openTarget(entry, current.cwd, trail, hops)
       if (target.kind === 'enter') {
-        void openDir(serial, target.path)
+        // 【N2】跟随链接时把 linkTarget 传下去，reducer 才会真正写轨迹与跳数；
+        // 普通目录不传（会重置轨迹），这样防环只在「连续跟随链接」的链上生效。
+        //
+        // 【N4】跟随链接失败时（目标其实是文件/断链），把 E_NOT_FOUND 升级成
+        // E_NOT_A_DIRECTORY，避免「路径不存在」的错误文案 —— 路径是存在的。
+        const followed = target.followedLink ? target.path : undefined
+        if (followed === undefined) {
+          void openDir(serial, target.path)
+          return
+        }
+        void openDir(serial, target.path, followed).then(() => {
+          const view = useFileStore.getState().views[serial]
+          if (view === undefined || view.addressError === null) return
+          const mapped = mapListError(view.addressError, entry.name, followed)
+          if (mapped !== view.addressError) {
+            dispatch(serial, { type: 'addressError', code: mapped })
+          }
+        })
         return
       }
       if (target.kind === 'error') {

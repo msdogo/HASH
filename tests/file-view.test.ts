@@ -15,6 +15,7 @@ import {
   isDotEntry,
   isHiddenName,
   isMetaKnown,
+  mapListError,
   isOpenKey,
   joinEntryPath,
   navKeyCommand,
@@ -938,12 +939,14 @@ describe('I4：条目点击后的导航目标（含链接目录与防环）', ()
     expect(openTarget(self, '/sdcard', [])).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
   })
 
-  it('防环：轨迹长度达到上限后不再跟随', () => {
-    const trail = Array.from({ length: MAX_LINK_HOPS }, (_, i) => '/l' + i)
+  it('防环：跳数达到上限后不再跟随', () => {
+    // 审查轮 2 / N2 之后，跳数上限由显式的 hops 计数判定（trail 长度不再兼任计数器，
+    // 因为它还存着「出发目录」，长度天然是跳数的两倍）。这里同步改成传 hops。
+    const trail = Array.from({ length: MAX_LINK_HOPS * 2 }, (_, i) => '/l' + i)
     const link = entry({ name: 'n', isLink: true, linkTargetResolved: '/fresh' })
-    expect(openTarget(link, '/', trail)).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+    expect(openTarget(link, '/', trail, MAX_LINK_HOPS)).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
     // 未达上限时仍可跟随
-    expect(openTarget(link, '/', trail.slice(0, MAX_LINK_HOPS - 1))).toMatchObject({ kind: 'enter' })
+    expect(openTarget(link, '/', trail, MAX_LINK_HOPS - 1)).toMatchObject({ kind: 'enter' })
   })
 
   it('跟随链接时把目标登记进轨迹（供下一次点击做环检测）', () => {
@@ -1152,5 +1155,214 @@ describe('I5：连点刷新与 forget 语义', () => {
     h.model.ensure('S')
     expect(h.views.S.cwd).toBe('/sdcard/DCIM')
     expect(names(h.views.S.entries)).toEqual(['a.jpg'])
+  })
+})
+/* ============ N1（审查轮 2）：同目录导航不得卡在 loading ============ */
+
+describe('N1：导航到当前目录不得置 loading', () => {
+  it('reducer：navigate 到当前目录且已加载过 → 原样返回（不置 loading、不推进代次）', () => {
+    const loaded = loadedView()
+    expect(loaded.status).toBe('ready')
+    const same = reduce(loaded, { type: 'navigate', cwd: loaded.cwd })
+    expect(same).toBe(loaded)
+    expect(same.status).toBe('ready')
+    expect(same.generation).toBe(loaded.generation)
+  })
+
+  it('reducer：navigate 到当前目录的等价写法（尾斜杠/重复斜杠）也不置 loading', () => {
+    const loaded = loadedView()
+    for (const variant of ['/sdcard/DCIM/', '/sdcard//DCIM', '/sdcard/./DCIM', '/sdcard/DCIM/.']) {
+      expect(reduce(loaded, { type: 'navigate', cwd: variant }).status, variant).toBe('ready')
+    }
+  })
+
+  it('reducer：尚未加载过时，navigate 到当前目录仍然要置 loading（真的需要请求）', () => {
+    const fresh = createFileView() // cwd=/sdcard, loadedOnce=false
+    const next = reduce(fresh, { type: 'navigate', cwd: '/sdcard' })
+    expect(next.status).toBe('loading')
+    expect(next.generation).toBe(1)
+  })
+
+  it('model：点当前层面包屑不发新请求，且 status 保持 ready', async () => {
+    const h = modelHarness()
+    const first = h.model.openDir('S', '/sdcard/DCIM')
+    h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
+    await first
+    expect(h.requests).toHaveLength(1)
+
+    // 点当前层面包屑 / 地址栏输入当前路径
+    await h.model.openDir('S', '/sdcard/DCIM')
+    expect(h.requests).toHaveLength(1) // 没有新请求
+    const view = h.views.S
+    expect(view.status).toBe('ready')
+    expect(view.pendingCwd).toBeNull()
+  })
+
+  it('model：同目录导航后立刻再刷新仍能正常工作（状态没被卡死）', async () => {
+    const h = modelHarness()
+    const first = h.model.openDir('S', '/sdcard/DCIM')
+    h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
+    await first
+    await h.model.openDir('S', '/sdcard/DCIM')
+    const reload = h.model.refresh('S')
+    expect(h.requests).toHaveLength(2)
+    h.resolveAt(1, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' }), entry({ name: 'b.jpg' })] })
+    await reload
+    expect(names(h.views.S.entries)).toEqual(['a.jpg', 'b.jpg'])
+  })
+})
+/* ============ N2（审查轮 2）：linkTrail 必须真正接上 ============ */
+
+describe('N2：链接轨迹与跳数上限必须真的生效', () => {
+  const linkEntry = (name: string, target: string): FileEntry =>
+    entry({ name, isLink: true, linkTarget: target, linkTargetResolved: target })
+
+  it('进入链接后轨迹里记录了「从哪来 + 到哪去」', () => {
+    const next = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/data/local/tmp/t7a' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/data/local/tmp/t7a', entries: [] }) },
+      { type: 'navigate', cwd: '/data/local/tmp/t7b', linkTarget: '/data/local/tmp/t7b' },
+    )
+    expect(next.linkTrail).toEqual(['/data/local/tmp/t7a', '/data/local/tmp/t7b'])
+    expect(next.linkHops).toBe(1)
+  })
+
+  it('A→B→A 两跳环被拦（轨迹里已有 A）', () => {
+    // A 里点 linkb 进入 B 后 trail = [A, B]，此时站在 B 上点指回 A 的链接
+    expect(
+      openTarget(linkEntry('linka', '/data/local/tmp/t7a'), '/data/local/tmp/t7b', [
+        '/data/local/tmp/t7a',
+        '/data/local/tmp/t7b',
+      ], 1),
+    ).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+  })
+
+  it('导航到普通目录（面包屑/子目录）会重置轨迹与跳数', () => {
+    const loaded = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/data/local/tmp/t7a' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/data/local/tmp/t7a', entries: [] }) },
+      { type: 'navigate', cwd: '/data/local/tmp/t7b', linkTarget: '/data/local/tmp/t7b' },
+      { type: 'resolve', generation: 2, data: listData({ dir: '/data/local/tmp/t7b', entries: [] }) },
+    )
+    expect(loaded.linkTrail.length).toBeGreaterThan(0)
+    const normal = reduce(loaded, { type: 'navigate', cwd: '/sdcard/DCIM' })
+    expect(normal.linkTrail).toEqual([])
+    expect(normal.linkHops).toBe(0)
+  })
+
+  it('合法的两级链接不被误拦（/sdcard → /storage/self/primary → /mnt/user/0/primary）', () => {
+    const hop1 = openTarget(linkEntry('sdcard', '/storage/self/primary'), '/', [], 0)
+    expect(hop1).toEqual({ kind: 'enter', path: '/storage/self/primary', followedLink: true })
+    const hop2 = openTarget(
+      linkEntry('primary', '/mnt/user/0/primary'),
+      '/storage/self/primary',
+      ['/', '/storage/self/primary'],
+      1,
+    )
+    expect(hop2).toEqual({ kind: 'enter', path: '/mnt/user/0/primary', followedLink: true })
+  })
+
+  it('跳数上限真的累加：达到 MAX_LINK_HOPS 后拒绝继续跟随', () => {
+    const link = linkEntry('deep', '/some/fresh/path')
+    expect(openTarget(link, '/x', ['/1', '/2'], MAX_LINK_HOPS - 1)).toMatchObject({ kind: 'enter' })
+    expect(openTarget(link, '/x', ['/1', '/2'], MAX_LINK_HOPS)).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+  })
+
+  it('reducer 的轨迹有硬上限（不会无限增长吃内存）', () => {
+    let view = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/start' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/start', entries: [] }) },
+    )
+    for (let i = 0; i < 20; i++) {
+      view = reduce(
+        view,
+        { type: 'navigate', cwd: '/hop' + i, linkTarget: '/hop' + i },
+        { type: 'resolve', generation: view.generation + 1, data: listData({ dir: '/hop' + i, entries: [] }) },
+      )
+    }
+    expect(view.linkTrail.length).toBeLessThanOrEqual(MAX_LINK_HOPS * 2)
+  })
+
+  it('model：真实点击链路 A→B→A 被拦，cwd 不变且给行内错误', async () => {
+    const h = modelHarness()
+    const enterA = h.model.openDir('S', '/data/local/tmp/t7a')
+    h.resolveAt(0, { dir: '/data/local/tmp/t7a', entries: [linkEntry('linkb', '/data/local/tmp/t7b')] })
+    await enterA
+
+    const enterB = h.model.openDir('S', '/data/local/tmp/t7b', '/data/local/tmp/t7b')
+    h.resolveAt(1, { dir: '/data/local/tmp/t7b', entries: [linkEntry('linka', '/data/local/tmp/t7a')] })
+    await enterB
+    expect(h.views.S.cwd).toBe('/data/local/tmp/t7b')
+    expect(h.views.S.linkHops).toBe(1)
+
+    const target = openTarget(linkEntry('linka', '/data/local/tmp/t7a'), h.views.S.cwd, h.views.S.linkTrail, h.views.S.linkHops)
+    expect(target).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+    h.model.dispatch('S', { type: 'addressError', code: 'E_LINK_CYCLE' })
+    expect(h.views.S.cwd).toBe('/data/local/tmp/t7b')
+    expect(h.views.S.addressError).toBe('E_LINK_CYCLE')
+  })
+})
+
+/* ============ N3（审查轮 2）：LRU 淘汰不得被在飞响应复活 ============ */
+
+describe('N3：淘汰与在线设备保护', () => {
+  it('被淘汰的分片不会被迟到的响应复活', async () => {
+    const h = modelHarness({ maxSerials: 2 })
+    const loadA = h.model.openDir('A', '/sdcard')
+    h.model.ensure('B')
+    h.model.ensure('C')
+    expect(h.model.serials()).not.toContain('A')
+    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'ghost' })] })
+    await loadA
+    expect(h.views.A).toBeUndefined()
+    expect(h.model.serials()).not.toContain('A')
+  })
+
+  it('views 的键数不超过上限（不会被淘汰/复活来回抖动搞成超集）', () => {
+    const h = modelHarness({ maxSerials: 2 })
+    h.model.ensure('B')
+    h.model.ensure('C')
+    h.model.ensure('A')
+    expect(Object.keys(h.views).length).toBeLessThanOrEqual(2)
+    expect(h.model.serials().length).toBeLessThanOrEqual(2)
+  })
+
+  it('仍然在线的设备优先不被淘汰', () => {
+    const h = modelHarness({ maxSerials: 2 })
+    h.model.syncDevices(['A', 'B'])
+    h.model.ensure('D')
+    h.model.syncDevices(['A', 'B'])
+    expect(h.views.A).toBeDefined()
+    expect(h.views.B).toBeDefined()
+    expect(h.views.D).toBeUndefined()
+  })
+
+  it('设备全部在线且超过上限时，宁可不淘汰也不丢在线设备的状态', () => {
+    const h = modelHarness({ maxSerials: 2 })
+    h.model.syncDevices(['A', 'B', 'C'])
+    expect(h.views.A).toBeDefined()
+    expect(h.views.B).toBeDefined()
+    expect(h.views.C).toBeDefined()
+  })
+})
+
+/* ============ N4（审查轮 2）：目标存在但不是目录 ============ */
+
+describe('N4：目标不是目录时给出专门错误码', () => {
+  it('链接指向普通文件：E_NOT_A_DIRECTORY 优先于 E_NOT_FOUND', () => {
+    expect(mapListError('E_NOT_FOUND', 'adb_keys', '/product/etc/security/adb_keys')).toBe('E_NOT_A_DIRECTORY')
+  })
+
+  it('普通目录的真实失败（不是链接）保持原错误码', () => {
+    // 调用点只在「跟随链接」时才会调 mapListError；普通目录直接沿用原码
+    expect(mapListError('E_NO_PERMISSION', 'data', '/data/app')).toBe('E_NO_PERMISSION')
+  })
+
+  it('其他错误码一律原样透传', () => {
+    expect(mapListError('E_TIMEOUT', 'sdcard', '/sdcard')).toBe('E_TIMEOUT')
+    expect(mapListError('E_LINK_CYCLE', 'a', '/b')).toBe('E_LINK_CYCLE')
   })
 })

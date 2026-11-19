@@ -44,6 +44,8 @@ export const E_UNKNOWN = 'E_UNKNOWN'
 export const E_LINK_UNRESOLVED = 'E_LINK_UNRESOLVED'
 /** 跟随符号链接时检测到环（目标已在本次访问轨迹里，或超过跳数上限）。 */
 export const E_LINK_CYCLE = 'E_LINK_CYCLE'
+/** 目标存在，但不是目录（例如指向普通文件的快捷方式）。 */
+export const E_NOT_A_DIRECTORY = 'E_NOT_A_DIRECTORY'
 
 /**
  * 全部错误码，顺序即「匹配优先级」的参考顺序。
@@ -68,6 +70,7 @@ export const ERROR_CODES = [
   E_UNKNOWN,
   E_LINK_UNRESOLVED,
   E_LINK_CYCLE,
+  E_NOT_A_DIRECTORY,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
