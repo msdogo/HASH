@@ -3,8 +3,12 @@ import {
   activeTaskCount,
   batchDetailKey,
   batteryPercent,
+  buttonStates,
   canSubmit,
   createStdoutBudget,
+  dangerousCommandKind,
+  dangerousConfirmText,
+  describeDevicesForConfirm,
   isDangerousCommand,
   storageView,
   summarizeBatch,
@@ -275,17 +279,37 @@ describe('createStdoutBudget：流式封顶（I3）', () => {
 })
 
 describe('isDangerousCommand：规格 §9.6 的二次确认判据', () => {
-  it('kill-server / reboot / root 都算危险', () => {
+  it('规格点名的三类：kill-server / reboot / root', () => {
     expect(isDangerousCommand('adb kill-server')).toBe(true)
     expect(isDangerousCommand('reboot')).toBe(true)
     expect(isDangerousCommand('su -c reboot')).toBe(true)
     expect(isDangerousCommand('root')).toBe(true)
+    expect(isDangerousCommand('unroot')).toBe(true)
     expect(isDangerousCommand('sh -c "reboot -p"')).toBe(true)
   })
 
-  it('大小写不敏感（REBOOT 同样是危险命令）', () => {
+  it('同样会毁设备/数据的命令也算危险：rm -rf / dd / pm uninstall', () => {
+    expect(isDangerousCommand('rm -rf /sdcard')).toBe(true)
+    expect(isDangerousCommand('rm -fr /sdcard/Download')).toBe(true)
+    expect(isDangerousCommand('rm -r -f /sdcard')).toBe(true)
+    expect(isDangerousCommand('dd if=/dev/zero of=/dev/block/mmcblk0')).toBe(true)
+    expect(isDangerousCommand('pm uninstall com.example.app')).toBe(true)
+    expect(isDangerousCommand('pm clear com.example.app')).toBe(true)
+  })
+
+  it('能指出是哪一类危险（确认框要说清危险在哪）', () => {
+    expect(dangerousCommandKind('reboot')).toBe('reboot')
+    expect(dangerousCommandKind('adb kill-server')).toBe('kill-server')
+    expect(dangerousCommandKind('rm -rf /sdcard')).toBe('rm -rf')
+    expect(dangerousCommandKind('dd if=/dev/zero of=/dev/block/x')).toBe('dd')
+    expect(dangerousCommandKind('pm uninstall com.x')).toBe('pm uninstall')
+    expect(dangerousCommandKind('echo ok')).toBeNull()
+  })
+
+  it('大小写不敏感（REBOOT / Kill-Server 同样危险）', () => {
     expect(isDangerousCommand('REBOOT')).toBe(true)
     expect(isDangerousCommand('Kill-Server')).toBe(true)
+    expect(isDangerousCommand('RM -RF /sdcard')).toBe(true)
   })
 
   it('普通命令不算危险（避免每次都弹确认）', () => {
@@ -293,10 +317,124 @@ describe('isDangerousCommand：规格 §9.6 的二次确认判据', () => {
     expect(isDangerousCommand('ls -l /sdcard')).toBe(false)
     expect(isDangerousCommand('cat /sdcard/a.txt')).toBe(false)
     expect(isDangerousCommand('pm list packages')).toBe(false)
+    // rm 不带 -rf 不算（普通删单个文件不该拦）
+    expect(isDangerousCommand('rm /sdcard/a.txt')).toBe(false)
+    expect(isDangerousCommand('rm -f /sdcard/a.txt')).toBe(false)
   })
 
-  it('不误伤包含这些子串的普通词（rooted / rebootX / reroot）', () => {
+  it('不误伤包含这些子串的普通词（rooted / rebootX / ddx / adder）', () => {
     expect(isDangerousCommand('echo rooted')).toBe(false)
     expect(isDangerousCommand('cat rebootlog.txt')).toBe(false)
+    expect(isDangerousCommand('echo ddx')).toBe(false)
+    expect(isDangerousCommand('echo adder')).toBe(false)
+  })
+})
+
+describe('describeDevicesForConfirm：影响清单必须能区分同型号多台（N7）', () => {
+  it('每台都带 serial 尾号，同型号时仍能分辨', () => {
+    const text = describeDevicesForConfirm([
+      { serial: 'R5CY10S73DA', model: 'SM S9360' },
+      { serial: '9N9CN2G0012A3P', model: 'SM S9360' },
+      { serial: 'ABCD1234EF', model: 'SM S9360' },
+    ])
+    // 三台同型号 → 清单里必须有三个不同的尾号
+    expect(text).toBe('SM S9360 (73DA)、SM S9360 (2A3P)、SM S9360 (34EF)')
+    expect(new Set(text.split('、')).size).toBe(3)
+  })
+
+  it('型号缺失时回退 serial（不显示空字符串）', () => {
+    expect(describeDevicesForConfirm([{ serial: 'R5CY10S73DA' }])).toBe('R5CY10S73DA')
+    expect(describeDevicesForConfirm([{ serial: 'ABC', model: '  ' }])).toBe('ABC')
+  })
+
+  it('短 serial 原样显示（不强行截 4 位）', () => {
+    expect(describeDevicesForConfirm([{ serial: 'AB', model: 'M' }])).toBe('M (AB)')
+  })
+
+  it('零台时是空串（调用方据此判断要不要显示清单）', () => {
+    expect(describeDevicesForConfirm([])).toBe('')
+  })
+})
+
+describe('dangerousConfirmText：确认框文案参数', () => {
+  it('台数、命令原文、危险类别、设备清单四件齐全', () => {
+    const text = dangerousConfirmText('reboot', [
+      { serial: 'R5CY10S73DA', model: 'SM S9360' },
+      { serial: '9N9CN2G0012A3P', model: 'M13' },
+    ])
+    expect(text).toEqual({
+      kind: 'reboot',
+      count: '2',
+      command: 'reboot',
+      devices: 'SM S9360 (73DA)、M13 (2A3P)',
+    })
+  })
+
+  it('台数与清单条数永远一致（用户不能被告知 3 台却只看到 2 个名字）', () => {
+    for (const count of [0, 1, 2, 5, 16]) {
+      const devices = Array.from({ length: count }, (_, i) => ({ serial: 'S' + i + '-TAIL' + i, model: 'M' + i }))
+      const text = dangerousConfirmText('rm -rf /sdcard', devices)
+      expect(Number(text.count)).toBe(count)
+      expect(text.devices === '' ? 0 : text.devices.split('、').length).toBe(count)
+    }
+  })
+
+  it('安全命令也能调用（kind 为空串），不会崩', () => {
+    expect(dangerousConfirmText('echo ok', [])).toEqual({ kind: '', count: '0', command: 'echo ok', devices: '' })
+  })
+})
+
+describe('buttonStates：四个按钮的 disabled（N1 的真护栏）', () => {
+  const idle = { running: false, pickedCount: 2, fileCount: 1, dstDir: '/sdcard/Download', command: 'echo ok' }
+
+  it('一切就绪 → 四个都可点', () => {
+    expect(buttonStates(idle)).toEqual({ screenshot: false, install: false, push: false, shell: false })
+  })
+
+  it('运行中 → 四个全禁用（防止重复提交）', () => {
+    expect(buttonStates({ ...idle, running: true }))
+      .toEqual({ screenshot: true, install: true, push: true, shell: true })
+  })
+
+  it('没勾设备 → 四个全禁用', () => {
+    expect(buttonStates({ ...idle, pickedCount: 0 }))
+      .toEqual({ screenshot: true, install: true, push: true, shell: true })
+  })
+
+  it('推送：没文件或目录为空时禁用，截图/安装/命令不受影响', () => {
+    expect(buttonStates({ ...idle, fileCount: 0 })).toEqual({
+      screenshot: false, install: false, push: true, shell: false,
+    })
+    expect(buttonStates({ ...idle, dstDir: '   ' })).toEqual({
+      screenshot: false, install: false, push: true, shell: false,
+    })
+  })
+
+  it('命令：空命令或纯空白时禁用，其余三个不受影响', () => {
+    expect(buttonStates({ ...idle, command: '' })).toEqual({
+      screenshot: false, install: false, push: false, shell: true,
+    })
+    expect(buttonStates({ ...idle, command: '   ' })).toEqual({
+      screenshot: false, install: false, push: false, shell: true,
+    })
+  })
+
+  it('与 canSubmit 逐项一致（两处判据不会漂移）', () => {
+    const cases = [
+      idle,
+      { ...idle, running: true },
+      { ...idle, pickedCount: 0 },
+      { ...idle, fileCount: 0, dstDir: '' },
+      { ...idle, command: '' },
+      { ...idle, fileCount: 3, dstDir: '/sdcard' },
+    ]
+    for (const state of cases) {
+      const buttons = buttonStates(state)
+      const base = { running: state.running, pickedCount: state.pickedCount }
+      expect(buttons.screenshot).toBe(!canSubmit({ ...base, action: 'screenshot' }))
+      expect(buttons.install).toBe(!canSubmit({ ...base, action: 'install' }))
+      expect(buttons.push).toBe(!canSubmit({ ...base, action: 'push', fileCount: state.fileCount, dstDir: state.dstDir }))
+      expect(buttons.shell).toBe(!canSubmit({ ...base, action: 'shell', command: state.command }))
+    }
   })
 })

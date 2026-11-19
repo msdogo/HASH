@@ -87,8 +87,30 @@ export const SCREENSHOT_TIMEOUT_MS = 30_000
  */
 export const SHOT_TEMP_DIR = '/sdcard/.adbfm'
 
+/**
+ * 每台设备在临时根下面有**自己的子目录**（【N3】的修法）。
+ *
+ * 上一轮的清扫是 `rm -f '/sdcard/.adbfm'/adbfm-shot-*.png` —— 只按目录 + 前缀，
+ * 没有年龄、没有归属。复审真机实测到的后果：一次批量截图里先完成的那台触发清扫，
+ * 把**另一台还在排队的 pull 的源文件**删了，后者直接 E_NOT_FOUND。
+ *
+ * 三种可选修法里选了「每台一个子目录」：
+ *   - `find -mmin +N`：要猜一个「大于最长传输时间」的 N，猜小了照样误删、猜大了残留久；
+ *   - 本次批次收集路径集合并排除：只对本进程有效，进程重启后的残留无人认领；
+ *   - **按设备分目录**：归属天然成立（清扫只碰自己那台），残留排查也知道是谁的。
+ * 代价只是多一层目录、一次 mkdir -p，而 mkdir -p 本来就要发。
+ */
+export function deviceShotDir(serial: string): string {
+  return SHOT_TEMP_DIR + '/' + sanitizeSerial(serial)
+}
+
 /** 隐藏目录建不出来时的回退落点（设备上必然存在，闸门也放行）。 */
 export const SHOT_FALLBACK_DIR = '/sdcard/Download'
+
+/** 回退落点下同样按设备分目录，理由同上。 */
+export function deviceFallbackShotDir(serial: string): string {
+  return SHOT_FALLBACK_DIR + '/' + sanitizeSerial(serial)
+}
 
 /** 临时文件名前缀（陈旧残留清扫靠它识别，改名会破坏清理）。 */
 export const SHOT_PREFIX = 'adbfm-shot-'
@@ -241,6 +263,13 @@ export class BatchService {
    * 退出收尾（复审 I1）：把所有未结算的临时文件清理立刻执行掉。
    *
    * 幂等；由 main.ts 的 before-quit 调用（与 transfer.dispose() 同一处）。
+   *
+   * 【N8】**必须保持同步循环**（不要改成 await / 微任务 / 批量排队）：
+   * main.ts 里紧接着这一行就是 shutdownChildren()，它会置位全局闸门，
+   * 之后任何 spawnTracked 都被拒（根本不创建进程）。当前写法之所以安全，
+   * 是因为每条清理的 rm 都在本 tick 内同步 spawn 完，闸门只挡住**之后**的 spawn。
+   * 一旦这里变成异步，rm 会被闸门拒绝 → 设备上留下临时 png，
+   * 而且这个回归在单测里看不出来（假 client 不受闸门影响）。
    */
   dispose(): void {
     this.disposed = true
@@ -279,8 +308,8 @@ export class BatchService {
    * 批量截图（R1 / I1 / I2）。
    *
    * 每台设备：
-   *   1. mkdir -p 隐藏临时目录（失败回退 /sdcard/Download）；
-   *   2. **扫掉该目录里的陈旧残留**（I1：覆盖进程被 kill / 崩溃的出口）；
+   *   1. mkdir -p 自己专属的隐藏子目录 <根>/<serial>/（失败回退 /sdcard/Download/<serial>/）；
+   *   2. **扫掉自己那台子目录里的陈旧残留**（I1 兜底；N3：范围受限于本机，不碰别人的在途文件）；
    *   3. screencap -p 到临时文件；
    *   4. transfer.enqueue(pull, 该路径, 用户目录)；
    *   5. 任务进终态后 rm -f 临时文件（失败只记日志，不覆盖主结果）。
@@ -310,8 +339,11 @@ export class BatchService {
       if (adb === '') failWith(E_ADB_NOT_FOUND)
 
       const client = this.deps.clientFor(serial)
-      const dir = await this.prepareTempDir(client, adb)
-      // I1：截图前先把陈旧残留扫掉（这是唯一能覆盖「进程被强杀」的出口）
+      const dir = await this.prepareTempDir(client, adb, serial)
+      /*
+       * I1：截图前先把陈旧残留扫掉（这是唯一能覆盖「进程被强杀」的出口）。
+       * N3：dir 是**本机专属子目录**，所以这次清扫不会碰到别的设备的在途文件。
+       */
       await this.sweepStaleShots(client, adb, dir)
 
       const stamp = (this.deps.now ?? (() => Date.now()))()
@@ -358,26 +390,39 @@ export class BatchService {
    * I2：优先用隐藏目录；建不出来（权限 / 厂商限制）时回退到下载目录 ——
    * 宁可让临时文件落在用户可见处，也不能让截图功能整个不可用。
    */
-  private async prepareTempDir(client: ShellRunner, adb: string): Promise<string> {
-    try {
-      const made = await client.run(
-        ['shell', 'mkdir -p ' + shellQuote(SHOT_TEMP_DIR)],
-        { adbPath: adb, timeoutMs: SCREENSHOT_TIMEOUT_MS },
-      )
-      if (made.code === 0) return SHOT_TEMP_DIR
-    } catch {
-      // 落到下面的回退
+  private async prepareTempDir(client: ShellRunner, adb: string, serial: string): Promise<string> {
+    /*
+     * 【N3】目录是**每台设备一个**：清扫只清自己那台的子目录，
+     * 于是「先完成的设备把排在后面的设备的 pull 源文件删掉」不再可能发生。
+     * mkdir -p 一次建两级（/sdcard/.adbfm 与 /sdcard/.adbfm/<serial>）。
+     */
+    for (const dir of [deviceShotDir(serial), deviceFallbackShotDir(serial)]) {
+      try {
+        const made = await client.run(
+          ['shell', 'mkdir -p ' + shellQuote(dir)],
+          { adbPath: adb, timeoutMs: SCREENSHOT_TIMEOUT_MS },
+        )
+        if (made.code === 0) return dir
+      } catch {
+        // 试下一个（隐藏目录建不出来就退到下载目录）
+      }
     }
-    return SHOT_FALLBACK_DIR
+    // 两级都建不出来：仍然用回退目录（写入可能成功、只是目录已存在）
+    return deviceFallbackShotDir(serial)
   }
 
   /**
-   * 扫掉本服务留下的陈旧截图（I1）。
+   * 扫掉**这台设备自己**留下的陈旧截图（I1 / 【N3】）。
    *
    * 为什么需要它：清理还有三条主动路径覆盖不到的出口 —— 进程被强杀、崩溃、
    * 或上一个版本的残留。前缀固定就是为这一步设计的。
-   * 命令形如 rm -f '<dir>'/adbfm-shot-*.png：目录过 shellQuote，通配符**不加引号**
-   * （加了就成了字面量，什么也删不掉）。
+   *
+   * 【N3】清扫范围严格限制在 `<根>/<本机 serial>/` 之内：
+   * 命令形如 rm -f '<dir>'/adbfm-shot-*.png，dir 已经是 deviceShotDir(serial)。
+   * 上一轮用的是所有设备共享的 /sdcard/.adbfm，于是并发批量里先完成的那台
+   * 会把另一台**还在排队的 pull 源文件**删掉（复审真机复现 E_NOT_FOUND）。
+   *
+   * 目录过 shellQuote，通配符**不加引号**（加了就成了字面量，什么也删不掉）。
    */
   private async sweepStaleShots(client: ShellRunner, adb: string, dir: string): Promise<void> {
     try {

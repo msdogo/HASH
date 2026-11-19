@@ -168,7 +168,7 @@ export function batchDetailKey(
   }
 }
 
-/* ============ 提交闸门（C1：从组件里抽出来的可测纯函数） ============ */
+/* ============ 提交闸门（C1 / N1：从组件里抽出来的可测纯函数） ============ */
 
 /** 决定「能不能点某个批量按钮」的全部输入。 */
 export interface SubmitState {
@@ -188,10 +188,9 @@ export interface SubmitState {
 /**
  * 该动作的按钮现在能不能点。
  *
- * 为什么做成纯函数（复审 C1）：这条规则原先只在 OverviewPage 的 JSX 里以
- * disabled={...} 的属性形式存在，而静态断言只能匹配源码文本 —— 把它改写成
- * 三目表达式或默认参数，断言照样绿。抽到 shared 之后就能用真实输入测出
- * 「运行中不可点」「没勾设备不可点」「推送没选文件不可点」「空命令不可点」。
+ * 【N1】上一轮这个函数存在但**零生产消费者** —— 组件的 disabled 仍是内联式子，
+ * 于是「删掉按钮的 disabled 属性」全套 1093 仍全绿。现在组件真的调它
+ * （经由下面的 buttonStates），判据只有这一份，不会再与界面漂移。
  */
 export function canSubmit(state: SubmitState): boolean {
   if (state.running) return false
@@ -204,6 +203,124 @@ export function canSubmit(state: SubmitState): boolean {
       return (state.command ?? '').trim() !== ''
     default:
       return true
+  }
+}
+
+/** 四个批量按钮各自的 disabled 值。 */
+export interface ButtonStates {
+  screenshot: boolean
+  install: boolean
+  push: boolean
+  shell: boolean
+}
+
+/**
+ * 一次性算出四个按钮的 disabled（【N1】的落点）。
+ *
+ * 为什么不满足于「组件里调四次 canSubmit」：那仍然是一段可以整块删掉、
+ * 而门禁无感的表达式（上一轮正是这个形态）。把四值收成一个有单测的纯函数后，
+ * 组件只剩 disabled={buttons.screenshot} 这种不含判断的取值 ——
+ * 判据被测试钉死，组件里没有第二份实现可以漂移。
+ */
+export function buttonStates(state: {
+  running: boolean
+  pickedCount: number
+  fileCount?: number
+  dstDir?: string
+  command?: string
+}): ButtonStates {
+  const base = { running: state.running, pickedCount: state.pickedCount }
+  return {
+    screenshot: !canSubmit({ ...base, action: 'screenshot' }),
+    install: !canSubmit({ ...base, action: 'install' }),
+    push: !canSubmit({ ...base, action: 'push', fileCount: state.fileCount, dstDir: state.dstDir }),
+    shell: !canSubmit({ ...base, action: 'shell', command: state.command }),
+  }
+}
+
+/* ============ 危险命令（规格 §9.6） ============ */
+
+/**
+ * 规格 §9.6 要二次确认的危险命令类别。
+ *
+ * 前三类来自规格原文（kill-server / reboot / root），后面三类是
+ * **同样会毁掉用户设备或数据**、而规格没点名的：
+ *   - rm -rf：删目录（`rm -rf /sdcard` 一条命令清空用户全部文件）；
+ *   - dd：直接写块设备（`dd if=/dev/zero of=/dev/block/...` 直接变砖）；
+ *   - pm uninstall / pm clear：卸载应用 / 清空应用数据，都不可撤销。
+ *
+ * 只认「作为独立词出现」：rooted / rebootlog.txt / ddx 都不算。
+ * 误报的代价是多一次确认；漏报的代价是同时毁掉一片设备 —— 取前者。
+ */
+const DANGEROUS_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
+  { label: 'kill-server', re: /(^|[^a-z0-9_-])kill-server($|[^a-z0-9_-])/ },
+  { label: 'reboot', re: /(^|[^a-z0-9_-])reboot($|[^a-z0-9_-])/ },
+  { label: 'root', re: /(^|[^a-z0-9_-])(un)?root($|[^a-z0-9_-])/ },
+  /*
+   * rm -rf / rm -fr / rm -r -f —— 只要同一条命令里同时出现了含 r 与含 f 的选项就算。
+   * 用「前瞻 + 后续」而不是固定的字母顺序：`-fr` 与 `-r -f` 都合法，
+   * 写死顺序会漏掉一半写法（这正是我第一版的缺陷）。
+   * [^;&|\n]* 把范围限制在同一条命令片段内，避免 `rm a.txt; ls -f` 误判。
+   */
+  { label: 'rm -rf', re: /(^|[^a-z0-9_-])rm\s+(?=[^;&|\n]*-[a-z]*r)[^;&|\n]*-[a-z]*f/ },
+  { label: 'dd', re: /(^|[^a-z0-9_-])dd\s/ },
+  { label: 'pm uninstall', re: /(^|[^a-z0-9_-])pm\s+(uninstall|clear)($|\s)/ },
+]
+
+/** 命中的危险类别（确认框用来说清「危险在哪」）；安全返回 null。 */
+export function dangerousCommandKind(command: string): string | null {
+  const lower = command.toLowerCase()
+  for (const { label, re } of DANGEROUS_PATTERNS) {
+    if (re.test(lower)) return label
+  }
+  return null
+}
+
+/** 这条命令算不算危险（规格 §9.6）。 */
+export function isDangerousCommand(command: string): boolean {
+  return dangerousCommandKind(command) !== null
+}
+
+/** 设备 serial 尾号（与设备栏的 serialTail 同规则：最多 4 位）。 */
+function serialTailOf(serial: string): string {
+  return serial.length <= 4 ? serial : serial.slice(-4)
+}
+
+/**
+ * 确认框里的设备清单文本（【N7】）。
+ *
+ * 为什么必须带 serial 尾号：同型号多台时 label 全是「SM S9360」，
+ * 用户勾了 3 台却看到「SM S9360、SM S9360、SM S9360」——
+ * 一条 reboot 的影响清单等于没说。格式与设备栏一致：`型号 (尾号)`。
+ */
+export function describeDevicesForConfirm(
+  devices: ReadonlyArray<{ serial: string; model?: string }>,
+): string {
+  return devices
+    .map((device) => {
+      const model = (device.model ?? '').trim()
+      return model === '' ? device.serial : model + ' (' + serialTailOf(device.serial) + ')'
+    })
+    .join('、')
+}
+
+/**
+ * 危险命令确认框的文案参数（规格 §9.6 的「影响设备清单」）。
+ *
+ * 抽成纯函数（而不是在组件里拼字符串）：确认框是本任务唯一一处
+ * 拦截破坏性操作的地方，而它此前**零门禁** —— 整段删掉全套测试仍全绿。
+ * 现在文案由这里产出，单测能断言「每一台设备的尾号都在清单里」
+ * 「清单条数等于台数」「危险类别被指出来」。
+ */
+export function dangerousConfirmText(
+  command: string,
+  devices: ReadonlyArray<{ serial: string; model?: string }>,
+): { kind: string; count: string; command: string; devices: string } {
+  return {
+    kind: dangerousCommandKind(command) ?? '',
+    count: String(devices.length),
+    command,
+    devices: describeDevicesForConfirm(devices),
   }
 }
 
@@ -260,28 +377,3 @@ export function createStdoutBudget(maxBytes: number = SHELL_STDOUT_LIMIT_BYTES):
   }
 }
 
-/* ============ 危险命令判定（规格 §9.6） ============ */
-
-/**
- * 规格 §9.6 点名要二次确认的三类危险命令。
- *
- * 只认「这些词作为命令里的一个独立词」的形态：
- *   - kill-server 会中断用户其它调试工具（本应用自己也在用 adb，杀了会全线报错）；
- *   - reboot 会让勾选的所有设备同时重启；
- *   - root / unroot 会改变设备的安全状态。
- *
- * 判据刻意宽松到「词出现在命令任意位置」：用户可能写成 su -c reboot、
- * sh -c "reboot"、rm -rf /system && reboot。误报的代价是多一次确认；
- * 漏报的代价是同时重启一片设备 —— 取前者。
- */
-const DANGEROUS_WORDS: readonly string[] = ['kill-server', 'reboot', 'root']
-
-export function isDangerousCommand(command: string): boolean {
-  const lower = command.toLowerCase()
-  for (const word of DANGEROUS_WORDS) {
-    // 前后不能紧邻字母数字或连字符，避免 rooted / reboot-x 之类误判
-    const re = new RegExp('(^|[^a-z0-9_-])' + word + '($|[^a-z0-9_-])')
-    if (re.test(lower)) return true
-  }
-  return false
-}

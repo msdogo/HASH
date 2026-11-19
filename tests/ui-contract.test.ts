@@ -325,6 +325,7 @@ describe('任务 10：批量操作与总览页契约（静态断言）', () => {
     'src/store/batchStore.ts',
     'src/shared/batch.ts',
     'src/shared/batch-flow.ts',
+    'src/shared/batch-shell.ts',
   ]
 
   it('新增源码不 import node 内置模块、不直接 import electron、无 as any', () => {

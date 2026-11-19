@@ -6,7 +6,13 @@ import path from 'node:path'
 import { AdbClient } from '../electron/adb/client'
 import { DeviceManager } from '../electron/devices/manager'
 import { TransferService } from '../electron/transfer/service'
-import { BatchService, SHOT_FALLBACK_DIR, SHOT_PREFIX, SHOT_TEMP_DIR } from '../electron/batch/service'
+import {
+  BatchService,
+  SHOT_FALLBACK_DIR,
+  SHOT_PREFIX,
+  SHOT_TEMP_DIR,
+  deviceShotDir,
+} from '../electron/batch/service'
 import type { ShellRunner } from '../electron/fs/remote'
 import type { TransferTask } from '../src/shared/transfer'
 import { E_DEVICE_OFFLINE, E_TIMEOUT } from '../src/shared/errors'
@@ -101,9 +107,16 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     }
   }
 
-  /** 目录里本应用留下的临时截图数（I1 的「残留数」判据）。 */
+  /**
+   * 临时截图目录下的残留数（I1 的「残留数」判据）。
+   *
+   * 【N3】现在每台设备一个子目录，所以要递归数：find 找不到目录时也会正常返回，
+   * 用 wc -l 而不是 grep -c（后者在 0 条时不输出）。
+   */
   function leftoverShots(dir: string): number {
-    const out = shell('ls -1 ' + quote(dir) + ' 2>/dev/null | grep -c ' + quote(SHOT_PREFIX) + ' || true').trim()
+    const out = shell(
+      'find ' + quote(dir) + ' -name ' + quote(SHOT_PREFIX + '*.png') + ' 2>/dev/null | wc -l',
+    ).trim()
     return Number(out === '' ? '0' : out)
   }
 
@@ -171,7 +184,7 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     // 清掉上次崩溃可能留下的残留（设备侧 + 本地）
     try { shell('rm -rf -- ' + quote(REMOTE_DIR)) } catch { /* 不存在是常态 */ }
     try { shell('rm -rf -- ' + quote(SHOT_TEMP_DIR)) } catch { /* 同上 */ }
-    try { shell('rm -f ' + SHOT_FALLBACK_DIR + '/' + SHOT_PREFIX + '*.png') } catch { /* 同上 */ }
+    try { shell('rm -rf -- ' + quote(SHOT_FALLBACK_DIR + '/' + SERIAL)) } catch { /* 同上 */ }
     shell('mkdir -p ' + quote(REMOTE_DIR))
   }, 120_000)
 
@@ -180,7 +193,7 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     service.dispose()
     try { shell('rm -rf -- ' + quote(REMOTE_DIR)) } catch { /* 忽略 */ }
     try { shell('rm -rf -- ' + quote(SHOT_TEMP_DIR)) } catch { /* 忽略 */ }
-    try { shell('rm -f ' + SHOT_FALLBACK_DIR + '/' + SHOT_PREFIX + '*.png') } catch { /* 忽略 */ }
+    try { shell('rm -rf -- ' + quote(SHOT_FALLBACK_DIR + '/' + SERIAL)) } catch { /* 忽略 */ }
     transfer.dispose()
     if (root !== '') rmSync(root, { recursive: true, force: true })
   }, 120_000)
@@ -199,7 +212,7 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     // 入队的源路径就在隐藏目录里（I2 的直接证据）
     const task = await waitTerminal(taskId as string)
     expect(task.status).toBe('done')
-    expect(task.src.startsWith(SHOT_TEMP_DIR + '/' + SHOT_PREFIX)).toBe(true)
+    expect(task.src.startsWith(deviceShotDir(SERIAL as string) + '/' + SHOT_PREFIX)).toBe(true)
 
     // 本地确实落了一张 png，文件头是 PNG 魔数 89 50 4E 47
     const localName = task.dst.split(/[\\/]/).pop() as string

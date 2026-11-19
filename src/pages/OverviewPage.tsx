@@ -6,12 +6,13 @@ import {
   activeTaskCount,
   batchDetailKey,
   batteryPercent,
-  isDangerousCommand,
+  buttonStates,
   storageView,
   summarizeBatch,
 } from '@shared/batch'
 import { deviceLabel, statusDot, DOT_CLASS, DOT_LABEL_KEY } from '@shared/device-view'
 import { errorText, t, tf } from '@shared/i18n'
+import { submitShell } from '@shared/batch-shell'
 import { useBatchStore, resultRows } from '@/store/batchStore'
 import type { BatchResultRow } from '@/store/batchStore'
 import { useDeviceStore } from '@/store/deviceStore'
@@ -81,7 +82,24 @@ export function OverviewPage() {
     return picked.filter((serial) => alive.has(serial))
   }, [picked, devices])
 
-  const disabled = running || serials.length === 0
+  /*
+   * 四个按钮的 disabled 全部来自 shared 的纯函数（【N1】）。
+   *
+   * 上一轮这里是一句内联的 `const disabled = running || serials.length === 0`，
+   * 而我在 shared 里写的 canSubmit 根本没人调用 —— 于是「删掉按钮的 disabled」
+   * 全套 1093 仍全绿：测的函数和跑的函数是两个。
+   *
+   * 现在组件只取值、不做判断：判据在 buttonStates 里且有单测，
+   * 组件里没有第二份实现可以漂移。推送/命令的额外条件（要有文件、要有命令）
+   * 也一并收进同一个函数，不再散落在三处 disabled 表达式里。
+   */
+  const buttons = buttonStates({
+    running,
+    pickedCount: serials.length,
+    fileCount: files.length,
+    dstDir,
+    command,
+  })
 
   /**
    * 批量截图（复审 I5：batch:pick-directory 在这里有了真实消费者）。
@@ -122,23 +140,37 @@ export function OverviewPage() {
    * 确认框里必须能看到「会在哪些设备上执行」—— 用户勾了 5 台却以为只跑 1 台，
    * 一条 reboot 就会同时重启 5 台。
    */
+  /*
+   * 规格 §9.6：危险命令必须二次确认，并列出影响设备清单。
+   *
+   * 【本轮】整段决策搬进 shared/batch-shell.ts 的 submitShell（有单测）：
+   * 上一轮这段就在本文件里，复审把整个 if 块删掉之后**全套 1093 仍全绿** ——
+   * 组件里的回调渲染不出来、也没有纯函数测试能约束「必须弹确认」。
+   *
+   * 现在组件只做两件事：把「确认框」和「执行」两个副作用注入进去。
+   *   - 确认框文案由 planShellSubmit 产出（含 serial 尾号，N7）；
+   *   - 「危险命令取消后绝不执行」这条由 tests/batch-shell.test.ts 钉死。
+   */
   const handleShell = useCallback(() => {
-    if (command.trim() === '') return
-    if (isDangerousCommand(command)) {
-      const names = serials
-        .map((serial) => devices.find((device) => device.serial === serial))
-        .map((device) => (device === undefined ? '' : deviceLabel(device)))
-        .filter((label) => label !== '')
-      const ok = window.confirm(
-        tf('batch.confirmDangerousBody', {
-          count: serials.length,
-          command,
-          devices: names.join('、'),
-        }),
-      )
-      if (!ok) return
-    }
-    void run({ action: 'shell', serials, command })
+    const affected = serials
+      .map((serial) => devices.find((device) => device.serial === serial))
+      .filter((device): device is DeviceSession => device !== undefined)
+    submitShell(
+      {
+        confirm: (plan) =>
+          window.confirm(
+            tf('batch.confirmDangerousBody', {
+              count: plan.count,
+              kind: plan.kind,
+              command: plan.command,
+              devices: plan.devices,
+            }),
+          ),
+        run: (text) => { void run({ action: 'shell', serials, command: text }) },
+      },
+      command,
+      affected,
+    )
   }, [run, serials, command, devices])
 
   const rows = resultRows(results)
@@ -151,7 +183,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={() => { void handleScreenshot() }}
-          disabled={disabled}
+          disabled={buttons.screenshot}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
           <Camera className="h-3.5 w-3.5" aria-hidden="true" />
@@ -160,7 +192,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={() => { void handleInstall() }}
-          disabled={disabled}
+          disabled={buttons.install}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
           <PackageOpen className="h-3.5 w-3.5" aria-hidden="true" />
@@ -169,7 +201,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={handlePush}
-          disabled={disabled || files.length === 0}
+          disabled={buttons.push}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
           <PushIcon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -178,7 +210,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={handleShell}
-          disabled={disabled || command.trim() === ''}
+          disabled={buttons.shell}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
           <Terminal className="h-3.5 w-3.5" aria-hidden="true" />

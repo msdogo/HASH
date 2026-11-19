@@ -8,6 +8,7 @@ import {
   SHOT_FALLBACK_DIR,
   SHOT_PREFIX,
   SHOT_TEMP_DIR,
+  deviceShotDir,
   type BatchServiceDeps,
 } from '../electron/batch/service'
 import { E_STDOUT_LIMIT } from '../electron/adb/client'
@@ -414,7 +415,7 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
 })
 
 describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无条件清理）', () => {
-  it('I2：落点是隐藏目录 /sdcard/.adbfm，先 mkdir -p 再截图', async () => {
+  it('I2：落点是隐藏目录下的**本机专属**子目录，先 mkdir -p 再截图', async () => {
     const root = tempDir()
     const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
@@ -422,21 +423,23 @@ describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无�
     await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
 
     expect(SHOT_TEMP_DIR).toBe('/sdcard/.adbfm')
+    // N3：每台设备一个子目录，归属明确
+    expect(deviceShotDir('ONLINE-1')).toBe('/sdcard/.adbfm/ONLINE-1')
     // 顺序：建目录 → 清扫陈旧残留 → 截图（→ 终态后 rm）
-    expect(dev.commands[0]).toEqual(['shell', "mkdir -p '/sdcard/.adbfm'"])
-    expect(dev.commands[1][1]).toBe("rm -f '/sdcard/.adbfm'/adbfm-shot-*.png")
+    expect(dev.commands[0]).toEqual(['shell', "mkdir -p '/sdcard/.adbfm/ONLINE-1'"])
+    expect(dev.commands[1][1]).toBe("rm -f '/sdcard/.adbfm/ONLINE-1'/adbfm-shot-*.png")
     const shot = dev.commands.find((args) => args[1].startsWith('screencap -p '))
     expect(shot).toBeDefined()
-    // 临时文件确实落在隐藏目录里
-    expect(shot?.[1]).toContain("'/sdcard/.adbfm/" + SHOT_PREFIX)
-    expect(h.transfer.enqueued[0].src.startsWith('/sdcard/.adbfm/' + SHOT_PREFIX)).toBe(true)
+    // 临时文件确实落在本机子目录里
+    expect(shot?.[1]).toContain("'/sdcard/.adbfm/ONLINE-1/" + SHOT_PREFIX)
+    expect(h.transfer.enqueued[0].src.startsWith('/sdcard/.adbfm/ONLINE-1/' + SHOT_PREFIX)).toBe(true)
   })
 
   it('I2：隐藏目录建不出来时回退 /sdcard/Download（宁可可见也不能让功能不可用）', async () => {
     const root = tempDir()
     const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
-    dev.reply = (args) => (args[1].startsWith('mkdir')
+    dev.reply = (args) => (args[1].includes('/.adbfm/')
       ? { code: 1, stdout: '', stderr: 'mkdir: Permission denied' }
       : { code: 0, stdout: '', stderr: '' })
     h.devs.set('ONLINE-1', dev)
@@ -444,7 +447,8 @@ describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无�
 
     expect(SHOT_FALLBACK_DIR).toBe('/sdcard/Download')
     const shot = dev.commands.find((args) => args[1].startsWith('screencap'))
-    expect(shot?.[1]).toContain("'" + SHOT_FALLBACK_DIR + '/' + SHOT_PREFIX)
+    // 回退落点同样按设备分目录
+    expect(shot?.[1]).toContain("'" + SHOT_FALLBACK_DIR + '/ONLINE-1/' + SHOT_PREFIX)
   })
 
   it('I1：截图前先清扫陈旧残留（进程被强杀时唯一的清理出口）', async () => {
@@ -456,7 +460,54 @@ describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无�
 
     // 通配符不能被引号包住（否则 rm 删的是字面量文件名）
     const sweep = dev.commands.find((args) => args[1].startsWith('rm -f '))
-    expect(sweep?.[1]).toBe("rm -f '/sdcard/.adbfm'/adbfm-shot-*.png")
+    expect(sweep?.[1]).toBe("rm -f '/sdcard/.adbfm/ONLINE-1'/adbfm-shot-*.png")
+  })
+
+  it('N3：两台设备并发截图时，一台的清扫绝不碰另一台的源文件', async () => {
+    /*
+     * 复审真机复现的缺陷：清扫只按「目录 + 前缀」，先完成的那台会把
+     * 另一台**还在排队的 pull 源文件**删掉 → 后者 E_NOT_FOUND。
+     *
+     * 判据不是「有没有发 rm」，而是**rm 的路径集合与各台的源文件集合不相交**：
+     * 这才是用户能感知的行为（截图成功 vs 莫名失败）。
+     */
+    const root = tempDir()
+    const h = harness({ localRoot: () => root })
+    const a = new FakeDevice('ONLINE-1')
+    const b = new FakeDevice('ONLINE-2')
+    h.devs.set('ONLINE-1', a)
+    h.devs.set('ONLINE-2', b)
+    const data = await h.service.screenshot({ serials: ['ONLINE-1', 'ONLINE-2'] }, root)
+    expect(data.results.every((item) => item.ok)).toBe(true)
+
+    // 每台其实只对自己那台发命令（clientFor 按 serial 造），这里逐台核对
+    for (const [serial, dev] of [['ONLINE-1', a], ['ONLINE-2', b]] as const) {
+      const sweeps = dev.commands.filter((args) => args[1].startsWith('rm -f '))
+      expect(sweeps.length).toBeGreaterThan(0)
+      // 清扫命令里出现的目录必须只属于本机，且不得含另一台的 serial
+      const other = serial === 'ONLINE-1' ? 'ONLINE-2' : 'ONLINE-1'
+      for (const args of sweeps) expect(args[1]).not.toContain(other)
+      for (const args of sweeps) expect(args[1]).toContain(serial)
+    }
+
+    // 最关键的一条：A 的清扫通配路径不得覆盖 B 的源文件
+    const sourceA = h.transfer.enqueued.find((item) => item.serial === 'ONLINE-1')?.src as string
+    const sourceB = h.transfer.enqueued.find((item) => item.serial === 'ONLINE-2')?.src as string
+    expect(sourceA).toBeDefined()
+    expect(sourceB).toBeDefined()
+    /** 从 rm 命令里取出被清扫的目录：rm -f '<dir>'/<prefix>*.png */
+    function sweepDirOf(command: string): string {
+      const head = "rm -f '"
+      const tail = "'/" + SHOT_PREFIX + '*.png'
+      return command.slice(head.length, command.length - tail.length)
+    }
+    const sweepDirsA = a.commands.filter((args) => args[1].startsWith('rm -f ')).map((args) => sweepDirOf(args[1]))
+    const sweepDirsB = b.commands.filter((args) => args[1].startsWith('rm -f ')).map((args) => sweepDirOf(args[1]))
+    for (const dir of sweepDirsA) expect(sourceB.startsWith(dir + '/')).toBe(false)
+    for (const dir of sweepDirsB) expect(sourceA.startsWith(dir + '/')).toBe(false)
+    // 反向自证：各自清扫目录确实覆盖自己的源文件（否则这条测试就是空转）
+    expect(sweepDirsA.some((dir) => sourceA.startsWith(dir + '/'))).toBe(true)
+    expect(sweepDirsB.some((dir) => sourceB.startsWith(dir + '/'))).toBe(true)
   })
 
   it('先 screencap 到临时文件，再 pull 入队，最后 rm -f 清理', async () => {
@@ -467,7 +518,7 @@ describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无�
     const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
 
     const shot = dev.commands.find((args) => args[1].startsWith('screencap'))
-    const remote = "/sdcard/.adbfm/" + SHOT_PREFIX + '1700000000000-ONLINE-1.png'
+    const remote = "/sdcard/.adbfm/ONLINE-1/" + SHOT_PREFIX + '1700000000000-ONLINE-1.png'
     expect(shot).toEqual(['shell', "screencap -p '" + remote + "'"])
     expect(h.transfer.enqueued).toEqual([
       { serial: 'ONLINE-1', direction: 'pull', src: remote, dstDir: root },

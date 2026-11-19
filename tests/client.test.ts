@@ -8,6 +8,7 @@ import {
   E_NO_SERIAL,
   E_TIMEOUT,
   E_ABORTED,
+  E_STDOUT_LIMIT,
   adbChildCount,
   killAllAdbChildren,
 } from '../electron/adb/client'
@@ -254,5 +255,106 @@ describe('AdbClient', () => {
 
     await wait(2600)
     expect(existsSync(marker)).toBe(false)
+  }, 30_000)
+
+  /*
+   * ---- 复审 N2：maxStdoutBytes（流式上限）分支 ----
+   *
+   * 上一轮我改了 client.ts 这个**共享组件**（所有 adb 命令都经过它），
+   * 新增的限额分支却零 client 级测试 —— 把它换回 `stdout += text` 全套 1093 仍全绿。
+   * tests/batch-service.test.ts 里的 FakeDevice 只是「模拟」这个行为，
+   * 它证明的是「service 收到 E_STDOUT_LIMIT 之后怎么办」，不是「client 真的会中止进程」。
+   *
+   * 下面四条全部用**真进程**（node 脚本当假 adb，不需要真机）：
+   *   1. 不传上限 → 输出完整（回归保护）；
+   *   2. 传上限 + 超量输出 → reject E_STDOUT_LIMIT；
+   *   3. 超限时进程树真的被杀（不是只 reject）；
+   *   4. 超限后迟到的 close 不得把这次中止误判成正常结束。
+   */
+
+  /** 吐 n 字节 'a' 的假 adb 脚本。 */
+  function floodScript(name: string, totalBytes: number): string {
+    const dir = scriptDir()
+    const script = path.join(dir, name)
+    writeFileSync(script, [
+      'const chunk = Buffer.alloc(16384, 97)',
+      'let sent = 0',
+      'function pump() {',
+      '  while (sent < ' + totalBytes + ') {',
+      '    const size = Math.min(chunk.length, ' + totalBytes + ' - sent)',
+      '    process.stdout.write(chunk.subarray(0, size))',
+      '    sent += size',
+      '  }',
+      '}',
+      'pump()',
+    ].join('\n'))
+    return script
+  }
+
+  it('N2-1：不传 maxStdoutBytes 时行为与改前一致（输出完整）', async () => {
+    const script = floodScript('flood-nocap.mjs', 100_000)
+    const client = new AdbClient('ABC123')
+    const result = await client.run(nodeAdbArgs(script), { adbPath: SHELL })
+    expect(result.code).toBe(0)
+    expect(result.stdout.length).toBe(100_000)
+  }, 30_000)
+
+  it('N2-2：超过 maxStdoutBytes 时 reject E_STDOUT_LIMIT（不是静默成功）', async () => {
+    const script = floodScript('flood-cap.mjs', 100_000)
+    const client = new AdbClient('ABC123')
+    const streamed: string[] = []
+    await expect(
+      client.run(nodeAdbArgs(script), {
+        adbPath: SHELL,
+        maxStdoutBytes: 1000,
+        onStdout: (chunk) => { streamed.push(chunk) },
+      }),
+    ).rejects.toThrow(E_STDOUT_LIMIT)
+    // onStdout 收到的字节数不该远超上限（每个 chunk 都要过一遍检查）
+    const streamedBytes = streamed.join('').length
+    expect(streamedBytes).toBeLessThan(1000 + 64 * 1024)
+  }, 30_000)
+
+  it('N2-3：超限时进程树真的被杀（reject 之后子进程已不在册，且不再吐输出）', async () => {
+    const dir = scriptDir()
+    const marker = path.join(dir, 'alive-after-cap.txt')
+    // 先吐 200 KB 触发上限，再挂 3 秒后写标记：真被杀就不会有标记
+    const script = path.join(dir, 'flood-and-linger.mjs')
+    writeFileSync(script, [
+      "import { writeFileSync } from 'node:fs'",
+      'const chunk = Buffer.alloc(16384, 97)',
+      'for (let i = 0; i < 16; i++) process.stdout.write(chunk)',
+      "setTimeout(() => { writeFileSync(" + JSON.stringify(marker) + ", 'alive') }, 3000)",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+
+    const client = new AdbClient('ABC123')
+    await expect(
+      client.run(nodeAdbArgs(script), { adbPath: SHELL, maxStdoutBytes: 1024 }),
+    ).rejects.toThrow(E_STDOUT_LIMIT)
+    /*
+     * reject 发生在 killTree 完成之后（client 的单一出口契约），
+     * 所以此刻进程表就该是空的 —— 这正是「不是只 reject」的判据。
+     */
+    expect(adbChildCount()).toBe(0)
+    // 观察窗必须长于夹具的 3s 挂起，否则「没标记」可能只是还没到时候
+    await wait(4000)
+    expect(existsSync(marker)).toBe(false)
+    expect(adbChildCount()).toBe(0)
+  }, 30_000)
+
+  it('N2-4：超限后迟到的 close 不会把中止误判成正常结束（settled 封口有效）', async () => {
+    const script = floodScript('flood-late-close.mjs', 200_000)
+    const client = new AdbClient('ABC123')
+    /*
+     * 关键：用一个**很长**的 timeoutMs。若 settled 封口失效，
+     * 迟到的 close 会走 resolve({ code }) 分支 —— 于是这个 Promise 会 resolve 而不是 reject，
+     * rejects.toThrow 立刻失败。反过来若封口有效，close 只会撞上 finish 的 early return。
+     */
+    const pending = client.run(nodeAdbArgs(script), { adbPath: SHELL, maxStdoutBytes: 512, timeoutMs: 20_000 })
+    await expect(pending).rejects.toThrow(E_STDOUT_LIMIT)
+    // 再等一会儿，确保迟到的 close 已经到达；Promise 已 settle，不得再变
+    await wait(500)
+    await expect(pending).rejects.toThrow(E_STDOUT_LIMIT)
   }, 30_000)
 })

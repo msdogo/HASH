@@ -48,6 +48,30 @@ export const DEFAULT_TIMEOUT_MS = 30_000
 export { adbChildCount, killAllAdbChildren }
 
 /**
+ * 把字符串截到「不超过 maxBytes 个 UTF-8 字节」的最长**前缀**，且不切断码点。
+ *
+ * 【N5】为什么不能直接 Buffer.subarray：UTF-8 里一个汉字占 3 字节，
+ * 切在第 2 字节会把一个完整字符变成孤立字节序列，解码时变成 U+FFFD。
+ * 实测 `Buffer.from('汉字','utf8').subarray(0,2).toString('utf8') === '\uFFFD'`。
+ * 截断的语义是「少给一点」，不该顺带制造乱码 —— 那会让用户以为设备输出了怪字符。
+ *
+ * 用 Array.from 按码点遍历（而不是按 UTF-16 码元），代理对也不会被切开。
+ */
+export function sliceByCodePoint(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let kept = ''
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+    if (bytes + size > maxBytes) break
+    bytes += size
+    kept += ch
+  }
+  return kept
+}
+
+/**
  * 单设备 adb 命令封装。
  * 红线：所有动态值（路径、文件名）都只作为 argv 数组元素传给 spawn，
  * 绝不拼进 shell 字符串；需要 shell 解释的值必须先经 shellQuote()。
@@ -162,10 +186,16 @@ export class AdbClient {
       child.stderr?.setEncoding('utf8')
 
       /*
-       * 【复审 I3】流式封顶：边收边量字节，超限立刻杀进程树并 reject。
+       * 【复审 I3 / N4 / N5】流式封顶：边收边量字节，超限立刻杀进程树并 reject。
        *
-       * 这里**不再把超限之后的 chunk 追加进 stdout**（否则内存又会涨回去），
-       * 并且把已收到的部分挂在错误对象上，让调用方可以把它当成截断结果展示。
+       * 三条必须写清楚的事实（上一轮的注释在这三点上都说错了）：
+       * 1. 超限之后的 chunk **一律丢弃**，不再追加进 stdout —— 否则内存照样随输出涨；
+       * 2. 已经收到的部分**不会**挂在错误对象上（N4：上一轮注释这么写，实现里
+       *    Error 只有错误码）。需要部分输出的调用方必须自己经 onStdout 收集
+       *    （batch/service 的 createStdoutBudget 就是干这个的）；
+       * 3. 截到上限时按**码点**边界切（N5）：上一轮用
+       *    Buffer.subarray(0, room).toString('utf8')，实测 Buffer.from('汉字')
+       *    .subarray(0, 2).toString('utf8') === '\uFFFD' —— 切出半个汉字。
        */
       let stdoutBytes = 0
       child.stdout?.on('data', (text: string) => {
@@ -179,7 +209,6 @@ export class AdbClient {
          * 复用 abortOrTimeout（而不是自己 killTree + finish）：它保证
          * 「先封口 settled → 再杀进程树 → 杀完才 reject」，于是迟到的 close
          * 不会把这次中止误判成正常结束（那正是取消路径踩过的坑）。
-         * 调用方需要的那部分输出由 onStdout 侧自行收集（见 batch/service）。
          */
         if (limit === undefined) {
           stdout += text
@@ -188,7 +217,7 @@ export class AdbClient {
         const size = Buffer.byteLength(text, 'utf8')
         const room = limit - stdoutBytes
         if (size > room) {
-          if (room > 0) stdout += Buffer.from(text, 'utf8').subarray(0, room).toString('utf8')
+          if (room > 0) stdout += sliceByCodePoint(text, room)
           stdoutBytes = limit
           abortOrTimeout(E_STDOUT_LIMIT)
           return
