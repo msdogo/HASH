@@ -30,6 +30,9 @@ describe('共享错误码', () => {
       'E_BAD_ARGS',
       'E_LIST_FAILED',
       'E_UNKNOWN',
+      // 审查轮 1（任务 7）：跟随符号链接目录时的两种新增失败
+      'E_LINK_UNRESOLVED',
+      'E_LINK_CYCLE',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

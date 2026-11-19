@@ -152,13 +152,72 @@ describe('任务 7：文件页契约（静态断言）', () => {
     expect(store).toContain('window.api.fs.list(')
     // 分片键必须来自 serial（裁决 7）
     expect(store).toMatch(/\[serial\]/)
-    // 加载必须经过协调器（裁决 2：过期响应丢弃 + 在飞去重）
-    expect(store).toContain('createLoadCoordinator')
+    // 加载必须经过协调器（裁决 2：过期响应丢弃 + 在飞去重）。
+    // 审查轮 1 后协调器从 store 下沉到 shared 的模型层（store 只剩一层壳），断言随之指向实现处。
+    expect(read('src/shared/file-view.ts')).toContain('createLoadCoordinator')
   })
 
-  it('fileStore 不重复实现状态机（reducer 来自 shared，有单测）', () => {
+  it('fileStore 不重复实现状态机（状态机/协调器/模型全部来自 shared，有单测）', () => {
     const store = read('src/store/fileStore.ts')
-    expect(store).toContain('fileViewsReducer')
+    // 修前断言的是 fileViewsReducer；审查轮 1 后 store 收敛成「模型的一层壳」，
+    // 迁移入口变成 createFileViewsModel（内部仍用 fileViewsReducer）。断言随之更新：
+    // 重点是「状态迁移逻辑不在 store 里自己实现」，而不是某个具体函数名。
+    expect(store).toContain('createFileViewsModel')
     expect(store).toContain('@shared/file-view')
+    expect(store).not.toMatch(/switch \(action\.type\)/)
+  })
+})
+describe('任务 7 审查轮 1：修复项的静态契约', () => {
+  it('C1：FilesPage 不在 handleOpen/handleJump 里清空列表（导航只登记目标）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+    // 组件不直接改 entries / selected / cwd，全部交给 store 的 openDir（内部走 navigate + resolve）
+    expect(page).not.toMatch(/entries: \[\]/)
+    expect(page).not.toMatch(/selected: \[\]/)
+    expect(page).toContain('openDir(')
+  })
+
+  it('C1：reducer 的 navigate 不清空 entries（用 pendingCwd 延迟提交）', () => {
+    const source = read('src/shared/file-view.ts')
+    const navigateCase = source.slice(source.indexOf("case 'navigate':"), source.indexOf("case 'beginLoad':"))
+    expect(navigateCase).toContain('pendingCwd')
+    expect(navigateCase).not.toContain('entries: []')
+    expect(navigateCase).not.toContain('selected: []')
+    expect(navigateCase).not.toContain('scrollTop: 0')
+  })
+
+  it('I4：FilesPage 用 openTarget 决定导航目标（不再直接 if (!entry.isDir) return）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+    expect(page).toContain('openTarget(')
+    expect(page).not.toMatch(/if \(!entry\.isDir\) return/)
+    // 链接错误必须给提示（不是静默返回）
+    expect(page).toContain("type: 'addressError'")
+  })
+
+  it('I7：键盘处理挂且只挂一处（避免 Backspace 被处理两次）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+    const table = read('src/components/FileTable.tsx')
+    const pageBindings = (page.match(/onKeyDown=\{/g) ?? []).length
+    expect(pageBindings).toBe(0)
+    expect(table).toContain('onKeyDown={props.onKeyNav}')
+    expect(table).toContain('tabIndex={0}')
+    expect(page).toContain('navKeyCommand(')
+  })
+
+  it('I3：滚动上报的 rAF 用 ref 持有最新回调，并在切换时取消挂起的帧', () => {
+    const table = read('src/components/FileTable.tsx')
+    expect(table).toContain('latestOnScrollTop')
+    expect(table).toContain('cancelAnimationFrame')
+    // 不允许 rAF 闭包直接调 props.onScrollTop（旧闭包会把上一台设备的值写进新设备）
+    expect(table).not.toMatch(/requestAnimationFrame\(\(\) => \{[\s\S]{0,120}props\.onScrollTop/)
+  })
+
+  it('I5/I6：设备表变化接到分片生命周期（forget 有调用方）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+    expect(page).toContain('syncDevices(')
+    const model = read('src/shared/file-view.ts')
+    // tombstone 必须真的在 dispatch 路径上拦截
+    expect(model).toContain('tombstones.has(serial)')
+    // 去重键必须是目录，不是代次
+    expect(model).toContain("const key = serial + '\\u0001' + dir")
   })
 })

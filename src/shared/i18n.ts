@@ -54,6 +54,8 @@ const messages: Record<string, string> = {
   'files.linkTo': '指向 {target}',
   'files.sortHint': '点击切换排序方向',
   'files.selected': '已选 {count} 项',
+  'files.linkUnresolved': '无法进入这个快捷方式：没有可用的目标路径',
+  'files.linkCycle': '这个快捷方式指向自己或已访问过的目录，已停止跟随',
   'files.scrollToTop': '回到顶部',
 }
 
@@ -80,6 +82,8 @@ const errorTexts: Record<ErrorCode, string> = {
   E_BAD_ARGS: '请求参数不合法，这是程序内部错误，请重试或重启应用',
   E_LIST_FAILED: '列出目录失败，请稍后重试，或换一个目录',
   E_UNKNOWN: '发生未知错误，请重试；如果一直失败，请重启应用',
+  E_LINK_UNRESOLVED: '这个快捷方式（符号链接）没有可用的目标路径，无法进入。可以改用地址栏直接输入完整路径',
+  E_LINK_CYCLE: '这个快捷方式指向了自己或已经走过的目录，为避免无限跳转已停止跟随',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */

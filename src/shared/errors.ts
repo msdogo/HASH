@@ -40,6 +40,10 @@ export const E_BAD_ARGS = 'E_BAD_ARGS'
 export const E_LIST_FAILED = 'E_LIST_FAILED'
 /** 兜底：无法归类的异常。 */
 export const E_UNKNOWN = 'E_UNKNOWN'
+/** 符号链接的目标无法解析（ls 没给出可用目标），因此不知道该进哪个目录。 */
+export const E_LINK_UNRESOLVED = 'E_LINK_UNRESOLVED'
+/** 跟随符号链接时检测到环（目标已在本次访问轨迹里，或超过跳数上限）。 */
+export const E_LINK_CYCLE = 'E_LINK_CYCLE'
 
 /**
  * 全部错误码，顺序即「匹配优先级」的参考顺序。
@@ -62,6 +66,8 @@ export const ERROR_CODES = [
   E_BAD_ARGS,
   E_LIST_FAILED,
   E_UNKNOWN,
+  E_LINK_UNRESOLVED,
+  E_LINK_CYCLE,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

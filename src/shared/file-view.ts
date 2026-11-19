@@ -1,11 +1,12 @@
 import type { FileEntry } from './types'
+import { E_LINK_CYCLE, E_LINK_UNRESOLVED, E_INVALID_PATH } from './errors'
 
 /**
- * 文件页的纯逻辑（裁决 1/2/4/5/6/7）。
+ * 文件页的纯逻辑（裁决 1/2/4/5/6/7 + 审查轮 1 的 C1/I1/I2/I4/I5/I7）。
  *
  * 为什么放在 src/shared：测试工程 import 不了 src/ 下非 shared 的目录（TS6307），
- * 而 jsdom 会破坏 tsconfig 的工程划分。所以「排序 / 过滤 / 路径 / 提示条 / 视图状态机」
- * 全部抽成这里的纯函数与纯 reducer，用 node 环境直接测；
+ * 而 jsdom 会破坏 tsconfig 的工程划分。所以「排序 / 过滤 / 路径 / 提示条 / 视图状态机 /
+ * 加载协调器 / 分片模型」全部抽成这里的纯函数与纯类，用 node 环境直接测；
  * React 组件（FileTable / Breadcrumb / FilesPage）只负责渲染与把事件转成 action。
  *
  * 红线：本文件同时被渲染层与主进程编译，不得 import 任何 node 内置模块。
@@ -17,7 +18,7 @@ import type { FileEntry } from './types'
  * 虚拟滚动的固定行高（px）。
  *
  * 必须只有一个来源：组件里 estimateSize 用它、行的 style.height 也用它。
- * 两处各写一个数字是我在评审里见过最常见的「滚动条越滚越抖」成因。
+ * 两处各写一个数字是「滚动条越滚越抖」的最常见成因。
  */
 export const ROW_HEIGHT = 34
 
@@ -82,7 +83,7 @@ export function parentOf(path: string): string | null {
 }
 
 /** 地址栏输入路径的解析结果：成功给出可跳转路径，失败给出错误码（行内报错用）。 */
-export type TypedPath = { ok: true; path: string } | { ok: false; code: 'E_INVALID_PATH' }
+export type TypedPath = { ok: true; path: string } | { ok: false; code: typeof E_INVALID_PATH }
 
 /**
  * 解析地址栏手输的路径（裁决 6）。
@@ -92,7 +93,7 @@ export type TypedPath = { ok: true; path: string } | { ok: false; code: 'E_INVAL
  */
 export function parseTypedPath(input: string): TypedPath {
   const trimmed = input.trim()
-  if (trimmed === '' || inexpressible(trimmed)) return { ok: false, code: 'E_INVALID_PATH' }
+  if (trimmed === '' || inexpressible(trimmed)) return { ok: false, code: E_INVALID_PATH }
   return { ok: true, path: normalizePath(trimmed) }
 }
 
@@ -194,7 +195,7 @@ export function formatMtime(entry: FileEntry, tzOffsetMinutes: number): string |
   )
 }
 
-/* ============ 排序 ============ */
+/* ============ 排序（裁决 1 + I1） ============ */
 
 export type SortKey = 'name' | 'size' | 'time'
 export type SortDir = 'asc' | 'desc'
@@ -220,25 +221,37 @@ function groupOf(entry: FileEntry): number {
   return entry.isDir ? 0 : 1
 }
 
+/**
+ * 比较两个条目。
+ *
+ * 【审查轮 1 / I1】两套规则必须分开，不能拿 metaKnown 一刀切：
+ * - 按【名称】排序：名字永远是已知的，metaKnown 与排序无关 ——
+ *   修前把「未知项置后」放在主键之前，导致一个未知的 a.bin 被排到所有已知文件之后
+ *   （a.bin 跑到了 z.txt 后面），明显违反排序直觉。
+ * - 按【大小/时间】排序：未知项恒排最后，且与升降序无关 ——
+ *   「未知」不是「很小」或「很老」，不能因为值是 0 就挤到最前。
+ */
 function compareEntries(a: FileEntry, b: FileEntry, sort: SortKey, dir: SortDir): number {
   // 1) 目录恒在前
   const group = groupOf(a) - groupOf(b)
   if (group !== 0) return group
 
-  // 2) 元数据未知的条目恒排最后（裁决 1）：不能因为 size/mtime 恰好是 0 就挤到最前。
-  //    这条与升降序无关 —— 「未知」不是「很小」或「很老」。
+  // 2) 名称排序：只比名字，metaKnown 完全不参与
+  if (sort === 'name') {
+    const byName = compareByName(a.name, b.name)
+    return dir === 'asc' ? byName : -byName
+  }
+
+  // 3) 大小/时间排序：未知项恒排最后（与方向无关）
   const aKnown = isMetaKnown(a)
   const bKnown = isMetaKnown(b)
   if (aKnown !== bKnown) return aKnown ? -1 : 1
 
-  // 3) 主键
-  let primary = 0
-  if (sort === 'size' && aKnown) primary = a.size - b.size
-  else if (sort === 'time' && aKnown) primary = a.mtime - b.mtime
-  else primary = compareByName(a.name, b.name)
+  // 4) 主键
+  const primary = sort === 'size' ? a.size - b.size : a.mtime - b.mtime
   if (primary !== 0) return dir === 'asc' ? primary : -primary
 
-  // 4) 同主键时用名称升序兜底：排序必须确定，否则每次重渲染行序会跳
+  // 5) 同主键时用名称升序兜底：排序必须确定，否则每次重渲染行序会跳
   return compareByName(a.name, b.name)
 }
 
@@ -264,12 +277,7 @@ export function visibleEntries(
   entries: readonly FileEntry[],
   options: FilterOptions & { sort: SortKey; sortDir: SortDir },
 ): FileEntry[] {
-  const filtered = filterEntries(entries, options)
-  if (options.sort === 'name' && options.sortDir === 'asc') {
-    // 默认视图也要排序：ls 的输出顺序在不同设备上不一样
-    return sortEntries(filtered, 'name', 'asc')
-  }
-  return sortEntries(filtered, options.sort, options.sortDir)
+  return sortEntries(filterEntries(entries, options), options.sort, options.sortDir)
 }
 
 /** 列表底部统计：目录数 / 文件数 / 总数。 */
@@ -283,6 +291,87 @@ export function summarizeEntries(entries: readonly FileEntry[]): {
   return { dirs, files: entries.length - dirs, total: entries.length }
 }
 
+/* ============ I4：条目点击后的导航目标（链接目录与防环） ============ */
+
+/**
+ * 允许跟随的符号链接层数上限。
+ *
+ * 为什么不靠「只跟一层」：真机上 /sdcard -> /storage/self/primary -> /mnt/user/0/primary
+ * 这种两级链接很常见，只跟一层会让第二层点不开。用「跳数上限 + 已访问轨迹」双重防护。
+ */
+export const MAX_LINK_HOPS = 8
+
+/** 点击一个条目之后该做什么。 */
+export type OpenTarget =
+  | { kind: 'enter'; path: string; followedLink: boolean }
+  | { kind: 'noop'; reason: 'file' }
+  | { kind: 'error'; code: string }
+
+/**
+ * 计算「点这个条目该跳到哪」（I4）。
+ *
+ * 任务 5 裁决 4 定的是「链接的 isDir 恒为 false，由调用方决定是否跟随」——
+ * 文件页就是那个调用方。修前这里直接 if (!entry.isDir) return，
+ * 于是 /sdcard、/storage/self/primary 这类真机最常见的入口全都点不开且无任何提示。
+ *
+ * 规则：
+ * 1. 普通目录 → join(cwd, name)；
+ * 2. 链接且 linkTargetResolved 可用 → 进入解析后的绝对路径（打 followedLink 标记）；
+ * 3. 链接但目标解析不出来 → E_LINK_UNRESOLVED（界面给明确提示，不静默）；
+ * 4. 目标已在 trail 里、或等于当前目录、或 trail 已达上限 → E_LINK_CYCLE（防环）；
+ * 5. 普通文件 → noop（双击文件不改目录，留给任务 9 的「打开/下载」）。
+ */
+export function openTarget(
+  entry: FileEntry,
+  cwd: string,
+  trail: readonly string[],
+): OpenTarget {
+  if (!entry.isLink) {
+    if (!entry.isDir) return { kind: 'noop', reason: 'file' }
+    return { kind: 'enter', path: joinEntryPath(cwd, entry.name), followedLink: false }
+  }
+
+  const target = entry.linkTargetResolved
+  if (target === undefined || target === '') {
+    return { kind: 'error', code: E_LINK_UNRESOLVED }
+  }
+  const resolved = normalizePath(target)
+  // 防环三件套：走到上限、指回已走过的目录、指回当前目录
+  if (trail.length >= MAX_LINK_HOPS) return { kind: 'error', code: E_LINK_CYCLE }
+  if (resolved === normalizePath(cwd)) return { kind: 'error', code: E_LINK_CYCLE }
+  if (trail.some((visited) => normalizePath(visited) === resolved)) {
+    return { kind: 'error', code: E_LINK_CYCLE }
+  }
+  return { kind: 'enter', path: resolved, followedLink: true }
+}
+
+/* ============ I7：键盘命令 ============ */
+
+/** 导航级快捷键的语义（组件只做「把 event.key 翻成命令」这一步）。 */
+export type NavKeyCommand =
+  | { kind: 'up'; path: string }
+  | { kind: 'refresh' }
+  | { kind: 'none' }
+
+/**
+ * 把按键翻成导航命令（I7：规格 9.5 要求 Enter 打开 / Backspace 上级 / F5 刷新）。
+ *
+ * 只认 Backspace 与 F5：Enter 在行上（打开条目）由 isOpenKey 处理，
+ * 方向键留给列表自身滚动 —— 组件吞掉它们会破坏原生滚动与未来多选的键位。
+ */
+export function navKeyCommand(key: string, cwd: string): NavKeyCommand {
+  if (key === 'Backspace') {
+    const parent = parentOf(cwd)
+    return parent === null ? { kind: 'none' } : { kind: 'up', path: parent }
+  }
+  if (key === 'F5') return { kind: 'refresh' }
+  return { kind: 'none' }
+}
+
+/** 行上的「打开」键：Enter（空格留给未来的多选切换）。 */
+export function isOpenKey(key: string): boolean {
+  return key === 'Enter'
+}
 /* ============ 降级提示（裁决 3） ============ */
 
 /** fs:list 里与「提示条」相关的字段（与 shared/types 的 FsListData 对齐）。 */
@@ -315,7 +404,7 @@ export function noticeFromList(input: ListDegradeInput): ListNotice | null {
   }
 }
 
-/* ============ 视图状态机（裁决 2 / 7） ============ */
+/* ============ 视图状态机（裁决 2 / 7 + C1 / I2） ============ */
 
 /** 默认目录（规格：进入文件页先停在 /sdcard）。 */
 export const DEFAULT_CWD = '/sdcard'
@@ -331,17 +420,24 @@ export type ViewStatus = 'idle' | 'loading' | 'ready' | 'error'
  * - 后续任务 9 的「本地双栏」只需再加一个 pane 分片，不用改这一层的语义。
  */
 export interface FileViewState {
-  /** 当前目录（已归一化的绝对路径）。 */
+  /**
+   * 当前【已确认可读】的目录（已归一化的绝对路径）。
+   *
+   * 【C1】它只在 fs:list 成功后才提交 —— 用户跳转到一个不存在/无权限的目录时，
+   * cwd 不前移，列表也不清空，只在地址栏行内报错。
+   */
   cwd: string
+  /** 正在请求中的目标目录；null 表示没有待确认的跳转。 */
+  pendingCwd: string | null
   sort: SortKey
   sortDir: SortDir
   showHidden: boolean
   /** 最近一次成功列举的条目（原始顺序；展示顺序由 visibleEntries 算）。 */
   entries: FileEntry[]
   status: ViewStatus
-  /** 整页错误码（零条目 + 失败）；有内容时失败只写在这里，不整页替换。 */
+  /** 整页错误码（首次加载就失败）；有内容时失败只写 addressError。 */
   error: string | null
-  /** 地址栏行内错误码（非法输入），不影响当前目录。 */
+  /** 行内错误码（地址栏非法输入、跳转失败、链接环/无法解析）。 */
   addressError: string | null
   /** 降级/退出码提示条内容；null 表示无需提示。 */
   notice: ListNotice | null
@@ -361,7 +457,25 @@ export interface FileViewState {
   selected: string[]
   /** 列表滚动位置（切设备回来要恢复）。 */
   scrollTop: number
+  /** 本次会话里跟随过的链接目标（防环用；换目录成功后按新目录重置）。 */
+  linkTrail: string[]
+  /** 是否已经成功加载过至少一次（区分「首次就失败=整页错误」与「有内容时失败=行内提示」）。 */
+  loadedOnce: boolean
 }
+
+/**
+ * FilesPage 实际订阅的字段（**故意不含 generation / scrollTop / pendingCwd / linkTrail**）。
+ *
+ * 为什么收窄类型而不是给全量状态：
+ * - scrollTop 每帧都会变，订阅它就等于每帧整页重渲染（裁决 4）；
+ * - generation 是实现细节，页面拿到的永远是默认值 0 —— 后来者写
+ *   current.generation === x 做竞态判断会静默失效。
+ * 用 Omit 把这两个字段挡在类型层外面，误用直接编译报错（审查轮 1 的提示项）。
+ */
+export type FileViewSlice = Omit<
+  FileViewState,
+  'generation' | 'scrollTop' | 'pendingCwd' | 'linkTrail'
+>
 
 /** fs:list 的返回数据（只取视图需要的字段，避免 store 依赖主进程实现细节）。 */
 export interface ListResultData {
@@ -375,13 +489,13 @@ export interface ListResultData {
 }
 
 export type FileViewAction =
-  /** 跳转目录（进入子目录 / 面包屑 / 地址栏 / 上一级）。 */
+  /** 请求跳转（进入子目录 / 面包屑 / 地址栏 / 上一级）：只登记目标，成功后由 resolve 提交 cwd。 */
   | { type: 'navigate'; cwd: string }
   /** 重新加载当前目录（刷新）：保留条目、选中与滚动位置，只推进代次。 */
   | { type: 'beginLoad' }
   /** 加载成功；generation 不符即为过期响应，整个状态原样返回。 */
   | { type: 'resolve'; generation: number; data: ListResultData }
-  /** 加载失败；generation 不符同样丢弃。 */
+  /** 加载失败；generation 不符同样丢弃。跳转失败时保留当前目录与列表（C1）。 */
   | { type: 'fail'; generation: number; code: string }
   /** 列头点击排序：同列切升降，换列回到升序。 */
   | { type: 'setSort'; sort: SortKey }
@@ -389,7 +503,7 @@ export type FileViewAction =
   /** 点选条目；additive 对应 Ctrl/Shift 多选。 */
   | { type: 'select'; name: string; additive: boolean }
   | { type: 'setScrollTop'; value: number }
-  /** 地址栏非法输入：只写行内错误，不动当前目录。 */
+  /** 行内错误（地址栏非法输入 / 链接无法进入）：只写提示，不动当前目录。 */
   | { type: 'addressError'; code: string }
   | { type: 'dismissNotice' }
 
@@ -397,6 +511,7 @@ export type FileViewAction =
 export function createFileView(): FileViewState {
   return {
     cwd: DEFAULT_CWD,
+    pendingCwd: null,
     sort: 'name',
     sortDir: 'asc',
     showHidden: false,
@@ -410,7 +525,21 @@ export function createFileView(): FileViewState {
     generation: 0,
     selected: [],
     scrollTop: 0,
+    linkTrail: [],
+    loadedOnce: false,
   }
+}
+
+/** 选中项与新条目求交集（I2：刷新后不对看不见的条目执行操作）。 */
+function intersectSelected(selected: readonly string[], entries: readonly FileEntry[]): string[] {
+  if (selected.length === 0) return selected as string[]
+  const alive = new Set(entries.map((entry) => entry.name))
+  const kept = selected.filter((name) => alive.has(name))
+  // 没有变化时保留原数组引用，避免无谓的重渲染
+  if (kept.length === selected.length && kept.every((name, index) => name === selected[index])) {
+    return selected as string[]
+  }
+  return kept
 }
 
 /**
@@ -421,29 +550,25 @@ export function createFileView(): FileViewState {
  */
 export function fileViewReducer(state: FileViewState, action: FileViewAction): FileViewState {
   switch (action.type) {
-    case 'navigate': {
-      const cwd = normalizePath(action.cwd)
+    case 'navigate':
+      // 【C1】只登记目标：不清空 entries，不动 cwd / selected / scrollTop。
+      // 用户打错一个字母时，当前目录与列表必须原样还在（裁决 6 的「不要整页替换」）。
       return {
         ...state,
-        cwd,
-        entries: [],
-        selected: [],
-        // 换目录 = 新的一屏：滚动位置与提示条都要重置（裁决 7 只要求切设备时保留同目录的滚动位置）
-        scrollTop: 0,
+        pendingCwd: normalizePath(action.cwd),
         status: 'loading',
         error: null,
         addressError: null,
-        notice: null,
         noticeDismissed: false,
         generation: state.generation + 1,
       }
-    }
     case 'beginLoad':
       return {
         ...state,
         // 刷新不清空内容：先让用户看到旧内容，新结果到了再替换（不闪白）
         status: 'loading',
         error: null,
+        addressError: null,
         noticeDismissed: false,
         generation: state.generation + 1,
       }
@@ -451,9 +576,13 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
       // 裁决 2：过期响应必须丢弃。返回原引用，连重渲染都不会发生。
       if (action.generation !== state.generation) return state
       const data = action.data
+      const dir = normalizePath(data.dir)
+      // 目录是否变了决定 selected / scrollTop 的处置（I2）
+      const sameDir = dir === state.cwd
       return {
         ...state,
-        cwd: normalizePath(data.dir),
+        cwd: dir,
+        pendingCwd: null,
         entries: data.entries,
         status: 'ready',
         error: null,
@@ -461,16 +590,37 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         tzOffsetMinutes: data.tzOffsetMinutes,
         notice: noticeFromList(data),
         noticeDismissed: false,
-        generation: state.generation,
+        // 换目录：选中清空、滚动归零、链接轨迹重置；同目录刷新：只把消失的选中项剔除
+        selected: sameDir ? intersectSelected(state.selected, data.entries) : [],
+        scrollTop: sameDir ? state.scrollTop : 0,
+        linkTrail: sameDir ? state.linkTrail : [],
+        loadedOnce: true,
       }
     }
     case 'fail': {
       if (action.generation !== state.generation) return state
-      // 已有内容时失败不整页变错误：保留列表，只在顶部提示（裁决 3 的同一条原则）
-      if (state.entries.length > 0) {
-        return { ...state, status: 'ready', error: action.code }
+      // 【C1】跳转失败：cwd / entries / selected / scrollTop 全部保持不变，只写行内/顶部提示。
+      // 从未成功加载过（首次进入就失败）才显示整页错误态 —— 否则用户会丢掉当前目录。
+      // 区分两种失败：navigate 失败走地址栏行内错误（C1 的核心），refresh 失败走顶部提示条。
+      const wasNavigate = state.pendingCwd !== null
+      if (state.loadedOnce || state.entries.length > 0) {
+        return {
+          ...state,
+          // 失败后不再处于 loading：列表停在原内容上
+          status: state.status === 'loading' ? 'ready' : state.status === 'error' ? 'ready' : state.status,
+          pendingCwd: null,
+          error: wasNavigate ? null : action.code,
+          addressError: wasNavigate ? action.code : null,
+        }
       }
-      return { ...state, status: 'error', error: action.code, entries: [] }
+      return {
+        ...state,
+        status: 'error',
+        pendingCwd: null,
+        error: action.code,
+        addressError: action.code,
+        entries: [],
+      }
     }
     case 'setSort': {
       if (state.sort === action.sort) {
@@ -518,33 +668,34 @@ export function viewOf(views: FileViews, serial: string): FileViewState {
 }
 
 /**
- * 把「部分字段」补成完整视图。
+ * 把「部分字段」补成完整 slice。
  *
  * 为什么需要它：FilesPage 用 useShallow 只订阅影响渲染的字段（不订阅 scrollTop，
  * 否则每帧滚动都会让整页重渲染）。这样拿到的对象是**字段不全**的，
- * 直接当 FileViewState 用会让 entries 变成 undefined —— 首帧就炸「entries is not iterable」。
- * 这里统一补齐：缺的回落默认值，已有的原样保留。默认值仍然只在 createFileView 一处定义。
+ * 直接当 FileViewState 用会让 entries 变成 undefined —— 首帧就炸 entries is not iterable。
+ *
+ * 【审查轮 1】返回类型收窄成 FileViewSlice：generation / scrollTop 这些「未订阅、永远是默认值」
+ * 的字段**不在返回类型里**，后来者若写 current.generation 会直接编译报错，
+ * 而不是静默拿到 0 去做错的竞态判断。
  */
-export function viewFromPartial(partial: Partial<FileViewState> | undefined): FileViewState {
+export function viewFromPartial(partial: Partial<FileViewSlice> | undefined): FileViewSlice {
   const base = createFileView()
-  if (partial === undefined) return base
   // 逐个字段合并，而不是 Object.assign：null 也是「有值」（error/notice 的合法取值），
   // 必须保留；只有 undefined 才回落默认值。
   return {
-    cwd: partial.cwd ?? base.cwd,
-    sort: partial.sort ?? base.sort,
-    sortDir: partial.sortDir ?? base.sortDir,
-    showHidden: partial.showHidden ?? base.showHidden,
-    entries: partial.entries ?? base.entries,
-    status: partial.status ?? base.status,
-    error: partial.error === undefined ? base.error : partial.error,
-    addressError: partial.addressError === undefined ? base.addressError : partial.addressError,
-    notice: partial.notice === undefined ? base.notice : partial.notice,
-    noticeDismissed: partial.noticeDismissed ?? base.noticeDismissed,
-    tzOffsetMinutes: partial.tzOffsetMinutes ?? base.tzOffsetMinutes,
-    generation: partial.generation ?? base.generation,
-    selected: partial.selected ?? base.selected,
-    scrollTop: partial.scrollTop ?? base.scrollTop,
+    cwd: partial?.cwd ?? base.cwd,
+    sort: partial?.sort ?? base.sort,
+    sortDir: partial?.sortDir ?? base.sortDir,
+    showHidden: partial?.showHidden ?? base.showHidden,
+    entries: partial?.entries ?? base.entries,
+    status: partial?.status ?? base.status,
+    error: partial?.error === undefined ? base.error : partial.error,
+    addressError: partial?.addressError === undefined ? base.addressError : partial.addressError,
+    notice: partial?.notice === undefined ? base.notice : partial.notice,
+    noticeDismissed: partial?.noticeDismissed ?? base.noticeDismissed,
+    tzOffsetMinutes: partial?.tzOffsetMinutes ?? base.tzOffsetMinutes,
+    selected: partial?.selected ?? base.selected,
+    loadedOnce: partial?.loadedOnce ?? base.loadedOnce,
   }
 }
 
@@ -564,7 +715,8 @@ export function fileViewsReducer(views: FileViews, action: ScopedViewAction): Fi
   }
   return { ...views, [action.serial]: next }
 }
-/* ============ 加载协调器（裁决 2：in-flight 去重 + 过期丢弃） ============ */
+
+/* ============ 加载协调器（裁决 2 + I5 去重键修正） ============ */
 
 /** 一次 fs:list 请求的身份。 */
 export interface ListRequest {
@@ -589,28 +741,24 @@ export interface LoadCoordinatorDeps {
 
 /** 加载协调器：把「什么时候发请求、结果该不该落地」收敛到一处。 */
 export interface LoadCoordinator {
-  /**
-   * 为指定设备加载当前 cwd。
-   *
-   * 幂等：同一 serial + 同一请求代次的重复调用（React StrictMode 双执行 effect、
-   * 用户连点刷新）只会发一次 adb 命令。
-   */
+  /** 为指定设备加载当前请求目标（pendingCwd ?? cwd）。幂等：同 serial + 同目录的在飞请求复用。 */
   load: (serial: string) => Promise<void>
   /** 当前在飞请求数（测试与调试用）。 */
   inflight: () => number
-  /** 丢弃在飞记录（设备断开/重连时调用，之后同代次可以重新发起）。 */
+  /** 丢弃在飞记录（设备断开/重连时调用）。 */
   reset: (serial?: string) => void
 }
 
 /**
  * 造一个加载协调器。
  *
- * 两个职责，缺一不可（裁决 2）：
- * 1. **in-flight 去重**：同一代次的重复调用共享同一个 Promise —— 否则 StrictMode 下
- *    每个目录会被 ls 两遍（真机上万条目录会明显卡顿）。
- * 2. **过期结果丢弃**：响应落地前按代次比对，旧目录的晚到结果不会覆盖新目录内容。
- *    这一条其实由 fileViewReducer 兜底（generation 不符返回原 state），
- *    但在这里也把 generation 抓在闭包里，避免「发请求后又读 state」引入的时序错位。
+ * 两个职责，缺一不可（裁决 2 / I5）：
+ * 1. **in-flight 去重**：去重键是 **serial + dir**，不是 serial + generation。
+ *    修前用 generation 做键，而刷新本身就会推进 generation —— 于是「连点三次刷新」
+ *    每次键都不同、每次都发一条 ls（用户看到的是一串重复请求）。
+ *    按目录去重后，同一目录的进行中请求直接复用；不同目录才真的发新请求。
+ * 2. **过期结果丢弃**：请求发出时把 generation 抓在闭包里，落地前比对；
+ *    旧目录的晚到结果不会覆盖新目录内容（reducer 里还有第二道防线）。
  */
 export function createLoadCoordinator(deps: LoadCoordinatorDeps): LoadCoordinator {
   const pending = new Map<string, Promise<void>>()
@@ -618,11 +766,10 @@ export function createLoadCoordinator(deps: LoadCoordinatorDeps): LoadCoordinato
 
   const load = (serial: string): Promise<void> => {
     const view = deps.get(serial)
-    // 请求身份 = 设备 + 代次。代次在 navigate/beginLoad 时已经推进，
-    // 所以「切了目录再加载」必然是新的 key，不会被误去重。
+    // 【C1】加载的是「待确认的目标」，没有待确认目标时才是刷新当前目录
+    const dir = view.pendingCwd ?? view.cwd
     const generation = view.generation
-    const dir = view.cwd
-    const key = serial + '\u0001' + String(generation)
+    const key = serial + '\u0001' + dir
 
     const existing = pending.get(key)
     if (existing !== undefined) return existing
@@ -635,10 +782,15 @@ export function createLoadCoordinator(deps: LoadCoordinatorDeps): LoadCoordinato
         // 任何异常都收敛成错误码：协调器绝不向外抛，否则调用方会漏掉 catch
         response = { ok: false, error: codeOf(err) }
       }
+      // 落地前再确认一次「目标还是同一个目录」：
+      // 用户中途切走就必须丢弃这条结果（裁决 2）；但只是刷新（代次推进、目标没变）
+      // 时这条结果仍然有效 —— 用目录而不是代次判断，否则连点刷新会把有效结果一起丢掉。
+      const latest = deps.get(serial)
+      if ((latest.pendingCwd ?? latest.cwd) !== dir) return
       if (response.ok) {
-        deps.dispatch(serial, { type: 'resolve', generation, data: response.data })
+        deps.dispatch(serial, { type: 'resolve', generation: latest.generation, data: response.data })
       } else {
-        deps.dispatch(serial, { type: 'fail', generation, code: response.error })
+        deps.dispatch(serial, { type: 'fail', generation: latest.generation, code: response.error })
       }
     })()
 
@@ -664,4 +816,151 @@ export function createLoadCoordinator(deps: LoadCoordinatorDeps): LoadCoordinato
       }
     },
   }
+}
+
+/* ============ 分片模型（I5 / I6：forget、tombstone、LRU） ============ */
+
+/** 默认保留的设备分片数上限（超出按最近使用淘汰）。 */
+export const MAX_VIEW_SERIALS = 16
+
+export interface FileViewsModelDeps {
+  fetch: (request: ListRequest) => Promise<ListResponse>
+  /** 每次状态变化都通知（zustand 用它同步到 React）。 */
+  onChange: (views: FileViews) => void
+  /** 最多保留多少台设备的分片（LRU）；缺省 MAX_VIEW_SERIALS。 */
+  maxSerials?: number
+  toCode?: (err: unknown) => string
+}
+
+/** 分片模型：所有状态迁移的唯一入口（store 只是它的一层壳）。 */
+export interface FileViewsModel {
+  getViews: () => FileViews
+  ensure: (serial: string) => void
+  dispatch: (serial: string, action: FileViewAction) => void
+  /** 请求跳转（成功后由 resolve 提交 cwd）。 */
+  openDir: (serial: string, dir: string) => Promise<void>
+  /** 刷新当前目录。 */
+  refresh: (serial: string) => Promise<void>
+  /** 加载当前请求目标。 */
+  load: (serial: string) => Promise<void>
+  /** 忘记某台设备（断开连接）：清掉分片并立 tombstone，迟到的响应不许复活它。 */
+  forget: (serial: string) => void
+  /** 当前保留的 serial（按最近使用排序，测试用）。 */
+  serials: () => string[]
+  inflight: () => number
+  /** 设备列表变化时同步：新出现的 ensure，消失的 forget。 */
+  syncDevices: (serials: readonly string[]) => void
+}
+
+/**
+ * 造一个分片模型。
+ *
+ * 【审查轮 1 / I5 / I6】修前的三个问题：
+ * 1. forget() 没有任何调用方 —— 设备拔掉后分片永远留着（每台存完整 entries）；
+ * 2. 已在飞的请求在 forget 后仍会把分片**重新建出来**（实测 views 里设备会「复活」）；
+ * 3. 分片数量无上限，插拔多台设备后内存单调增长。
+ *
+ * 现在：forget 会立 tombstone 拦住迟到响应；分片数超过 maxSerials 按 LRU 淘汰；
+ * syncDevices 把 deviceStore 的设备表变化接到 ensure/forget 上。
+ */
+export function createFileViewsModel(deps: FileViewsModelDeps): FileViewsModel {
+  let views: FileViews = {}
+  let order: string[] = []
+  const tombstones = new Set<string>()
+  const maxSerials = Math.max(1, deps.maxSerials ?? MAX_VIEW_SERIALS)
+
+  const publish = (): void => {
+    deps.onChange(views)
+  }
+
+  const touch = (serial: string): void => {
+    order = [serial, ...order.filter((s) => s !== serial)]
+  }
+
+  /** 超过上限就淘汰最久未使用的分片（正在显示的设备由调用方通过 ensure 刷新顺序）。 */
+  const evict = (): void => {
+    while (order.length > maxSerials) {
+      const victim = order[order.length - 1]
+      order = order.slice(0, -1)
+      const next = { ...views }
+      delete next[victim]
+      views = next
+    }
+  }
+
+  const coordinator = createLoadCoordinator({
+    get: (serial) => viewOf(views, serial),
+    dispatch: (serial, action) => {
+      // 【I5】tombstone 拦的是「forget 之后迟到的响应」：不许把分片复活
+      if (tombstones.has(serial)) return
+      const next = fileViewsReducer(views, { ...action, serial })
+      if (next === views) return
+      views = next
+      publish()
+    },
+    fetch: deps.fetch,
+    toCode: deps.toCode,
+  })
+
+  const model: FileViewsModel = {
+    getViews: () => views,
+    ensure: (serial) => {
+      // 设备重新出现：清掉 tombstone，之后可以正常加载
+      tombstones.delete(serial)
+      if (views[serial] !== undefined) {
+        touch(serial)
+        return
+      }
+      views = fileViewsReducer(views, { serial, type: 'setShowHidden', value: false })
+      touch(serial)
+      evict()
+      publish()
+    },
+    dispatch: (serial, action) => {
+      if (tombstones.has(serial)) return
+      const next = fileViewsReducer(views, { ...action, serial })
+      if (next === views) return
+      views = next
+      touch(serial)
+      publish()
+    },
+    openDir: (serial, dir) => {
+      if (tombstones.has(serial)) return Promise.resolve()
+      const normalized = normalizePath(dir)
+      const view = viewOf(views, serial)
+      model.dispatch(serial, { type: 'navigate', cwd: normalized })
+      // 目标与当前目录相同且已加载过：不必再请求（点面包屑的当前层是常见操作）
+      if (normalized === view.cwd && view.loadedOnce) return Promise.resolve()
+      return coordinator.load(serial)
+    },
+    refresh: (serial) => {
+      if (tombstones.has(serial)) return Promise.resolve()
+      model.dispatch(serial, { type: 'beginLoad' })
+      return coordinator.load(serial)
+    },
+    load: (serial) => (tombstones.has(serial) ? Promise.resolve() : coordinator.load(serial)),
+    forget: (serial) => {
+      // 先立 tombstone，再删分片：在飞请求的响应回来时会被它拦住
+      tombstones.add(serial)
+      coordinator.reset(serial)
+      order = order.filter((s) => s !== serial)
+      if (views[serial] !== undefined) {
+        const next = { ...views }
+        delete next[serial]
+        views = next
+        publish()
+      }
+    },
+    serials: () => order,
+    inflight: () => coordinator.inflight(),
+    syncDevices: (serials) => {
+      const alive = new Set(serials)
+      for (const serial of serials) model.ensure(serial)
+      for (const serial of Object.keys(views)) {
+        if (!alive.has(serial)) model.forget(serial)
+      }
+    },
+  }
+
+  return model
 }

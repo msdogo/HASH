@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Folder, FileText, Link2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
-import { ROW_HEIGHT, formatMtime, formatSize, type SortDir, type SortKey } from '@shared/file-view'
+import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, type SortDir, type SortKey } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
 
 /**
@@ -43,6 +43,8 @@ export interface FileTableProps {
   sort: SortKey
   sortDir: SortDir
   onSort: (sort: SortKey) => void
+  /** 列表容器的键盘处理（I7：Enter 打开 / Backspace 上级 / F5 刷新）。 */
+  onKeyNav: (event: React.KeyboardEvent<HTMLDivElement>) => void
 }
 
 export function FileTable(props: FileTableProps) {
@@ -66,26 +68,38 @@ export function FileTable(props: FileTableProps) {
     element.scrollTop = latestScrollTop.current
   }, [props.restoreKey])
 
-  // 滚动上报按帧节流：一次滚动会触发几十个 scroll 事件，逐个写 store 等于每帧都全页重渲染
+  /*
+   * 滚动上报按帧节流：一次滚动会触发几十个 scroll 事件，逐个写 store 等于每帧都全页重渲染。
+   *
+   * 【审查轮 1 / I3】回调必须从 ref 现取，不能直接闭包捕获 props.onScrollTop：
+   * rAF 回调是异步的，若用户在「调度了帧、帧还没跑」的瞬间切了设备，
+   * 旧闭包会把 A 的滚动值写进 B（或反之）。用 latestOnScrollTop 持有最新回调，
+   * 并在 restoreKey 变化（切设备/换目录）时取消挂起的帧 —— 那一个像素级的中间值本来就不该落地。
+   */
   const frameRef = useRef(0)
   const pendingRef = useRef(0)
+  const latestOnScrollTop = useRef(props.onScrollTop)
+  latestOnScrollTop.current = props.onScrollTop
+  const cancelFrame = (): void => {
+    if (frameRef.current !== 0) cancelAnimationFrame(frameRef.current)
+    frameRef.current = 0
+  }
   const handleScroll = (value: number): void => {
     pendingRef.current = value
     if (frameRef.current !== 0) return
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = 0
-      props.onScrollTop(pendingRef.current)
+      latestOnScrollTop.current(pendingRef.current)
     })
   }
-  useEffect(() => () => {
-    if (frameRef.current !== 0) cancelAnimationFrame(frameRef.current)
-    frameRef.current = 0
-  }, [])
+  // 切设备/换目录：丢弃挂起的帧，避免把上一台设备的滚动位置写进新设备
+  useEffect(() => { cancelFrame() }, [props.restoreKey])
+  useEffect(() => cancelFrame, [])
 
   const items = virtualizer.getVirtualItems()
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={props.onKeyNav}>
       {/*
         列头可点排序：只派发 setSort，真正的排序由 FilesPage 的 useMemo 完成（裁决 4）。
         组件里不持有排序结果，也不在渲染里排序。
@@ -116,8 +130,18 @@ export function FileTable(props: FileTableProps) {
                     <div
                       key={item.key}
                       data-index={item.index}
+                      /* 【I7】行可聚焦：Enter 打开（规格 9.5） */
+                      tabIndex={0}
+                      role="row"
+                      aria-selected={active}
                       onMouseDown={(event) => { props.onSelect(entry, event.ctrlKey || event.metaKey || event.shiftKey) }}
                       onDoubleClick={() => { props.onOpen(entry) }}
+                      onKeyDown={(event) => {
+                        if (isOpenKey(event.key)) {
+                          event.preventDefault()
+                          props.onOpen(entry)
+                        }
+                      }}
                       style={{
                         position: 'absolute',
                         top: 0,
@@ -152,7 +176,7 @@ export function FileTable(props: FileTableProps) {
                         {formatMtime(entry, props.tzOffsetMinutes) ?? t('files.unknownMeta')}
                       </span>
                       <span className="w-28 shrink-0 truncate text-right text-[11px] text-neutral-600">
-                        {entry.mode === '' ? t('files.unknownMeta') : entry.mode}
+                        {!isMetaKnown(entry) || entry.mode === '' ? t('files.unknownMeta') : entry.mode}
                       </span>
                       {entry.isDir && (
                         <button

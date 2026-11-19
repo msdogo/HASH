@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { FileEntry } from '../src/shared/types'
 import {
+  MAX_LINK_HOPS,
   ROW_HEIGHT,
   compareByName,
   createFileView,
+  createFileViewsModel,
   createLoadCoordinator,
   fileViewReducer,
   fileViewsReducer,
@@ -13,9 +15,12 @@ import {
   isDotEntry,
   isHiddenName,
   isMetaKnown,
+  isOpenKey,
   joinEntryPath,
+  navKeyCommand,
   normalizePath,
   noticeFromList,
+  openTarget,
   parentOf,
   parseTypedPath,
   segmentsOf,
@@ -25,8 +30,9 @@ import {
   viewOf,
   visibleEntries,
   type FileViewAction,
-  type FileViewState,
   type FileViews,
+  type FileViewSlice,
+  type FileViewState,
   type ListRequest,
   type ListResponse,
   type ListResultData,
@@ -51,6 +57,45 @@ function entry(over: Partial<FileEntry> & { name: string }): FileEntry {
 }
 
 const names = (list: readonly FileEntry[]): string[] => list.map((e) => e.name)
+
+function listData(
+  over: Partial<{
+    dir: string
+    entries: FileEntry[]
+    degraded: boolean
+    unparsed: number
+    usedFallback: boolean
+    exitCode: number | null
+    tzOffsetMinutes: number
+  }> = {},
+) {
+  return {
+    dir: over.dir ?? '/sdcard',
+    entries: over.entries ?? [],
+    degraded: over.degraded ?? false,
+    unparsed: over.unparsed ?? 0,
+    usedFallback: over.usedFallback ?? false,
+    exitCode: over.exitCode ?? 0,
+    tzOffsetMinutes: over.tzOffsetMinutes ?? 480,
+  }
+}
+
+function reduce(view: FileViewState, ...actions: FileViewAction[]): FileViewState {
+  let next = view
+  for (const action of actions) next = fileViewReducer(next, action)
+  return next
+}
+
+/** 造一个「已经成功打开过 /sdcard/DCIM，有一条 a.jpg，选中并滚到 250px」的视图。 */
+function loadedView(): FileViewState {
+  return reduce(
+    createFileView(),
+    { type: 'navigate', cwd: '/sdcard/DCIM' },
+    { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
+    { type: 'select', name: 'a.jpg', additive: false },
+    { type: 'setScrollTop', value: 250 },
+  )
+}
 
 /** 一万条随机条目：一半目录，size 与 mtime 随机；供排序性能测试用。 */
 function bigDirectory(count: number): FileEntry[] {
@@ -129,7 +174,6 @@ describe('裁决 1：metaKnown 决定「未知」而不是 1970', () => {
   })
 
   it('metaKnown=true 且 mtime=0 是【真实】的 1970，必须照常显示日期而不是「未知」', () => {
-    // 真机 /acct 之类：mtime 正好是 0，但这是真实元数据（设备时区 +08:00）
     const real1970 = entry({ name: 'acct', mtime: 0, metaKnown: true })
     expect(formatMtime(real1970, 480)).toBe('1970-01-01 08:00')
     expect(formatMtime(real1970, 0)).toBe('1970-01-01 00:00')
@@ -138,33 +182,61 @@ describe('裁决 1：metaKnown 决定「未知」而不是 1970', () => {
   it('size=0 的已知条目显示 0 B，不是「未知」', () => {
     expect(formatSize(entry({ name: 'empty.txt', size: 0 }))).toBe('0 B')
   })
+})
 
-  it('按时间排序：未知项恒排最后（升序与降序都最后）', () => {
-    const list = [
-      entry({ name: 'unknown.bin', metaKnown: false, mtime: 0 }),
-      entry({ name: 'new.txt', mtime: 3000 }),
-      entry({ name: 'old.txt', mtime: 1000 }),
-    ]
-    expect(names(sortEntries(list, 'time', 'asc'))).toEqual(['old.txt', 'new.txt', 'unknown.bin'])
-    expect(names(sortEntries(list, 'time', 'desc'))).toEqual(['new.txt', 'old.txt', 'unknown.bin'])
+/* ============ I1（审查轮 1）：名称排序不受 metaKnown 污染 ============ */
+
+describe('I1：三种排序下的完整顺序（混知已知/未知条目）', () => {
+  /**
+   * 混合数据集：两个目录 + 三个文件，其中 a.bin 的元数据未知。
+   * 名称是**永远已知**的字段，所以按名称排序时 a.bin 必须回到名字该在的位置
+   * （审查发现：修前它被 metaKnown 规则推到所有已知文件之后，a.bin 排到了 z.txt 后面）。
+   */
+  const mixed = (): FileEntry[] => [
+    entry({ name: 'z.txt', size: 1, mtime: 100 }),
+    entry({ name: 'a.bin', size: 0, mtime: 0, metaKnown: false }),
+    // 第二个未知项：没有它时，按名称【降序】无法区分「正确实现」与「被 metaKnown 污染的旧实现」
+    // （两者都把未知项甩到最后）。加一个名字靠后的未知项后，正确实现里它应排第一，
+    // 而被污染的实现会把它排到所有已知文件之后 —— 这才是一条真正的护栏。
+    entry({ name: 'zz.bin', size: 0, mtime: 0, metaKnown: false }),
+    entry({ name: 'm.txt', size: 5, mtime: 200 }),
+    entry({ name: 'zdir', isDir: true, mtime: 50 }),
+    entry({ name: 'adir', isDir: true, mtime: 300 }),
+  ]
+
+  it('按名称升序：目录在前，未知的 a.bin / zz.bin 回到名字该在的位置', () => {
+    expect(names(sortEntries(mixed(), 'name', 'asc'))).toEqual(['adir', 'zdir', 'a.bin', 'm.txt', 'z.txt', 'zz.bin'])
   })
 
-  it('按大小排序：未知项恒排最后（不会因为 size=0 挤到最前）', () => {
-    const list = [
-      entry({ name: 'unknown.bin', metaKnown: false, size: 0 }),
-      entry({ name: 'zero.txt', size: 0 }),
-      entry({ name: 'big.bin', size: 9999 }),
-    ]
-    expect(names(sortEntries(list, 'size', 'asc'))).toEqual(['zero.txt', 'big.bin', 'unknown.bin'])
-    expect(names(sortEntries(list, 'size', 'desc'))).toEqual(['big.bin', 'zero.txt', 'unknown.bin'])
+  it('按名称降序：未知的 zz.bin 排第一（若被 metaKnown 污染会掉到所有已知文件之后）', () => {
+    expect(names(sortEntries(mixed(), 'name', 'desc'))).toEqual(['zdir', 'adir', 'zz.bin', 'z.txt', 'm.txt', 'a.bin'])
   })
 
-  it('按名称排序时未知项不受影响（名字总是已知）', () => {
+  it('按大小升序：未知项恒排最后（不因 size=0 挤到最前）', () => {
+    expect(names(sortEntries(mixed(), 'size', 'asc'))).toEqual(['adir', 'zdir', 'z.txt', 'm.txt', 'a.bin', 'zz.bin'])
+  })
+
+  it('按大小降序：未知项依然最后', () => {
+    expect(names(sortEntries(mixed(), 'size', 'desc'))).toEqual(['adir', 'zdir', 'm.txt', 'z.txt', 'a.bin', 'zz.bin'])
+  })
+
+  it('按时间升序：未知项恒排最后', () => {
+    // 目录也按时间比：zdir(50) 在 adir(300) 之前 —— 目录分组只保证「目录在文件前」，不冻结目录内顺序
+    expect(names(sortEntries(mixed(), 'time', 'asc'))).toEqual(['zdir', 'adir', 'z.txt', 'm.txt', 'a.bin', 'zz.bin'])
+  })
+
+  it('按时间降序：未知项依然最后', () => {
+    expect(names(sortEntries(mixed(), 'time', 'desc'))).toEqual(['adir', 'zdir', 'm.txt', 'z.txt', 'a.bin', 'zz.bin'])
+  })
+
+  it('目录内部也按同名规则排序（未知目录不会被赶后）', () => {
     const list = [
-      entry({ name: 'b.bin', metaKnown: false }),
-      entry({ name: 'a.bin', metaKnown: false }),
+      entry({ name: 'd2', isDir: true, metaKnown: false }),
+      entry({ name: 'd1', isDir: true }),
     ]
-    expect(names(sortEntries(list, 'name', 'asc'))).toEqual(['a.bin', 'b.bin'])
+    expect(names(sortEntries(list, 'name', 'asc'))).toEqual(['d1', 'd2'])
+    // 按大小排序时未知目录排在已知目录之后（未知不是「很小」）
+    expect(names(sortEntries(list, 'size', 'asc'))).toEqual(['d1', 'd2'])
   })
 })
 
@@ -249,27 +321,24 @@ describe('裁决 4：万级条目排序性能', () => {
     const list = bigDirectory(10_000)
     const start = performance.now()
     const sorted = sortEntries(list, 'name', 'asc')
-    const elapsed = performance.now() - start
     expect(sorted).toHaveLength(10_000)
-    expect(elapsed).toBeLessThan(100)
+    expect(performance.now() - start).toBeLessThan(100)
   })
 
   it('1 万条按大小排序 < 100ms', () => {
     const list = bigDirectory(10_000)
     const start = performance.now()
     const sorted = sortEntries(list, 'size', 'desc')
-    const elapsed = performance.now() - start
     expect(sorted).toHaveLength(10_000)
-    expect(elapsed).toBeLessThan(100)
+    expect(performance.now() - start).toBeLessThan(100)
   })
 
   it('1 万条按时间排序 + 过滤 < 100ms', () => {
     const list = bigDirectory(10_000)
     const start = performance.now()
     const sorted = sortEntries(filterEntries(list, { showHidden: false }), 'time', 'asc')
-    const elapsed = performance.now() - start
     expect(sorted.length).toBeGreaterThan(0)
-    expect(elapsed).toBeLessThan(100)
+    expect(performance.now() - start).toBeLessThan(100)
   })
 })
 
@@ -302,7 +371,6 @@ describe('裁决 6：路径解析与面包屑', () => {
       { name: 'DCIM', path: '/sdcard/DCIM' },
       { name: 'Camera', path: '/sdcard/DCIM/Camera' },
     ])
-    // 输入不规范也要归一化后再切
     expect(segmentsOf('/sdcard//DCIM/')).toEqual([
       { name: '/', path: '/' },
       { name: 'sdcard', path: '/sdcard' },
@@ -350,38 +418,27 @@ describe('裁决 3：降级与退出码 -> 提示条', () => {
   })
 
   it('degraded=true 给出可关闭提示，带未解析条数', () => {
-    const notice = noticeFromList({ degraded: true, unparsed: 7, usedFallback: true, exitCode: 0 })
-    expect(notice).toEqual({ degraded: true, unparsed: 7, usedFallback: true, exitCode: 0 })
+    expect(noticeFromList({ degraded: true, unparsed: 7, usedFallback: true, exitCode: 0 })).toEqual({
+      degraded: true,
+      unparsed: 7,
+      usedFallback: true,
+      exitCode: 0,
+    })
   })
 
   it('exitCode 非 0 但有条目（/proc 半可读）也给出提示', () => {
-    const notice = noticeFromList({ degraded: false, unparsed: 0, usedFallback: false, exitCode: 1 })
-    expect(notice).toEqual({ degraded: false, unparsed: 0, usedFallback: false, exitCode: 1 })
+    expect(noticeFromList({ degraded: false, unparsed: 0, usedFallback: false, exitCode: 1 })).toEqual({
+      degraded: false,
+      unparsed: 0,
+      usedFallback: false,
+      exitCode: 1,
+    })
   })
 })
 
-/* ============ 裁决 2 / 7：视图状态（store 层的纯 reducer） ============ */
+/* ============ 视图状态：初始值与导航 ============ */
 
-/** 造一份 fs:list 的返回数据（省略 serial，reducer 不需要它）。 */
-function listData(over: Partial<{ dir: string; entries: FileEntry[]; degraded: boolean; unparsed: number; usedFallback: boolean; exitCode: number | null; tzOffsetMinutes: number }> = {}) {
-  return {
-    dir: over.dir ?? '/sdcard',
-    entries: over.entries ?? [],
-    degraded: over.degraded ?? false,
-    unparsed: over.unparsed ?? 0,
-    usedFallback: over.usedFallback ?? false,
-    exitCode: over.exitCode ?? 0,
-    tzOffsetMinutes: over.tzOffsetMinutes ?? 480,
-  }
-}
-
-function reduce(view: FileViewState, ...actions: Parameters<typeof fileViewReducer>[1][]): FileViewState {
-  let next = view
-  for (const action of actions) next = fileViewReducer(next, action)
-  return next
-}
-
-describe('视图状态：初始值与导航', () => {
+describe('视图状态：初始值', () => {
   it('默认停在 /sdcard，按名称升序，隐藏文件关闭，未加载', () => {
     const view = createFileView()
     expect(view.cwd).toBe('/sdcard')
@@ -393,58 +450,135 @@ describe('视图状态：初始值与导航', () => {
     expect(view.selected).toEqual([])
     expect(view.scrollTop).toBe(0)
     expect(view.generation).toBe(0)
-  })
-
-  it('navigate 归一化路径、请求代次+1、清空条目与选中、滚动归零', () => {
-    const view = reduce(
-      createFileView(),
-      { type: 'navigate', cwd: '/sdcard/DCIM/' },
-      { type: 'setScrollTop', value: 400 },
-      { type: 'select', name: 'a.txt', additive: false },
-    )
-    const next = reduce(view, { type: 'navigate', cwd: '/sdcard/Download' })
-    expect(next.cwd).toBe('/sdcard/Download')
-    expect(next.status).toBe('loading')
-    expect(next.entries).toEqual([])
-    expect(next.selected).toEqual([])
-    expect(next.scrollTop).toBe(0)
-    expect(next.generation).toBe(view.generation + 1)
-  })
-
-  it('beginLoad（刷新）保留条目、选中与滚动位置，只推进代次', () => {
-    const loaded = reduce(
-      createFileView(),
-      { type: 'navigate', cwd: '/sdcard/DCIM' },
-      { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
-      { type: 'select', name: 'a.jpg', additive: false },
-      { type: 'setScrollTop', value: 250 },
-    )
-    const next = reduce(loaded, { type: 'beginLoad' })
-    expect(next.status).toBe('loading')
-    expect(names(next.entries)).toEqual(['a.jpg'])
-    expect(next.selected).toEqual(['a.jpg'])
-    expect(next.scrollTop).toBe(250)
-    expect(next.generation).toBe(loaded.generation + 1)
+    expect(view.pendingCwd).toBeNull()
+    expect(view.linkTrail).toEqual([])
+    expect(view.loadedOnce).toBe(false)
   })
 })
 
+describe('C1（审查轮 1）：导航只在成功后提交 cwd', () => {
+  it('navigate 只登记待加载目标，不清空当前目录 / 条目 / 选中 / 滚动', () => {
+    const loaded = loadedView()
+    const pending = reduce(loaded, { type: 'navigate', cwd: '/sdcard/Download' })
+    expect(pending.pendingCwd).toBe('/sdcard/Download')
+    expect(pending.cwd).toBe('/sdcard/DCIM')
+    expect(names(pending.entries)).toEqual(['a.jpg'])
+    expect(pending.selected).toEqual(['a.jpg'])
+    expect(pending.scrollTop).toBe(250)
+    expect(pending.status).toBe('loading')
+    expect(pending.generation).toBe(loaded.generation + 1)
+  })
+
+  it('跳转失败：cwd / entries / selected / scrollTop 全部不变，addressError 有值', () => {
+    const loaded = loadedView()
+    const failed = reduce(
+      loaded,
+      { type: 'navigate', cwd: '/nope' },
+      { type: 'fail', generation: loaded.generation + 1, code: 'E_NOT_FOUND' },
+    )
+    expect(failed.cwd).toBe('/sdcard/DCIM')
+    expect(names(failed.entries)).toEqual(['a.jpg'])
+    expect(failed.selected).toEqual(['a.jpg'])
+    expect(failed.scrollTop).toBe(250)
+    expect(failed.addressError).toBe('E_NOT_FOUND')
+    expect(failed.status).toBe('ready')
+    expect(failed.pendingCwd).toBeNull()
+  })
+
+  it('跳转成功后才提交 cwd；换目录会清空选中并重置滚动', () => {
+    const loaded = loadedView()
+    const done = reduce(
+      loaded,
+      { type: 'navigate', cwd: '/sdcard/Download' },
+      { type: 'resolve', generation: loaded.generation + 1, data: listData({ dir: '/sdcard/Download', entries: [entry({ name: 'b.zip' })] }) },
+    )
+    expect(done.cwd).toBe('/sdcard/Download')
+    expect(names(done.entries)).toEqual(['b.zip'])
+    expect(done.selected).toEqual([])
+    expect(done.scrollTop).toBe(0)
+    expect(done.pendingCwd).toBeNull()
+    expect(done.loadedOnce).toBe(true)
+  })
+
+  it('从未成功加载过的首次失败才显示整页错误态（有内容时绝不清空）', () => {
+    const first = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/nope' },
+      { type: 'fail', generation: 1, code: 'E_NOT_FOUND' },
+    )
+    expect(first.status).toBe('error')
+    expect(first.error).toBe('E_NOT_FOUND')
+    expect(first.entries).toEqual([])
+  })
+
+  it('地址栏非法输入只写行内错误，不动当前目录', () => {
+    const loaded = loadedView()
+    const withError = reduce(loaded, { type: 'addressError', code: 'E_INVALID_PATH' })
+    expect(withError.addressError).toBe('E_INVALID_PATH')
+    expect(withError.cwd).toBe('/sdcard/DCIM')
+    expect(names(withError.entries)).toEqual(['a.jpg'])
+    const next = reduce(withError, { type: 'navigate', cwd: '/sdcard/Download' })
+    expect(next.addressError).toBeNull()
+  })
+})
+
+/* ============ I2（审查轮 1）：刷新后的 selected 必须清理 ============ */
+
+describe('I2：selected 不与条目脱节', () => {
+  it('同目录刷新：selected 与新条目求交集（消失的条目不再被选中）', () => {
+    const loaded = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' }), entry({ name: 'gone.jpg' })] }) },
+      { type: 'select', name: 'a.jpg', additive: false },
+      { type: 'select', name: 'gone.jpg', additive: true },
+    )
+    expect(loaded.selected).toEqual(['a.jpg', 'gone.jpg'])
+
+    const refreshed = reduce(
+      loaded,
+      { type: 'beginLoad' },
+      { type: 'resolve', generation: loaded.generation + 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
+    )
+    expect(refreshed.selected).toEqual(['a.jpg'])
+  })
+
+  it('同目录刷新：仍然存在的选中项保留，滚动位置保留', () => {
+    const loaded = loadedView()
+    const refreshed = reduce(
+      loaded,
+      { type: 'beginLoad' },
+      { type: 'resolve', generation: loaded.generation + 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
+    )
+    expect(refreshed.selected).toEqual(['a.jpg'])
+    expect(refreshed.scrollTop).toBe(250)
+  })
+
+  it('换目录成功：selected 清空（不对看不见的条目执行操作）', () => {
+    const loaded = loadedView()
+    const moved = reduce(
+      loaded,
+      { type: 'navigate', cwd: '/sdcard/Download' },
+      { type: 'resolve', generation: loaded.generation + 1, data: listData({ dir: '/sdcard/Download', entries: [entry({ name: 'a.jpg' })] }) },
+    )
+    expect(moved.selected).toEqual([])
+  })
+})
+
+/* ============ 裁决 2：过期响应必须丢弃 ============ */
+
 describe('裁决 2：过期响应必须丢弃（A 先请求、B 后请求、A 后到）', () => {
   it('先请求 A 再请求 B，A 的结果晚到也不能覆盖 B 的内容', () => {
-    // 1) 打开 /A → 代次 1
     let view = reduce(createFileView(), { type: 'navigate', cwd: '/A' })
     expect(view.generation).toBe(1)
-    // 2) 用户马上切到 /B → 代次 2
     view = reduce(view, { type: 'navigate', cwd: '/B' })
     expect(view.generation).toBe(2)
-    // 3) B 的结果先到
     view = reduce(view, { type: 'resolve', generation: 2, data: listData({ dir: '/B', entries: [entry({ name: 'b.txt' })] }) })
     expect(names(view.entries)).toEqual(['b.txt'])
-    // 4) A 的结果后到（世代已过期）→ 必须丢弃
     const stale = reduce(view, { type: 'resolve', generation: 1, data: listData({ dir: '/A', entries: [entry({ name: 'a.txt' })] }) })
     expect(names(stale.entries)).toEqual(['b.txt'])
     expect(stale.cwd).toBe('/B')
     expect(stale.status).toBe('ready')
-    // 同一份状态必须原样返回，避免无意义的重渲染
     expect(stale).toBe(view)
   })
 
@@ -485,28 +619,12 @@ describe('视图状态：结果与错误', () => {
       { type: 'dismissNotice' },
     )
     expect(view.noticeDismissed).toBe(true)
-    // 重新加载后应当再次提示（新结果可能仍有问题）
     const reloaded = reduce(view, { type: 'beginLoad' })
     expect(reloaded.noticeDismissed).toBe(false)
   })
 
-  it('零条目 + 错误码 → 错误态（界面显示重试）；保留错误码供 i18n 翻译', () => {
-    const view = reduce(
-      createFileView(),
-      { type: 'navigate', cwd: '/nope' },
-      { type: 'fail', generation: 1, code: 'E_NOT_FOUND' },
-    )
-    expect(view.status).toBe('error')
-    expect(view.error).toBe('E_NOT_FOUND')
-    expect(view.entries).toEqual([])
-  })
-
-  it('已有条目时失败不整页变错误（保留内容 + 错误码提示）', () => {
-    const loaded = reduce(
-      createFileView(),
-      { type: 'navigate', cwd: '/sdcard/DCIM' },
-      { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
-    )
+  it('已有条目时刷新失败：保留列表 + 顶部错误提示，不整页变错误', () => {
+    const loaded = loadedView()
     const failed = reduce(loaded, { type: 'beginLoad' }, { type: 'fail', generation: loaded.generation + 1, code: 'E_TIMEOUT' })
     expect(failed.status).toBe('ready')
     expect(names(failed.entries)).toEqual(['a.jpg'])
@@ -514,7 +632,7 @@ describe('视图状态：结果与错误', () => {
   })
 })
 
-describe('视图状态：排序、隐藏文件、选中、滚动、地址栏', () => {
+describe('视图状态：排序、隐藏文件、选中、滚动', () => {
   it('点同一列在升降序之间切换，换列回到升序', () => {
     let view = reduce(createFileView(), { type: 'setSort', sort: 'name' })
     expect(view.sortDir).toBe('desc')
@@ -543,22 +661,9 @@ describe('视图状态：排序、隐藏文件、选中、滚动、地址栏', (
     const view = reduce(createFileView(), { type: 'setScrollTop', value: 1234 })
     expect(view.scrollTop).toBe(1234)
   })
-
-  it('地址栏非法路径只写行内错误，不破坏当前目录与条目', () => {
-    const loaded = reduce(
-      createFileView(),
-      { type: 'navigate', cwd: '/sdcard/DCIM' },
-      { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
-      { type: 'addressError', code: 'E_INVALID_PATH' },
-    )
-    expect(loaded.addressError).toBe('E_INVALID_PATH')
-    expect(loaded.cwd).toBe('/sdcard/DCIM')
-    expect(names(loaded.entries)).toEqual(['a.jpg'])
-    // 合法的跳转要清掉行内错误
-    const next = reduce(loaded, { type: 'navigate', cwd: '/sdcard/Download' })
-    expect(next.addressError).toBeNull()
-  })
 })
+
+/* ============ 裁决 7：每设备独立视图 ============ */
 
 describe('裁决 7：每设备独立视图（按 serial 分片）', () => {
   it('两台设备各自 setCwd / 条目 / 滚动位置互不影响', () => {
@@ -575,7 +680,6 @@ describe('裁决 7：每设备独立视图（按 serial 分片）', () => {
     expect(names(views.B.entries)).toEqual(['b.zip'])
     expect(views.A.scrollTop).toBe(900)
     expect(views.A.selected).toEqual(['a.jpg'])
-    // B 机不受 A 机影响
     expect(views.B.scrollTop).toBe(0)
     expect(views.B.selected).toEqual([])
   })
@@ -592,9 +696,58 @@ describe('裁决 7：每设备独立视图（按 serial 分片）', () => {
     expect(same).toBe(views)
   })
 })
-/* ============ 裁决 2：加载协调器（过期响应丢弃 + 在飞去重） ============ */
 
-/** 造一个可控的假 fs:list：请求挂起，由测试决定谁先返回。 */
+/* ============ 分片默认值（编译期收窄 + 运行期兜底） ============ */
+
+describe('viewFromPartial：分片默认值', () => {
+  it('undefined / 空对象都给出完整 slice（entries 必须是数组）', () => {
+    for (const input of [undefined, {}, { cwd: '/sdcard/DCIM' }]) {
+      const view = viewFromPartial(input)
+      expect(Array.isArray(view.entries), String(input)).toBe(true)
+      expect(view.entries).toEqual([])
+      expect(Array.isArray(view.selected)).toBe(true)
+      expect(typeof view.cwd).toBe('string')
+    }
+  })
+
+  it('半桶水对象能补齐：已有字段保持，缺的回落默认值', () => {
+    const partial: Partial<FileViewSlice> = {
+      cwd: '/sdcard/Download',
+      sort: 'size',
+      sortDir: 'desc',
+      showHidden: true,
+      entries: [entry({ name: 'a.zip' })],
+      status: 'ready',
+      error: null,
+      addressError: null,
+      notice: null,
+      noticeDismissed: false,
+      tzOffsetMinutes: 480,
+      selected: ['a.zip'],
+    }
+    const view = viewFromPartial(partial)
+    expect(view.cwd).toBe('/sdcard/Download')
+    expect(view.sort).toBe('size')
+    expect(view.showHidden).toBe(true)
+    expect(names(view.entries)).toEqual(['a.zip'])
+    expect(view.selected).toEqual(['a.zip'])
+  })
+
+  it('slice 里【没有】generation / scrollTop（避免后来者写 current.generation 静默拿到 0）', () => {
+    const view = viewFromPartial({ cwd: '/sdcard' })
+    expect('generation' in view).toBe(false)
+    expect('scrollTop' in view).toBe(false)
+  })
+
+  it('visibleEntries 能吃 viewFromPartial 的结果（首帧不会炸 entries is not iterable）', () => {
+    const view = viewFromPartial({ cwd: '/sdcard' })
+    expect(() => visibleEntries(view.entries, { showHidden: false, sort: view.sort, sortDir: view.sortDir })).not.toThrow()
+    expect(visibleEntries(view.entries, { showHidden: false, sort: 'name', sortDir: 'asc' })).toEqual([])
+  })
+})
+
+/* ============ 裁决 2：加载协调器 ============ */
+
 function harness() {
   let views: FileViews = {}
   const requests: ListRequest[] = []
@@ -622,14 +775,10 @@ function harness() {
       views = fileViewsReducer(views, { ...action, serial })
     },
     resolveAt: (index: number, data: Partial<ListResultData> & { dir: string }): void => {
-      const item = pending[index]
-      pending[index] = undefined as unknown as typeof item
-      item.resolve({ ok: true, data: listData(data) })
+      pending[index].resolve({ ok: true, data: listData(data) })
     },
     failAt: (index: number, code: string): void => {
-      const item = pending[index]
-      pending[index] = undefined as unknown as typeof item
-      item.resolve({ ok: false, error: code })
+      pending[index].resolve({ ok: false, error: code })
     },
   }
 }
@@ -641,16 +790,13 @@ describe('裁决 2：加载协调器', () => {
     const loadA = h.coordinator.load('S')
     h.dispatch('S', { type: 'navigate', cwd: '/B' })
     const loadB = h.coordinator.load('S')
-
     expect(h.requests.map((r) => r.dir)).toEqual(['/A', '/B'])
 
-    // B 先到
     h.resolveAt(1, { dir: '/B', entries: [entry({ name: 'b.txt' })] })
     await loadB
     expect(names(h.views.S.entries)).toEqual(['b.txt'])
     expect(h.views.S.cwd).toBe('/B')
 
-    // A 后到（过期）→ 丢弃
     h.resolveAt(0, { dir: '/A', entries: [entry({ name: 'a.txt' })] })
     await loadA
     expect(names(h.views.S.entries)).toEqual(['b.txt'])
@@ -669,17 +815,22 @@ describe('裁决 2：加载协调器', () => {
     h.failAt(0, 'E_NOT_FOUND')
     await loadA
     expect(h.views.S.error).toBeNull()
+    expect(h.views.S.addressError).toBeNull()
     expect(h.views.S.status).toBe('ready')
   })
 
-  it('同一目录同代次的并发加载只发一次请求（StrictMode 双挂 / N4）', async () => {
+  it('I5：同一目录的并发/连点刷新只发一次请求（去重键是 serial+dir）', async () => {
     const h = harness()
     const first = h.coordinator.load('S')
     const second = h.coordinator.load('S')
+    h.dispatch('S', { type: 'beginLoad' })
+    const third = h.coordinator.load('S')
+    const fourth = h.coordinator.load('S')
     expect(h.requests).toHaveLength(1)
     h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'x' })] })
-    await Promise.all([first, second])
+    await Promise.all([first, second, third, fourth])
     expect(names(h.views.S.entries)).toEqual(['x'])
+    expect(h.views.S.status).toBe('ready')
     expect(h.coordinator.inflight()).toBe(0)
   })
 
@@ -706,7 +857,6 @@ describe('裁决 2：加载协调器', () => {
       { serial: 'A', dir: '/sdcard/DCIM' },
       { serial: 'B', dir: '/sdcard/Download' },
     ])
-    // B 的结果先到、A 的后到，都不该丢
     h.resolveAt(1, { dir: '/sdcard/Download', entries: [entry({ name: 'b.zip' })] })
     await loadB
     h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
@@ -731,48 +881,276 @@ describe('裁决 2：加载协调器', () => {
     expect(views.S.error).toBe('E_UNKNOWN')
   })
 })
-describe('分片还没建立时的默认值（页面首帧兜底）', () => {
-  it('undefined / 空对象都给出完整默认视图（entries 必须是数组，不能是 undefined）', () => {
-    for (const input of [undefined, {}, { cwd: '/sdcard/DCIM' }]) {
-      const view = viewFromPartial(input)
-      expect(Array.isArray(view.entries), String(input)).toBe(true)
-      expect(view.entries).toEqual([])
-      expect(Array.isArray(view.selected)).toBe(true)
-      expect(typeof view.cwd).toBe('string')
-      expect(typeof view.generation).toBe('number')
-      expect(typeof view.scrollTop).toBe('number')
-    }
+
+/* ============ I4（审查轮 1）：链接目录可以进入 ============ */
+
+describe('I4：条目点击后的导航目标（含链接目录与防环）', () => {
+  it('普通目录：进入 join(cwd, name)', () => {
+    expect(openTarget(entry({ name: 'DCIM', isDir: true }), '/sdcard', [])).toEqual({
+      kind: 'enter',
+      path: '/sdcard/DCIM',
+      followedLink: false,
+    })
   })
 
-  it('选择性订阅得到的「半桶水」对象能补齐（undefined 字段回落默认值，已有字段保持）', () => {
-    const partial = {
-      cwd: '/sdcard/Download',
-      sort: 'size' as const,
-      sortDir: 'desc' as const,
-      showHidden: true,
-      entries: [entry({ name: 'a.zip' })],
-      status: 'ready' as const,
-      error: null,
-      addressError: null,
-      notice: null,
-      noticeDismissed: false,
-      tzOffsetMinutes: 480,
-      selected: ['a.zip'],
-    }
-    const view = viewFromPartial(partial)
-    expect(view.cwd).toBe('/sdcard/Download')
-    expect(view.sort).toBe('size')
-    expect(view.showHidden).toBe(true)
-    expect(names(view.entries)).toEqual(['a.zip'])
-    expect(view.selected).toEqual(['a.zip'])
-    // 未提供的字段回落默认值
-    expect(view.generation).toBe(0)
-    expect(view.scrollTop).toBe(0)
+  it('链接目录（有 linkTargetResolved）：进入解析后的目标，标记 followedLink', () => {
+    // 真机最常见的入口：/sdcard 是符号链接 -> /storage/self/primary
+    const link = entry({
+      name: 'sdcard',
+      isLink: true,
+      isDir: false,
+      linkTarget: '/storage/self/primary',
+      linkTargetResolved: '/storage/self/primary',
+    })
+    expect(openTarget(link, '/', [])).toEqual({
+      kind: 'enter',
+      path: '/storage/self/primary',
+      followedLink: true,
+    })
   })
 
-  it('visibleEntries 能吃 viewFromPartial 的结果（首帧不会炸 "entries is not iterable"）', () => {
-    const view = viewFromPartial({ cwd: '/sdcard' })
-    expect(() => visibleEntries(view.entries, { showHidden: false, sort: view.sort, sortDir: view.sortDir })).not.toThrow()
-    expect(visibleEntries(view.entries, { showHidden: false, sort: 'name', sortDir: 'asc' })).toEqual([])
+  it('相对目标的链接：用解析后的绝对路径', () => {
+    const link = entry({
+      name: 'downloads',
+      isLink: true,
+      linkTarget: 'Download',
+      linkTargetResolved: '/sdcard/Download',
+    })
+    expect(openTarget(link, '/sdcard', [])).toMatchObject({ kind: 'enter', path: '/sdcard/Download' })
+  })
+
+  it('链接无法解析目标：给出 E_LINK_UNRESOLVED，而不是静默无反应', () => {
+    const link = entry({ name: 'weird', isLink: true })
+    expect(openTarget(link, '/data/local/tmp', [])).toEqual({ kind: 'error', code: 'E_LINK_UNRESOLVED' })
+  })
+
+  it('普通文件：noop（双击文件不该改变目录）', () => {
+    expect(openTarget(entry({ name: 'a.txt' }), '/sdcard', [])).toEqual({ kind: 'noop', reason: 'file' })
+  })
+
+  it('防环：目标已在已访问轨迹里 -> E_LINK_CYCLE', () => {
+    const link = entry({ name: 'loop', isLink: true, linkTargetResolved: '/a' })
+    expect(openTarget(link, '/', ['/a'])).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+  })
+
+  it('防环：自己指向自己 / 指向当前目录也算环', () => {
+    const self = entry({ name: 'here', isLink: true, linkTargetResolved: '/sdcard' })
+    expect(openTarget(self, '/sdcard', [])).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+  })
+
+  it('防环：轨迹长度达到上限后不再跟随', () => {
+    const trail = Array.from({ length: MAX_LINK_HOPS }, (_, i) => '/l' + i)
+    const link = entry({ name: 'n', isLink: true, linkTargetResolved: '/fresh' })
+    expect(openTarget(link, '/', trail)).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
+    // 未达上限时仍可跟随
+    expect(openTarget(link, '/', trail.slice(0, MAX_LINK_HOPS - 1))).toMatchObject({ kind: 'enter' })
+  })
+
+  it('跟随链接时把目标登记进轨迹（供下一次点击做环检测）', () => {
+    const link = entry({ name: 'sdcard', isLink: true, linkTargetResolved: '/storage/self/primary' })
+    const result = openTarget(link, '/', [])
+    expect(result).toMatchObject({ kind: 'enter', followedLink: true })
+    if (result.kind !== 'enter') throw new Error('expected enter')
+    const trail = ['/storage/self/primary']
+    // 在这个目标目录里再点一个指回 / 的链接 → 环
+    const back = entry({ name: 'back', isLink: true, linkTargetResolved: '/' })
+    expect(openTarget(back, result.path, trail)).toEqual({ kind: 'enter', path: '/', followedLink: true })
+  })
+})
+
+/* ============ I7（审查轮 1）：键盘操作 ============ */
+
+describe('I7：键盘命令', () => {
+  it('Backspace 回上一级；根目录下无动作', () => {
+    expect(navKeyCommand('Backspace', '/sdcard/DCIM')).toEqual({ kind: 'up', path: '/sdcard' })
+    expect(navKeyCommand('Backspace', '/sdcard')).toEqual({ kind: 'up', path: '/' })
+    expect(navKeyCommand('Backspace', '/')).toEqual({ kind: 'none' })
+  })
+
+  it('F5 刷新', () => {
+    expect(navKeyCommand('F5', '/sdcard')).toEqual({ kind: 'refresh' })
+  })
+
+  it('其它键不拦截（输入框里的方向键等不该被吞掉）', () => {
+    expect(navKeyCommand('ArrowDown', '/sdcard')).toEqual({ kind: 'none' })
+    expect(navKeyCommand('a', '/sdcard')).toEqual({ kind: 'none' })
+    expect(navKeyCommand('Enter', '/sdcard')).toEqual({ kind: 'none' })
+  })
+
+  it('isOpenKey 只认 Enter（空格留给未来的多选）', () => {
+    expect(isOpenKey('Enter')).toBe(true)
+    expect(isOpenKey(' ')).toBe(false)
+    expect(isOpenKey('Escape')).toBe(false)
+  })
+})
+
+/* ============ I5 / I6（审查轮 1）：模型层（forget / tombstone / LRU / 去重） ============ */
+
+function modelHarness(options: { maxSerials?: number } = {}) {
+  const requests: ListRequest[] = []
+  const pending: Array<{ request: ListRequest; resolve: (value: ListResponse) => void }> = []
+  let latest: FileViews = {}
+  const model = createFileViewsModel({
+    fetch: (request) => {
+      requests.push(request)
+      return new Promise<ListResponse>((resolve) => {
+        pending.push({ request, resolve })
+      })
+    },
+    onChange: (views) => {
+      latest = views
+    },
+    maxSerials: options.maxSerials,
+  })
+  return {
+    model,
+    requests,
+    pending,
+    get views(): FileViews {
+      return model.getViews()
+    },
+    get notified(): FileViews {
+      return latest
+    },
+    resolveAt: (index: number, data: Partial<ListResultData> & { dir: string }): void => {
+      pending[index].resolve({ ok: true, data: listData(data) })
+    },
+    failAt: (index: number, code: string): void => {
+      pending[index].resolve({ ok: false, error: code })
+    },
+  }
+}
+
+describe('I5：连点刷新与 forget 语义', () => {
+  it('连点三次刷新只发一次请求（同 serial + 同目录的在飞请求复用）', async () => {
+    const h = modelHarness()
+    const first = h.model.refresh('S')
+    const second = h.model.refresh('S')
+    const third = h.model.refresh('S')
+    expect(h.requests).toHaveLength(1)
+    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'x' })] })
+    await Promise.all([first, second, third])
+    expect(names(h.views.S.entries)).toEqual(['x'])
+    expect(h.model.inflight()).toBe(0)
+  })
+
+  it('不同目录才发新请求（去重按目录，而不是把新目录也复用掉）', async () => {
+    const h = modelHarness()
+    const a = h.model.openDir('S', '/A')
+    const b = h.model.openDir('S', '/B')
+    expect(h.requests.map((r) => r.dir)).toEqual(['/A', '/B'])
+    h.resolveAt(1, { dir: '/B', entries: [entry({ name: 'b' })] })
+    await b
+    h.resolveAt(0, { dir: '/A', entries: [entry({ name: 'a' })] })
+    await a
+    expect(h.views.S.cwd).toBe('/B')
+    expect(names(h.views.S.entries)).toEqual(['b'])
+  })
+
+  it('forget 后迟到的响应不会复活分片（tombstone）', async () => {
+    const h = modelHarness()
+    const load = h.model.openDir('S', '/sdcard')
+    expect(h.views.S).toBeDefined()
+    h.model.forget('S')
+    expect(h.views.S).toBeUndefined()
+    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'ghost' })] })
+    await load
+    expect(h.views.S).toBeUndefined()
+    expect(h.model.serials()).toEqual([])
+  })
+
+  it('forget 后迟到的失败也不会复活分片', async () => {
+    const h = modelHarness()
+    const load = h.model.load('S')
+    h.model.forget('S')
+    h.failAt(0, 'E_NOT_FOUND')
+    await load
+    expect(h.views.S).toBeUndefined()
+  })
+
+  it('设备重新出现时 ensure 清掉 tombstone，可以正常加载', async () => {
+    const h = modelHarness()
+    const load = h.model.openDir('S', '/sdcard')
+    h.model.forget('S')
+    h.resolveAt(0, { dir: '/sdcard', entries: [] })
+    await load
+    expect(h.views.S).toBeUndefined()
+
+    h.model.ensure('S')
+    expect(h.views.S).toBeDefined()
+    const again = h.model.openDir('S', '/sdcard')
+    expect(h.requests).toHaveLength(2)
+    h.resolveAt(1, { dir: '/sdcard', entries: [entry({ name: 'back' })] })
+    await again
+    expect(names(h.views.S.entries)).toEqual(['back'])
+  })
+
+  it('分片数量有上限（LRU 淘汰），内存不会随设备数单调增长', async () => {
+    const h = modelHarness({ maxSerials: 3 })
+    for (const serial of ['A', 'B', 'C', 'D']) {
+      h.model.ensure(serial)
+      const load = h.model.openDir(serial, '/sdcard')
+      h.resolveAt(h.requests.length - 1, { dir: '/sdcard', entries: [entry({ name: serial + '.bin' })] })
+      await load
+    }
+    const serials = h.model.serials()
+    expect(serials.length).toBeLessThanOrEqual(3)
+    expect(serials).toContain('D')
+    expect(serials).not.toContain('A')
+  })
+
+  it('C1（模型层）：openDir 到失败路径后当前目录与列表完全不变，行内有错误', async () => {
+    const h = modelHarness()
+    const first = h.model.openDir('S', '/sdcard/DCIM')
+    h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
+    await first
+    h.model.dispatch('S', { type: 'select', name: 'a.jpg', additive: false })
+    h.model.dispatch('S', { type: 'setScrollTop', value: 250 })
+
+    const bad = h.model.openDir('S', '/sdcard/NOPE')
+    h.failAt(1, 'E_NOT_FOUND')
+    await bad
+
+    const view = h.views.S
+    expect(view.cwd).toBe('/sdcard/DCIM')
+    expect(names(view.entries)).toEqual(['a.jpg'])
+    expect(view.selected).toEqual(['a.jpg'])
+    expect(view.scrollTop).toBe(250)
+    expect(view.addressError).toBe('E_NOT_FOUND')
+    expect(view.status).toBe('ready')
+  })
+
+  it('C1（模型层）：跳转成功后 cwd 才更新', async () => {
+    const h = modelHarness()
+    const first = h.model.openDir('S', '/sdcard/DCIM')
+    h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
+    await first
+
+    const target = h.model.openDir('S', '/sdcard/Download')
+    expect(h.views.S.cwd).toBe('/sdcard/DCIM') // 还没成功，不提交
+    expect(h.views.S.pendingCwd).toBe('/sdcard/Download')
+    h.resolveAt(1, { dir: '/sdcard/Download', entries: [entry({ name: 'b.zip' })] })
+    await target
+    expect(h.views.S.cwd).toBe('/sdcard/Download')
+    expect(h.views.S.pendingCwd).toBeNull()
+  })
+
+  it('模型把每次变更通知出去（zustand 据此同步）', async () => {
+    const h = modelHarness()
+    const load = h.model.openDir('S', '/sdcard')
+    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'a' })] })
+    await load
+    expect(h.notified.S).toBeDefined()
+    expect(names(h.notified.S.entries)).toEqual(['a'])
+  })
+
+  it('ensure 对已存在的分片是幂等的（不重置已加载内容）', async () => {
+    const h = modelHarness()
+    const load = h.model.openDir('S', '/sdcard/DCIM')
+    h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
+    await load
+    h.model.ensure('S')
+    expect(h.views.S.cwd).toBe('/sdcard/DCIM')
+    expect(names(h.views.S.entries)).toEqual(['a.jpg'])
   })
 })

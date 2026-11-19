@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Eye as Eye, EyeOff as EyeOff, RefreshCw as RefreshCw, X as X, AlertTriangle as Warn } from 'lucide-react'
+import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
   isHiddenName,
-  joinEntryPath,
+  navKeyCommand,
+  openTarget,
   summarizeEntries,
   viewFromPartial,
   visibleEntries,
@@ -18,7 +19,7 @@ import { useFileStore } from '@/store/fileStore'
 /**
  * 文件页（任务 7）。
  *
- * 数据流：deviceStore 给 serial → fileStore 按 serial 取分片 → 主进程 fs:list → reducer 落地。
+ * 数据流：deviceStore 给 serial → fileStore 按 serial 取分片 → 主进程 fs:list → 模型落地。
  * 组件只做三件事：把事件转成 action、把状态转成 DOM、把排序/过滤包进 useMemo（裁决 4）。
  *
  * 每台设备的状态（cwd / 条目 / 排序 / 隐藏开关 / 选中 / 滚动位置）都存在各自的 store 分片里，
@@ -26,8 +27,9 @@ import { useFileStore } from '@/store/fileStore'
  */
 export function FilesPage() {
   const serial = useDeviceStore((state) => state.activeSerial)
+  const devices = useDeviceStore((state) => state.devices)
   /*
-   * 只订阅「影响渲染」的字段，**不订阅 scrollTop**（裁决 4）。
+   * 只订阅「影响渲染」的字段，**不订阅 scrollTop / generation**（裁决 4 + 审查轮 1 的收窄要求）。
    *
    * 为什么必须这样：滚动时每帧都会 dispatch 一次 setScrollTop。若直接订阅整个 view 分片，
    * 每帧都会让整个文件页重渲染（万级目录下就是滚动掉帧的主因）。用 useShallow 做浅比较后，
@@ -50,6 +52,7 @@ export function FilesPage() {
             noticeDismissed: state.views[serial]?.noticeDismissed,
             tzOffsetMinutes: state.views[serial]?.tzOffsetMinutes,
             selected: state.views[serial]?.selected,
+            loadedOnce: state.views[serial]?.loadedOnce,
           },
     ),
   )
@@ -58,17 +61,23 @@ export function FilesPage() {
   const openDir = useFileStore((state) => state.openDir)
   const refresh = useFileStore((state) => state.refresh)
   const load = useFileStore((state) => state.load)
+  const syncDevices = useFileStore((state) => state.syncDevices)
+
+  // 【I5/I6】把设备表的变化接到分片生命周期上：
+  // 新设备建分片；消失的设备 forget（否则每台设备存一整份 entries，内存单调增长）。
+  const deviceSerials = useMemo(() => devices.map((device) => device.serial), [devices])
+  useEffect(() => { syncDevices(deviceSerials) }, [deviceSerials, syncDevices])
 
   // 首次进入（设备切换）时建分片并加载；
-  // 同一目录的重复加载由协调器按代次去重，StrictMode 双执行也不会发两次 adb 命令（裁决 2）
+  // 同一目录的重复加载由协调器按 serial+dir 去重，StrictMode 双执行也不会发两次 adb 命令
   useEffect(() => {
     if (serial === null) return
     ensure(serial)
     void load(serial)
   }, [serial, ensure, load])
 
-  // 订阅到的是「字段不全」的对象（刻意不订阅 scrollTop），必须补齐成完整视图：
-  // 否则首帧的 entries 是 undefined，visibleEntries 会直接抛「entries is not iterable」。
+  // 订阅到的是「字段不全」的对象（刻意不订阅 scrollTop），必须补齐。
+  // 返回类型是 FileViewSlice：写 current.generation 会直接编译报错（审查轮 1 的提示项）
   const current = viewFromPartial(view ?? undefined)
 
   // 裁决 4：过滤 + 排序只在这里算一次，且依赖明确。
@@ -91,13 +100,37 @@ export function FilesPage() {
 
   const summary = useMemo(() => summarizeEntries(entries), [entries])
 
+  // 链接轨迹（防环）：从 store 现取，不订阅（它只在导航时变，不必触发重渲染）
+  const linkTrailRef = useRef<string[]>([])
+  useEffect(() => {
+    linkTrailRef.current = serial === null ? [] : useFileStore.getState().views[serial]?.linkTrail ?? []
+  }, [serial, current.cwd])
+
+  const reportLinkError = useCallback(
+    (code: string) => {
+      if (serial === null) return
+      // 【I4】链接进不去时给明确提示（走 i18n 错误文案），而不是静默无反应
+      dispatch(serial, { type: 'addressError', code })
+    },
+    [serial, dispatch],
+  )
+
   const handleOpen = useCallback(
     (entry: FileEntry) => {
       if (serial === null) return
-      if (!entry.isDir) return
-      openDir(serial, joinEntryPath(current.cwd, entry.name))
+      // 【I4】链接目录也要能进：目标解析、无法解析、成环三种情况都在 openTarget 里判（有单测）
+      const target = openTarget(entry, current.cwd, linkTrailRef.current)
+      if (target.kind === 'enter') {
+        void openDir(serial, target.path)
+        return
+      }
+      if (target.kind === 'error') {
+        reportLinkError(target.code)
+        return
+      }
+      // 普通文件：本任务不做打开（留给任务 9 的下载/预览）
     },
-    [serial, openDir, current.cwd],
+    [serial, openDir, current.cwd, reportLinkError],
   )
 
   const handleSelect = useCallback(
@@ -111,7 +144,8 @@ export function FilesPage() {
   const handleJump = useCallback(
     (path: string) => {
       if (serial === null) return
-      openDir(serial, path)
+      // 【C1】openDir 只登记目标：失败时当前目录与列表原样保留，错误走行内提示
+      void openDir(serial, path)
     },
     [serial, openDir],
   )
@@ -127,6 +161,32 @@ export function FilesPage() {
       dispatch(serial, { type: 'setScrollTop', value })
     },
     [serial, dispatch],
+  )
+
+  /*
+   * 【I7】键盘导航（规格 9.5：Enter 打开 / Backspace 上级 / F5 刷新）。
+   *
+   * 只在列表容器上监听：输入框（地址栏）里的按键不该被这里吞掉 ——
+   * 事件从 input 冒泡上来时会先被 Browser 的默认行为处理，这里再用
+   * tagName 判断排除，避免「在地址栏里按 Backspace 结果回上级目录」。
+   */
+  const onListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      if (serial === null) return
+      const command = navKeyCommand(event.key, current.cwd)
+      if (command.kind === 'up') {
+        event.preventDefault()
+        handleJump(command.path)
+        return
+      }
+      if (command.kind === 'refresh') {
+        event.preventDefault()
+        void refresh(serial)
+      }
+    },
+    [serial, current.cwd, handleJump, refresh],
   )
 
   if (serial === null) {
@@ -164,7 +224,7 @@ export function FilesPage() {
         </button>
         <button
           type="button"
-          onClick={() => { refresh(serial) }}
+          onClick={() => { void refresh(serial) }}
           title={t('files.refresh')}
           className="shrink-0 rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
         >
@@ -191,30 +251,34 @@ export function FilesPage() {
         </div>
       )}
 
-      {/* 已有内容时失败不整页变错误：保留列表，只在顶部提示（裁决 3） */}
+      {/* 刷新失败（不是跳转失败）：保留列表，只在顶部提示（裁决 3 的同一条原则） */}
       {current.error !== null && current.entries.length > 0 && (
         <div className="border-b border-red-900/50 bg-red-950/30 px-3 py-1 text-[11px] text-red-300">
           {errorText(current.error)}
         </div>
       )}
 
-      <FileTable
-        entries={entries}
-        selected={current.selected}
-        tzOffsetMinutes={current.tzOffsetMinutes}
-        status={current.status}
-        error={current.error}
-        hiddenFiltered={hiddenFiltered}
-        restoreKey={restoreKey}
-        getRestoreScrollTop={getRestoreScrollTop}
-        onScrollTop={onScrollTop}
-        onOpen={handleOpen}
-        onSelect={handleSelect}
-        onRetry={() => { refresh(serial) }}
-        sort={current.sort}
-        sortDir={current.sortDir}
-        onSort={(sort) => { dispatch(serial, { type: 'setSort', sort }) }}
-      />
+      {/* 键盘处理挂在 FileTable 的根容器上（只挂一处，避免 Backspace 被处理两次） */}
+      <div className="flex min-h-0 flex-1 flex-col outline-none">
+        <FileTable
+          entries={entries}
+          selected={current.selected}
+          tzOffsetMinutes={current.tzOffsetMinutes}
+          status={current.status}
+          error={current.error}
+          hiddenFiltered={hiddenFiltered}
+          restoreKey={restoreKey}
+          getRestoreScrollTop={getRestoreScrollTop}
+          onScrollTop={onScrollTop}
+          onOpen={handleOpen}
+          onSelect={handleSelect}
+          onRetry={() => { void refresh(serial) }}
+          sort={current.sort}
+          sortDir={current.sortDir}
+          onSort={(sort) => { dispatch(serial, { type: 'setSort', sort }) }}
+          onKeyNav={onListKeyDown}
+        />
+      </div>
 
       <div className="flex items-center gap-3 border-t border-neutral-800 px-3 py-1 text-[11px] text-neutral-500">
         <span>{tf('files.summary', { dirs: summary.dirs, files: summary.files })}</span>
