@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { DeviceManager } from '../electron/devices/manager'
 import { CH, INVOKE_CHANNELS } from '../electron/ipc/channels'
-import { registerHandlers, type HandlerDeps, type IpcMainLike } from '../electron/ipc/handlers'
+import {
+  registerHandlers,
+  type HandlerDeps,
+  type IpcMainLike,
+  type TransferController,
+} from '../electron/ipc/handlers'
+import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import type { ShellRunner } from '../electron/fs/remote'
 import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
@@ -35,6 +41,66 @@ const OK_ADB: AdbState = {
   path: 'C:/platform-tools/adb.exe',
   version: '1.0.41',
   source: 'path',
+}
+
+/**
+ * 假传输控制器：IPC 层只需要「调度器暴露的那一面」，
+ * 用假实现就能测校验/会话检查/错误码收敛，不必起真 adb。
+ */
+export function fakeTransfer(): TransferController & { tasks: Map<string, TransferTask>; enqueued: unknown[] } {
+  const tasks = new Map<string, TransferTask>()
+  const enqueued: unknown[] = []
+  const snapshot = (): TransferSnapshot => {
+    const all = [...tasks.values()]
+    return {
+      tasks: all,
+      running: all.filter((t) => t.status === 'running').length,
+      queued: all.filter((t) => t.status === 'queued').length,
+    }
+  }
+  return {
+    tasks,
+    enqueued,
+    enqueue: (input) => {
+      enqueued.push(input)
+      const task: TransferTask = {
+        id: 'task-' + (tasks.size + 1),
+        serial: input.serial,
+        direction: input.direction,
+        src: input.src,
+        dst: input.dstDir + '/' + input.src.split(/[\\/]/).pop(),
+        totalBytes: 10,
+        doneBytes: 0,
+        status: 'queued',
+        attempt: 0,
+        createdAt: 0,
+      }
+      tasks.set(task.id, task)
+      return task
+    },
+    cancel: (id) => {
+      const task = tasks.get(id)
+      if (task === undefined || task.status !== 'queued') return false
+      task.status = 'canceled'
+      return true
+    },
+    retry: (id) => {
+      const task = tasks.get(id)
+      if (task === undefined || task.status !== 'canceled') return false
+      task.status = 'queued'
+      task.attempt += 1
+      return true
+    },
+    get: (id) => tasks.get(id),
+    snapshot,
+    clearFinished: () => {
+      let removed = 0
+      for (const [id, task] of [...tasks]) {
+        if (task.status === 'done') { tasks.delete(id); removed += 1 }
+      }
+      return removed
+    },
+  }
 }
 
 const LIST_OK: ListResult = {
@@ -84,6 +150,8 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
         return LIST_OK
       },
     },
+    transfer: fakeTransfer(),
+    pickFiles: async () => [],
     ...over,
   }
   const ipc = fakeIpc()

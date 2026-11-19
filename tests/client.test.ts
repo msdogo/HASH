@@ -26,11 +26,22 @@ function stderrArgs(): string[] {
   return isWin ? ['/c', 'type', 'no-such-file-task2-probe.txt'] : ['-c', 'cat /no-such-file-task2-probe.txt']
 }
 
-// 先挂起约 1 秒，再写标记文件。若子进程真被 kill，标记文件永远不会出现。
+/*
+ * 先挂起约 5 秒，再写标记文件。若子进程真被 kill，标记文件永远不会出现。
+ *
+ * 【任务 8 修的 flake】原来是 ping -n 2 / sleep 1（约 1 秒），而超时只有 100ms、
+ * killTree 在 Windows 上又是异步 taskkill —— 全量并行跑测试时机器一忙，
+ * taskkill 排在进程真正结束之前，ping 自己跑完就把标记写了，用例假红。
+ * 实测：单跑必过、全量并行必挂、--no-file-parallelism 又必过，即典型的负载竞态。
+ *
+ * 判断谁错：断言（超时后进程树必须死）是对的，夹具的「1 秒窗口」太紧。
+ * 把挂起时间拉到 5 秒（远大于下方 1600ms 的观察窗）+ 把观察窗放宽，
+ * 断言强度一点没降（真没死照样会写标记），只是不再依赖机器当下有多闲。
+ */
 function hangThenWriteArgs(marker: string): string[] {
   return isWin
-    ? ['/c', 'ping', '-n', '2', '127.0.0.1', '>nul', '&', 'echo', `alive>${marker}`]
-    : ['-c', `sleep 1; echo alive > ${marker}`]
+    ? ['/c', 'ping', '-n', '6', '127.0.0.1', '>nul', '&', 'echo', `alive>${marker}`]
+    : ['-c', `sleep 5; echo alive > ${marker}`]
 }
 
 function markerPath(): string {
@@ -132,7 +143,11 @@ describe('AdbClient', () => {
       expect(Date.now() - startedAt).toBeLessThan(900)
       // finish 是唯一出口：超时路径必须完成清理，无需等 close
       expect(adbChildCount()).toBe(0)
-      await wait(1600)
+      /*
+       * 观察窗必须【长于】夹具的挂起时间，否则「标记没出现」只是还没到时候，
+       * 用例会变成永远通过的假绿。夹具挂起约 5 秒（ping -n 6），这里等 6500ms。
+       */
+      await wait(6500)
       expect(existsSync(marker)).toBe(false)
     } finally {
       rmSync(marker, { force: true })

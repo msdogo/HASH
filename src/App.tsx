@@ -1,4 +1,5 @@
 import { DeviceRail } from './components/DeviceRail'
+import { TransferDock } from './components/TransferDock'
 import { FilesPage } from '@/pages/FilesPage'
 import { useDeviceStore } from '@/store/deviceStore'
 import { deviceLabel } from '@shared/device-view'
@@ -27,6 +28,8 @@ export function App() {
           <FilesPage />
         </main>
       </div>
+      {/* 传输底栏横跨整宽：任何页面都能看到进度，不必切页（规格：底栏展示） */}
+      <TransferDock />
     </div>
   )
 }

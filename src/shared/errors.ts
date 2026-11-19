@@ -46,6 +46,15 @@ export const E_LINK_UNRESOLVED = 'E_LINK_UNRESOLVED'
 export const E_LINK_CYCLE = 'E_LINK_CYCLE'
 /** 目标存在，但不是目录（例如指向普通文件的快捷方式）。 */
 export const E_NOT_A_DIRECTORY = 'E_NOT_A_DIRECTORY'
+/**
+ * 传输失败，且 stderr 里认不出已知原因（裁决 7：失败任务保留在列表里可重试）。
+ *
+ * 为什么不复用 E_LIST_FAILED：那条文案说的是「列出目录」，用在传输上会让用户
+ * 去检查目录权限，而真实原因往往是写到一半断了、空间不足、目标只读。
+ */
+export const E_SYNC_FAILED = 'E_SYNC_FAILED'
+/** 传输途中设备掉线（裁决 4）：该设备的队列暂停，任务保留可重试。 */
+export const E_DEVICE_OFFLINE = 'E_DEVICE_OFFLINE'
 
 /**
  * 全部错误码，顺序即「匹配优先级」的参考顺序。
@@ -71,6 +80,8 @@ export const ERROR_CODES = [
   E_LINK_UNRESOLVED,
   E_LINK_CYCLE,
   E_NOT_A_DIRECTORY,
+  E_SYNC_FAILED,
+  E_DEVICE_OFFLINE,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
+import type { TransferSnapshot, TransferTask } from './transfer'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -40,9 +41,40 @@ export type FsListInput = z.infer<typeof FS_LIST_INPUT>
  */
 export const DEVICES_LIST_INPUT = z.unknown()
 
+/**
+ * transfer:enqueue 入参。
+ *
+ * 三条判据都要在 zod 层拦住（而不是到主进程里再判断）：
+ * - serial 必填非空：没有设备就不知道该传给谁；
+ * - direction 只认 push/pull：防止渲染层传出主进程无法解释的方向；
+ * - src / dstDir 非空字符串：路径拼接在下游做，这里只保证「不是空/不是别的类型」。
+ *
+ * 注意这里**不校验路径是否绝对 / 是否含换行**：那是主进程的职责
+ * （走 fs/remote 的 normalizeDir 与 shellsafe 的 shellQuote，错误码更精确）。
+ */
+export const TRANSFER_ENQUEUE_INPUT = z.object({
+  serial: z.string().min(1),
+  direction: z.enum(['push', 'pull']),
+  src: z.string().min(1),
+  dstDir: z.string().min(1),
+})
+
+export type TransferEnqueueInput = z.infer<typeof TRANSFER_ENQUEUE_INPUT>
+
+/** transfer:cancel / transfer:retry 入参。 */
+export const TRANSFER_ID_INPUT = z.object({
+  id: z.string().min(1),
+})
+
+export type TransferIdInput = z.infer<typeof TRANSFER_ID_INPUT>
+
+/** transfer:clear 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」的契约）。 */
+export const TRANSFER_CLEAR_INPUT = z.unknown()
+
 /* ============ 出参类型（从 shared/types 派生，不重复定义） ============ */
 
 export type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
+export type { TransferSnapshot, TransferTask } from './transfer'
 
 /* ============ 唯一 API 接口（I3：编译期强制的唯一事实源） ============ */
 
@@ -84,6 +116,28 @@ export interface DshApi {
     /** 列举远程目录；入参类型从 FsListInput（zod schema 派生）来。 */
     list(payload: FsListInput): Promise<IpcResult<FsListData>>
   }
+  transfer: {
+    /** 加入传输队列（上传或下载）。 */
+    enqueue(payload: TransferEnqueueInput): Promise<IpcResult<TransferTask>>
+    /** 取消一个传输（在跑的会被真杀进程树）。 */
+    cancel(payload: TransferIdInput): Promise<IpcResult<TransferTask>>
+    /** 重试一个失败/被取消的传输。 */
+    retry(payload: TransferIdInput): Promise<IpcResult<TransferTask>>
+    /** 取当前队列快照。 */
+    list(): Promise<IpcResult<TransferSnapshot>>
+    /** 清掉已完成的传输（失败/取消的保留以便重试）。 */
+    clear(): Promise<IpcResult<TransferSnapshot>>
+    /**
+     * 打开系统文件选择框，返回选中的本地文件绝对路径。
+     *
+     * 为什么必须走主进程：渲染层没有 node 能力、也没有 dialog，
+     * 而 <input type=file> 在 Electron 里拿不到真实绝对路径（只有 File 对象）。
+     * 取消选择返回空数组（不是错误）。
+     */
+    pickFiles(): Promise<IpcResult<string[]>>
+    /** 订阅传输变化推送（进度已在主进程节流）；返回退订函数。 */
+    onChanged(callback: (snapshot: TransferSnapshot) => void): Unsubscribe
+  }
 }
 
 /* ============ API 面清单（运行期反射用；类型层的等价性由 DshApi 保证） ============ */
@@ -99,6 +153,7 @@ export const API_SURFACE = {
   app: ['ping'],
   devices: ['list', 'onChanged'],
   fs: ['list'],
+  transfer: ['enqueue', 'cancel', 'retry', 'list', 'clear', 'pickFiles', 'onChanged'],
 } as const
 
 export type ApiSurface = typeof API_SURFACE

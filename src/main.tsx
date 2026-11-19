@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { subscribeDeviceChanges } from './store/deviceStore'
+import { subscribeTransferChanges } from './store/transferStore'
 import { exposeStoresForDebug } from './devtools'
 import './index.css'
 
@@ -10,7 +11,11 @@ import './index.css'
 exposeStoresForDebug()
 
 const unsubscribe = subscribeDeviceChanges()
-window.addEventListener('beforeunload', () => { unsubscribe() })
+const unsubscribeTransfers = subscribeTransferChanges()
+window.addEventListener('beforeunload', () => {
+  unsubscribe()
+  unsubscribeTransfers()
+})
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

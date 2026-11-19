@@ -35,6 +35,10 @@ describe('共享错误码', () => {
       'E_LINK_CYCLE',
       // 审查轮 2（任务 7）：指向文件的快捷方式需要单独的文案
       'E_NOT_A_DIRECTORY',
+      // 任务 8：传输失败（裁决 7 的「失败保留可重试」要有自己的文案）
+      'E_SYNC_FAILED',
+      // 任务 8：传输途中设备掉线（裁决 4）
+      'E_DEVICE_OFFLINE',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

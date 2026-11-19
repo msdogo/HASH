@@ -138,6 +138,16 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
         adbState: () => NOT_FOUND,
         clientFactory: (serial) => ({ serial, run: async () => ({ code: 0, stdout: '', stderr: '' }) }),
         fs: { list: async () => ({ entries: [], degraded: false, unparsed: 0, usedFallback: false, exitCode: 0, tzOffsetMinutes: 0 }) },
+        pickFiles: async () => [],
+        // 本文件不测传输：给一个空壳，只为满足 HandlerDeps（传输有专门的 tests/transfer-*.test.ts）
+        transfer: {
+          enqueue: () => { throw new Error('not used') },
+          cancel: () => false,
+          retry: () => false,
+          get: () => undefined,
+          snapshot: () => ({ tasks: [], running: 0, queued: 0 }),
+          clearFinished: () => 0,
+        },
       },
       { handle: (ch, fn) => { registered.set(ch, fn) } },
     )

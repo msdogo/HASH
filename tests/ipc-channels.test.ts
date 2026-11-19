@@ -33,7 +33,12 @@ describe('IPC 通道常量（契约形状）', () => {
     expect(isEventChannel('renderer:inject')).toBe(false)
   })
 
-  it('通道值统一形如 domain:action', () => {
-    for (const value of Object.values(CH)) expect(value).toMatch(/^[a-z]+:[a-z]+$/)
+  it('通道值统一形如 domain:action（action 允许 kebab-case）', () => {
+    /*
+     * action 段允许连字符：任务 8 引入了 transfer:pick-files。
+     * 原来的 /^[a-z]+:[a-z]+$/ 会把合法的多词动作判非法 —— 那是断言过严，不是实现有问题，
+     * 所以放宽到「小写字母开头、kebab-case」，domain 段仍然不允许连字符（一个词就够）。
+     */
+    for (const value of Object.values(CH)) expect(value).toMatch(/^[a-z]+:[a-z][a-z-]*$/)
   })
 })

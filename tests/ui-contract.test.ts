@@ -167,6 +167,52 @@ describe('任务 7：文件页契约（静态断言）', () => {
     expect(store).not.toMatch(/switch \(action\.type\)/)
   })
 })
+describe('任务 8：传输底栏契约（静态断言）', () => {
+  const TRANSFER_SOURCES = [
+    'src/components/TransferDock.tsx',
+    'src/store/transferStore.ts',
+    'src/shared/transfer.ts',
+    'src/shared/transfer-view.ts',
+  ]
+
+  it('传输源码不 import node 内置模块、不直接 import electron、无 as any', () => {
+    for (const rel of TRANSFER_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('传输组件文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of ['src/components/TransferDock.tsx', 'src/store/transferStore.ts']) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('TransferDock 只做展示与接线：判断全部来自 shared 纯函数', () => {
+    const source = read('src/components/TransferDock.tsx')
+    // 进度/排序/可取消可重试的判断必须来自 shared（有单测）
+    expect(source).toContain('dockRows(')
+    expect(source).toContain('@shared/transfer-view')
+    // 不得在组件里自己写百分比算法
+    expect(source).not.toMatch(/doneBytes\s*\/\s*totalBytes/)
+  })
+
+  it('transferStore 所有请求经 window.api（不绕过 preload），且不自己轮询', () => {
+    const store = read('src/store/transferStore.ts')
+    expect(store).toContain('window.api.transfer.enqueue(')
+    expect(store).toContain('window.api.transfer.onChanged(')
+    // 渲染层绝不自己轮询进度（轮询在主进程）
+    expect(store).not.toMatch(/setInterval/)
+  })
+})
+
 describe('任务 7 审查轮 1：修复项的静态契约', () => {
   it('C1：FilesPage 不在 handleOpen/handleJump 里清空列表（导航只登记目标）', () => {
     const page = read('src/pages/FilesPage.tsx')

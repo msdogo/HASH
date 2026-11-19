@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from './ipc/channels'
-import type { DshApi, FsListInput } from '../src/shared/api-contract'
+import type {
+  DshApi,
+  FsListInput,
+  TransferEnqueueInput,
+  TransferIdInput,
+} from '../src/shared/api-contract'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
+import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 
 /**
  * 唯一 API 面（裁决 2 / I3）。
@@ -29,8 +35,8 @@ import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from
 export interface PreloadDeps {
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
   /** 事件监听器：Electron 传的第一个参数是 IpcRendererEvent，其余是通道载荷。 */
-  on: (channel: string, listener: (event: unknown, payload: DevicesChangedBatch) => void) => void
-  off: (channel: string, listener: (event: unknown, payload: DevicesChangedBatch) => void) => void
+  on: (channel: string, listener: (event: unknown, payload: unknown) => void) => void
+  off: (channel: string, listener: (event: unknown, payload: unknown) => void) => void
 }
 
 /**
@@ -55,7 +61,11 @@ export function buildApi(deps: PreloadDeps): DshApi {
         deps.invoke(CH.DEVICES_LIST) as Promise<IpcResult<DevicesListData>>,
       /** 订阅设备变更推送；返回退订函数（组件卸载时必须调用）。 */
       onChanged: (callback: (batch: DevicesChangedBatch) => void): (() => void) => {
-        const listener = (_event: unknown, batch: DevicesChangedBatch): void => { callback(batch) }
+        // 载荷在 PreloadDeps 里是 unknown（传输通道的载荷类型不同，接口只能取交集），
+        // 这里在通道边界上收窄成设备批次 —— 通道与载荷是一一对应的，越界不会发生。
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as DevicesChangedBatch)
+        }
         deps.on(CH.DEVICES_CHANGED, listener)
         return () => { deps.off(CH.DEVICES_CHANGED, listener) }
       },
@@ -64,6 +74,34 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 列举远程目录（裁决 7：真实实现，带 degraded/exitCode）。 */
       list: (payload: FsListInput): Promise<IpcResult<FsListData>> =>
         deps.invoke(CH.FS_LIST, payload) as Promise<IpcResult<FsListData>>,
+    },
+    transfer: {
+      /** 加入传输队列。 */
+      enqueue: (payload: TransferEnqueueInput): Promise<IpcResult<TransferTask>> =>
+        deps.invoke(CH.TRANSFER_ENQUEUE, payload) as Promise<IpcResult<TransferTask>>,
+      /** 取消（在跑的会被主进程真杀进程树，不只是让 Promise settle）。 */
+      cancel: (payload: TransferIdInput): Promise<IpcResult<TransferTask>> =>
+        deps.invoke(CH.TRANSFER_CANCEL, payload) as Promise<IpcResult<TransferTask>>,
+      /** 重试失败/被取消的传输。 */
+      retry: (payload: TransferIdInput): Promise<IpcResult<TransferTask>> =>
+        deps.invoke(CH.TRANSFER_RETRY, payload) as Promise<IpcResult<TransferTask>>,
+      /** 取队列快照（首屏与重连自愈入口）。 */
+      list: (): Promise<IpcResult<TransferSnapshot>> =>
+        deps.invoke(CH.TRANSFER_LIST) as Promise<IpcResult<TransferSnapshot>>,
+      /** 清掉已完成的传输。 */
+      clear: (): Promise<IpcResult<TransferSnapshot>> =>
+        deps.invoke(CH.TRANSFER_CLEAR) as Promise<IpcResult<TransferSnapshot>>,
+      /** 打开系统文件选择框（渲染层拿不到本地绝对路径，必须走主进程）。 */
+      pickFiles: (): Promise<IpcResult<string[]>> =>
+        deps.invoke(CH.TRANSFER_PICK_FILES) as Promise<IpcResult<string[]>>,
+      /** 订阅传输推送；返回退订函数（组件卸载时必须调用）。 */
+      onChanged: (callback: (snapshot: TransferSnapshot) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as TransferSnapshot)
+        }
+        deps.on(CH.TRANSFER_CHANGED, listener)
+        return () => { deps.off(CH.TRANSFER_CHANGED, listener) }
+      },
     },
   } satisfies DshApi
 }

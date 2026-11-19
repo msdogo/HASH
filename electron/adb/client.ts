@@ -80,8 +80,23 @@ export class AdbClient {
       let stderr = ''
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
-
-      const onAbort = (): void => { killTree(child) }
+      /**
+       * 【裁决 2 / 任务 2 遗留债】取消必须 reject E_ABORTED。
+       *
+       * 修前的 bug：onAbort 只 killTree 不 settle。子进程被杀后照常触发 close，
+       * 走的是 child.on('close') → resolve({ code: null }) ——
+       * 「被用户取消的命令」在调用方看来是**成功返回**。
+       * 传输调度器据此把任务判成完成、把 doneBytes 写满，进度条直接跳到 100%。
+       *
+       * 现在：abort 立即经 finish 以 E_ABORTED settle（finish 的 settled 断言
+       * 让随后迟到的 close/error 一律变成 no-op），再杀进程树。
+       * 先 settle 再杀是刻意的：killTree 在 Windows 上走异步 taskkill，
+       * 等它返回才 settle 会让用户感到取消有明显的延迟。
+       */
+      const onAbort = (): void => {
+        finish(() => { reject(new Error(E_ABORTED)) })
+        killTree(child)
+      }
 
       // 单一出口：所有 settle 路径（close / error / 超时 / 预取消）必须经过这里，
       // 清理逻辑（定时器、abort 监听器、在手登记）只写在这一处。

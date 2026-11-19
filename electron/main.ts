@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, ipcMain, protocol } from 'electron'
+import { app, BrowserWindow, dialog, session, ipcMain, protocol } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { shutdownChildren } from './adb/children'
@@ -11,6 +11,8 @@ import { DeviceManager } from './devices/manager'
 import { applyCsp } from './csp'
 import { CH } from './ipc/channels'
 import { registerHandlers } from './ipc/handlers'
+import { TransferService } from './transfer/service'
+import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
 
@@ -47,6 +49,20 @@ const devices = new DeviceManager()
 
 /** 跟踪器要等自检拿到 adb 路径才能起，此时为 undefined。 */
 let tracking: AdbTracking | undefined
+
+/**
+ * 传输服务（任务 8）。
+ *
+ * 为什么现在（模块顶层）就建：IPC handler 必须尽早注册，而 handler 依赖它。
+ * 此时 adbPath 可能还是空串 —— 服务内部每次用一个 getter 取当前值，
+ * 不会把「还没定位到 adb」这个瞬时状态固化成空路径。
+ */
+const transfer = new TransferService({
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+  clientFor: (serial) => createClient(serial),
+  // emit 里的 broadcast 是函数声明（会提升），窗口还没建好时它自然只会遍历到空窗口列表。
+  emit: () => { broadcastTransfer() },
+})
 /** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */
 const bootAbort = new AbortController()
 
@@ -98,6 +114,21 @@ function broadcast(batch: DevicesChangedBatch): void {
 }
 
 /**
+ * 把当前传输队列快照推给所有窗口。
+ *
+ * 为什么整份快照而不是增量：队列最多几十条任务，整份快照让渲染层无状态、
+ * 不会出现「某次增量丢了就永久错位」。进度已经在主进程侧节流（裁决 6），
+ * 所以这个函数的调用频率本身就是受限的。
+ */
+function broadcastTransfer(): void {
+  const snapshot: TransferSnapshot = transfer.manager.snapshot()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    win.webContents.send(CH.TRANSFER_CHANGED, snapshot)
+  }
+}
+
+/**
  * 启动（I7：顺序由 createBootSequence 保证并被测试锁住）：
  * CSP → 注册 IPC → 建窗口 → 自检 adb → 起 tracker → 通知 adb 状态。
  *
@@ -121,6 +152,18 @@ app.whenReady().then(async () => {
             adbState: () => adbState,
             clientFactory: (serial) => createClient(serial),
             fs: { list: listDirDetailed },
+            transfer: transfer.controller,
+            // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
+            // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。
+            pickFiles: async () => {
+              const win = BrowserWindow.getAllWindows()[0]
+              if (win === undefined) return []
+              const picked = await dialog.showOpenDialog(win, {
+                title: '选择要上传到手机的文件',
+                properties: ['openFile', 'multiSelections'],
+              })
+              return picked.canceled ? [] : picked.filePaths
+            },
           },
           ipcMain,
         )
@@ -188,6 +231,9 @@ app.on('before-quit', () => {
   //    从根本上杜绝「退出瞬间又冒出一个子进程」；
   // 3. 最后停 tracker（它的定时器与长驻 track-devices 也走同一套闸门 + killTree）。
   bootAbort.abort()
+  // 传输必须是「先取消再杀进程」：dispose 会 abort 每个在跑任务的 signal，
+  // 进而由 AdbClient 走 killTree 终结整棵进程树（裁决 3）。
+  transfer.dispose()
   shutdownChildren()
   tracking?.flushChanges()
   tracking?.stop()

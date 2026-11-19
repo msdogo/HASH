@@ -1,8 +1,14 @@
-import { FS_LIST_INPUT } from '../../src/shared/api-contract'
+import {
+  FS_LIST_INPUT,
+  TRANSFER_CLEAR_INPUT,
+  TRANSFER_ENQUEUE_INPUT,
+  TRANSFER_ID_INPUT,
+} from '../../src/shared/api-contract'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
 import { normalizeDir } from '../fs/remote'
-import { E_BAD_ARGS, E_NO_SERIAL, E_ADB_NOT_FOUND, toErrorCode } from '../../src/shared/errors'
+import { E_BAD_ARGS, E_NO_SERIAL, E_ADB_NOT_FOUND, E_NOT_FOUND, toErrorCode } from '../../src/shared/errors'
+import type { TransferSnapshot, TransferTask } from '../../src/shared/transfer'
 import type {
   AdbState,
   DeviceSnapshot,
@@ -36,6 +42,21 @@ export interface HandlerDeps {
   adbState: () => AdbState
   /** 按 serial 造 client。 */
   clientFactory: (serial: string) => ShellRunner
+  /**
+   * 传输调度器。
+   *
+   * 只依赖【接口】而不是具体类：测试可以塞一个假调度器验证 IPC 层的
+   * 校验 / 会话检查 / 错误码收敛，不必起真 adb。
+   */
+  transfer: TransferController
+  /**
+   * 打开系统文件选择框。
+   *
+   * 注入而不是在 handler 里直接 import electron 的 dialog：
+   * tests/ipc-handlers.test.ts 在纯 node 下跑，import electron 会直接炸；
+   * 而且「取消选择」与「选中若干文件」这两条路径都能被测到。
+   */
+  pickFiles: () => Promise<string[]>
   /** 目录列举实现（默认 listDirDetailed；测试可注入）。 */
   fs: {
     list: (client: ShellRunner, adbPath: string, dir: string) => Promise<{
@@ -47,6 +68,28 @@ export interface HandlerDeps {
       tzOffsetMinutes: number
     }>
   }
+}
+
+/**
+ * 传输调度器对 IPC 层暴露的最小面（electron/transfer/manager 的 TransferManager 满足它）。
+ *
+ * enqueue 的路径参数是「渲染层给的原始意图」：
+ *   push: src = 本地文件绝对路径，dstDir = 设备上的目标目录
+ *   pull: src = 设备上的源文件路径，destDir = 本地目标目录
+ * 由调度器负责拼出完整目标路径与取 totalBytes（裁决 5）。
+ */
+export interface TransferController {
+  enqueue(input: {
+    serial: string
+    direction: 'push' | 'pull'
+    src: string
+    dstDir: string
+  }): TransferTask
+  cancel(id: string): boolean
+  retry(id: string): boolean
+  get(id: string): TransferTask | undefined
+  snapshot(): TransferSnapshot
+  clearFinished(): number
 }
 
 /** 统一的失败出口。 */
@@ -111,6 +154,60 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     } catch (err) {
       return fail(toErrorCode(err))
     }
+  })
+
+  /* ============ 传输（任务 8） ============ */
+
+  handle(CH.TRANSFER_ENQUEUE, async (_event, payload): Promise<IpcResult<TransferTask>> => {
+    const parsed = TRANSFER_ENQUEUE_INPUT.safeParse(payload)
+    if (!parsed.success) return fail(E_BAD_ARGS)
+    const { serial, direction, src, dstDir } = parsed.data
+
+    // serial 必须是已建立的会话（与 fs:list 同一条原则：主进程只信自己的会话表）
+    if (deps.devices.get(serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+
+    const target = deps.transfer.enqueue({ serial, direction, src, dstDir })
+    return { ok: true, data: target }
+  })
+
+  handle(CH.TRANSFER_CANCEL, (_event, payload): IpcResult<TransferTask> => {
+    const parsed = TRANSFER_ID_INPUT.safeParse(payload)
+    if (!parsed.success) return fail(E_BAD_ARGS)
+    if (!deps.transfer.cancel(parsed.data.id)) return fail(E_NOT_FOUND)
+    const task = deps.transfer.get(parsed.data.id)
+    if (task === undefined) return fail(E_NOT_FOUND)
+    return { ok: true, data: task }
+  })
+
+  handle(CH.TRANSFER_RETRY, (_event, payload): IpcResult<TransferTask> => {
+    const parsed = TRANSFER_ID_INPUT.safeParse(payload)
+    if (!parsed.success) return fail(E_BAD_ARGS)
+    if (!deps.transfer.retry(parsed.data.id)) return fail(E_BAD_ARGS)
+    const task = deps.transfer.get(parsed.data.id)
+    if (task === undefined) return fail(E_NOT_FOUND)
+    return { ok: true, data: task }
+  })
+
+  handle(CH.TRANSFER_PICK_FILES, async (): Promise<IpcResult<string[]>> => {
+    try {
+      // 用户取消选择时返回空数组 —— 取消是正常操作，不是错误
+      return { ok: true, data: await deps.pickFiles() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.TRANSFER_LIST, (): IpcResult<TransferSnapshot> => {
+    return { ok: true, data: deps.transfer.snapshot() }
+  })
+
+  handle(CH.TRANSFER_CLEAR, (_event, payload): IpcResult<TransferSnapshot> => {
+    // 与其它通道一样「一律 zod 校验」，即使这个通道没有有意义的载荷
+    const parsed = TRANSFER_CLEAR_INPUT.safeParse(payload)
+    if (!parsed.success) return fail(E_BAD_ARGS)
+    deps.transfer.clearFinished()
+    return { ok: true, data: deps.transfer.snapshot() }
   })
 
   // 自检：注册表必须覆盖全部 invoke 通道，漏一个就是渲染层点了没反应

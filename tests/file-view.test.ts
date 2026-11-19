@@ -316,21 +316,37 @@ describe('格式化', () => {
 
 /* ============ 裁决 4：排序性能 ============ */
 
+/*
+ * 性能断言取【多次里的最好一次】（best-of-N）。
+ *
+ * 为什么不能只量一次：vitest 默认并行跑测试文件，机器一忙 GC/调度抖动就能让
+ * 单次测量翻好几倍。任务 8 加了传输用例后这条开始偶发假红（实测：单独跑必过、
+ * 全量并行偶挂），而排序代码一个字符都没改 —— 典型的测量噪声，不是性能回归。
+ *
+ * 取最好一次仍然是有意义的护栏：真正的算法劣化（例如把 Collator 从模块级缓存
+ * 改成每次比较新建）会让【每一次】都变慢，最小值照样超阈值。
+ */
+const PERF_RUNS = 5
+
+function bestOfSortMs(list: ReturnType<typeof bigDirectory>, sort: 'name' | 'size', dir: 'asc' | 'desc'): number {
+  let best = Number.POSITIVE_INFINITY
+  for (let i = 0; i < PERF_RUNS; i++) {
+    const start = performance.now()
+    const sorted = sortEntries(list, sort, dir)
+    const elapsed = performance.now() - start
+    expect(sorted).toHaveLength(list.length)
+    if (elapsed < best) best = elapsed
+  }
+  return best
+}
+
 describe('裁决 4：万级条目排序性能', () => {
   it('1 万条按名称排序 < 100ms', () => {
-    const list = bigDirectory(10_000)
-    const start = performance.now()
-    const sorted = sortEntries(list, 'name', 'asc')
-    expect(sorted).toHaveLength(10_000)
-    expect(performance.now() - start).toBeLessThan(100)
+    expect(bestOfSortMs(bigDirectory(10_000), 'name', 'asc')).toBeLessThan(100)
   })
 
   it('1 万条按大小排序 < 100ms', () => {
-    const list = bigDirectory(10_000)
-    const start = performance.now()
-    const sorted = sortEntries(list, 'size', 'desc')
-    expect(sorted).toHaveLength(10_000)
-    expect(performance.now() - start).toBeLessThan(100)
+    expect(bestOfSortMs(bigDirectory(10_000), 'size', 'desc')).toBeLessThan(100)
   })
 
   it('1 万条按时间排序 + 过滤 < 100ms', () => {

@@ -57,6 +57,29 @@ const messages: Record<string, string> = {
   'files.linkUnresolved': '无法进入这个快捷方式：没有可用的目标路径',
   'files.linkCycle': '这个快捷方式指向自己或已访问过的目录，已停止跟随',
   'files.scrollToTop': '回到顶部',
+
+  // ---- 传输（任务 8）----
+  'transfer.title': '传输',
+  'transfer.idle': '传输空闲',
+  'transfer.upload': '上传到当前目录',
+  'transfer.download': '下载到本地',
+  'transfer.cancel': '取消',
+  'transfer.retry': '重试',
+  'transfer.clearFinished': '清除已完成',
+  'transfer.direction.push': '上传',
+  'transfer.direction.pull': '下载',
+  'transfer.status.queued': '排队中',
+  'transfer.status.running': '传输中',
+  'transfer.status.done': '已完成',
+  'transfer.status.failed': '失败',
+  'transfer.status.canceled': '已取消',
+  'transfer.unknownTotal': '大小未知',
+  'transfer.overwrote': '已覆盖同名文件',
+  'transfer.summary': '{running} 个传输中 · {queued} 个排队',
+  'transfer.queuedOnOffline': '设备离线，等待重连',
+  'transfer.created': '已加入传输队列',
+  'transfer.noDevice': '请先选择设备',
+  'transfer.pickFailed': '打开文件选择框失败',
 }
 
 /**
@@ -85,6 +108,8 @@ const errorTexts: Record<ErrorCode, string> = {
   E_LINK_UNRESOLVED: '这个快捷方式（符号链接）没有可用的目标路径，无法进入。可以改用地址栏直接输入完整路径',
   E_LINK_CYCLE: '这个快捷方式指向了自己或已经走过的目录，为避免无限跳转已停止跟随',
   E_NOT_A_DIRECTORY: '这个快捷方式指向的是一个文件而不是目录，因此不能进入。可以双击文件本身来查看或下载它',
+  E_SYNC_FAILED: '传输没有完成，可能是中途断开、空间不足或目标位置不可写。可以直接重试这一次传输',
+  E_DEVICE_OFFLINE: '设备已断开，这台设备的传输已暂停。重新连接后可以一键重试',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */
