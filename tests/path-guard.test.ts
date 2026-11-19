@@ -11,6 +11,7 @@ import {
   isInsideRoot,
   isProtectedRemotePath,
   isProtectedTransferDirectory,
+  isProtectedTransferPath,
   isRemoteInside,
   normalizeLocalPath,
   remoteBaseName,
@@ -310,5 +311,61 @@ describe('第 2 轮复审 N2 / N3：目标目录的可写判定', () => {
     expect(isProtectedTransferDirectory('/sdcard/Android')).toBe(true)
     expect(isProtectedTransferDirectory('/storage/emulated/0/Android')).toBe(true)
     expect(isProtectedTransferDirectory('/sdcard/Android/data/com.example.app')).toBe(false)
+  })
+})
+
+/*
+ * 【第 3 轮复审 N-2】对象级保护（isProtectedRemotePath）必须穿得透存储别名。
+ *
+ * 修前 isProtectedRemotePath 只做 normalizeSegments（纯词法折叠），于是同一个目录
+ * 换个别名写法就绕过保护 —— 复审实测 6 种写法里 4 种漏网，服务层直接发出
+ * `rm -rf -- '/mnt/sdcard/Android/data'`。真机上这些写法是**同一批 inode**
+ * （stat 设备号/inode 全同 64780:2643），删它等于清掉全部 App 的数据库与扩展包。
+ *
+ * 这里用表驱动锁死「别名 × 受保护后代」= 18 个组合全 true，再反向锁住
+ * 「别名下的普通目录」必须 false —— 只堵绕过、不误伤用户目录。
+ */
+describe('第 3 轮复审 N-2：受保护后代不能被存储别名绕过', () => {
+  const ALIASES = [
+    '/sdcard',
+    '/storage/self/primary',
+    '/storage/emulated/0',
+    '/mnt/sdcard',
+    '/mnt/user/0/primary',
+    '/mnt/user/0/emulated/0',
+    '/mnt/runtime/default/emulated/0',
+  ]
+
+  it('别名表覆盖全部已知写法（含 N-2 漏掉的 /mnt/user/0/primary）', () => {
+    expect(ALIASES).toHaveLength(7)
+    for (const alias of ALIASES) {
+      expect(canonicalRemotePath(alias), alias).toBe(CANONICAL_USER_STORAGE)
+      // 别名自身是受保护的存储根
+      expect(isProtectedRemotePath(alias), alias).toBe(true)
+    }
+  })
+
+  it.each(ALIASES.flatMap((alias) => [alias + '/Android', alias + '/Android/data', alias + '/Android/obb']))(
+    '%s 受保护（别名不得绕过对象级保护）',
+    (path) => {
+      expect(isProtectedRemotePath(path)).toBe(true)
+    },
+  )
+
+  it.each(ALIASES.flatMap((alias) => [
+    alias + '/Download',
+    alias + '/DCIM/a.jpg',
+    // Android 下的具体 App 目录必须放行：用户要能管理单个 App 的文件
+    alias + '/Android/data/com.example.app',
+  ]))('%s 不受保护（只堵绕过，不误伤用户目录）', (path) => {
+    expect(isProtectedRemotePath(path)).toBe(false)
+  })
+
+  it('传输通道判据同样穿得透别名（isProtectedTransferPath 复用同一个谓词）', () => {
+    // 这两条已经由其它用例覆盖，这里只确认别名形态与正名形态结论一致
+    for (const alias of ALIASES) {
+      expect(isProtectedTransferPath(alias + '/Android/data'), alias).toBe(true)
+      expect(isProtectedTransferPath(alias + '/Download'), alias).toBe(false)
+    }
   })
 })

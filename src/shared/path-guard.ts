@@ -234,9 +234,36 @@ export function assertSafeRemotePath(input: string): string {
  *
  * 判据是「归一化后相等」而不是前缀匹配：/sdcard/Android/data/com.example.app
  * 必须放行（用户要能管理单个 App 的文件），只有 /sdcard/Android 这一层本身不可删。
+ *
+ * ===== 第 3 轮复审 N-2：比较前必须做**别名归一** =====
+ * 修前这里只做 normalizeSegments（纯词法折叠），于是同一个目录换个别名写法就能
+ * 绕过对象级保护。复审实测 6 种写法里 4 种漏网（它们是**同一批 inode**，真机
+ * stat 设备号/inode 全同 64780:2643）：
+ *   /sdcard/Android/data                            → true   ✅
+ *   /storage/emulated/0/Android/data                → true   ✅
+ *   /mnt/sdcard/Android/data                        → false  ❌
+ *   /storage/self/primary/Android/data              → false  ❌
+ *   /mnt/runtime/default/emulated/0/Android/data    → false  ❌
+ *   /mnt/user/0/emulated/0/Android/data             → false  ❌
+ * 后果不是文案错，而是服务层直接发出 `rm -rf -- '/mnt/sdcard/Android/data'`
+ * （复审假 fs 探针 ok:true；真机 mkdir 正名路径后用别名 rm -rf，正名路径随即
+ * No such file）—— 删它等于清掉全部 App 的数据库与扩展包。
+ * 所以先 canonicalRemotePath 再查表，与 isRemoteInside /
+ * isProtectedTransferDirectory 用同一套归一。
+ *
+ * 名单里 /sdcard/* 与 /storage/emulated/0/* 两套条目在归一后是冗余的，
+ * 但**故意都留着**：这份表同时是给人看的行为清单，
+ * isProtectedTransferDirectory 里 `'/sdcard' + normalized.slice(...)` 的对应关系
+ * 也依赖它，删条目会让那段代码更难懂。归一后一律以 /storage/emulated/0 一族为准。
+ *
+ * ===== 取舍（第 3 轮复审 N-1）：保持精确匹配，不做子树判定 =====
+ * 子树判定（isProtectedTransferPath）只用于传输通道 —— 那条路的路径完全来自
+ * 渲染层入参，攻击面最大。而 fs:* 的操作对象来自用户实际浏览到的位置（例如
+ * /data/local/tmp 下的调试文件），把它也改成子树判定，用户就管不了自己浏览到的
+ * 文件了。这个分工见 PROTECTED_REMOTE_SUBTREES 的注释，不要为了「统一」抹平。
  */
 export function isProtectedRemotePath(path: string): boolean {
-  const normalized = normalizeSegments(path)
+  const normalized = canonicalRemotePath(path)
   return PROTECTED_REMOTE_PATHS.includes(normalized)
 }
 
@@ -275,6 +302,9 @@ const USER_STORAGE_ALIASES: readonly string[] = [
   '/storage/self/primary',
   '/storage/emulated/0',
   '/mnt/sdcard',
+  // 【第 3 轮复审 N-2】它早就在 PROTECTED_REMOTE_PATHS 里（说明它就是存储根的一个
+  // 别名），却漏进了这张表 —— 于是 /mnt/user/0/primary/Android/data 绕过对象级保护。
+  '/mnt/user/0/primary',
   '/mnt/user/0/emulated/0',
   '/mnt/runtime/default/emulated/0',
 ]
@@ -370,8 +400,9 @@ export function isRemoteInside(parent: string, child: string): boolean {
    * 复审真机实测 2 秒内目录数从 2 涨到 88。
    * 归一集中在 canonicalRemotePath 里做，这里只调用它。
    *
-   * 已知边界（做不了完全防御）：路径**中间**的符号链接（如 /data/link -> real）
-   * 词法上完全看不出来，需要真机 realpath 才能识别。已在报告里如实记录；
+   * **纯词法判定，中间符号链接为已知边界**（做不了完全防御）：
+   * 路径**中间**的符号链接（如 /data/link -> real）词法上完全看不出来，
+   * 要识别得走设备侧 readlink -f 往返，成本高于收益；已在报告里记为已知限制。
    * 这类输入要求用户手输一条带中间链接的路径，触发面远小于别名。
    */
   const p = canonicalRemotePath(parent)

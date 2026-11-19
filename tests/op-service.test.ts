@@ -307,3 +307,101 @@ describe('新建 / 重命名', () => {
     expect(dev.tree()).toEqual(['/sdcard', '/sdcard/我的 照片.jpg'])
   })
 })
+
+/*
+ * 【第 3 轮复审 N-2】服务层证据：别名形式的受保护后代必须被拒，且**一条命令都不发**。
+ *
+ * 修前 path-guard 的 isProtectedRemotePath 是纯词法精确匹配，于是
+ * remove('/mnt/sdcard/Android/data') 返 ok:true 并真的发出
+ * `rm -rf -- '/mnt/sdcard/Android/data'` —— 那等于清掉全部 App 的数据库。
+ *
+ * 断言「零命令」而不是只看返回值：返回值对了但命令发出去了，用户数据一样没了。
+ * 假 fs 里把目标节点真的建出来，这样一旦闸门破掉，删除会**成功**，
+ * 用例会因为 tree() 变化而变红，而不是安静地绿。
+ */
+describe('第 3 轮复审 N-2：别名形式的受保护后代在 fs 层也被拦', () => {
+  const ALIAS_TARGETS = [
+    '/mnt/sdcard/Android/data',
+    '/storage/self/primary/Android/data',
+    '/mnt/runtime/default/emulated/0/Android/data',
+    '/mnt/user/0/emulated/0/Android/data',
+    '/mnt/user/0/primary/Android/data',
+  ]
+
+  /** 目标节点真实存在、且目标父目录也齐备的假设备 —— 破防时删除会真的生效。 */
+  function deviceWith(appDataDir: string) {
+    return fakeDevice({
+      '/sdcard': 'dir',
+      '/sdcard/Download': 'dir',
+      '/sdcard/Android': 'dir',
+      '/sdcard/Android/data': 'dir',
+      '/sdcard/Android/data/com.example.app': 'dir',
+      '/mnt': 'dir',
+      '/mnt/sdcard': 'dir',
+      '/mnt/sdcard/Android': 'dir',
+      '/mnt/sdcard/Android/data': 'dir',
+      '/storage': 'dir',
+      '/storage/self': 'dir',
+      '/storage/self/primary': 'dir',
+      '/storage/self/primary/Android': 'dir',
+      '/storage/self/primary/Android/data': 'dir',
+      '/mnt/runtime': 'dir',
+      '/mnt/runtime/default': 'dir',
+      '/mnt/runtime/default/emulated': 'dir',
+      '/mnt/runtime/default/emulated/0': 'dir',
+      '/mnt/runtime/default/emulated/0/Android': 'dir',
+      '/mnt/runtime/default/emulated/0/Android/data': 'dir',
+      '/mnt/user': 'dir',
+      '/mnt/user/0': 'dir',
+      '/mnt/user/0/primary': 'dir',
+      '/mnt/user/0/primary/Android': 'dir',
+      '/mnt/user/0/primary/Android/data': 'dir',
+      '/mnt/user/0/emulated': 'dir',
+      '/mnt/user/0/emulated/0': 'dir',
+      '/mnt/user/0/emulated/0/Android': 'dir',
+      '/mnt/user/0/emulated/0/Android/data': 'dir',
+      [appDataDir]: 'dir',
+    })
+  }
+
+  it.each(ALIAS_TARGETS)('remove(%s) → E_PROTECTED_PATH，且一条命令都没发', async (path) => {
+    const dev = deviceWith(path)
+    const before = dev.tree()
+    const result = await service(dev.client).remove('S', [path])
+    expect(result.results).toEqual([{ name: 'data', ok: false, code: 'E_PROTECTED_PATH' }])
+    // 关键断言：不是「结果里写了拒绝」而是「根本没执行」
+    expect(dev.commands).toEqual([])
+    expect(dev.tree()).toEqual(before)
+  })
+
+  it.each(ALIAS_TARGETS)('move(%s → /sdcard/Download) → E_PROTECTED_PATH，且一条命令都没发', async (path) => {
+    const dev = deviceWith(path)
+    const before = dev.tree()
+    const result = await service(dev.client).move('S', [path], '/sdcard/Download')
+    expect(result.results).toEqual([{ name: 'data', ok: false, code: 'E_PROTECTED_PATH' }])
+    expect(dev.commands).toEqual([])
+    expect(dev.tree()).toEqual(before)
+  })
+
+  it.each(ALIAS_TARGETS)('rename(%s) → E_PROTECTED_PATH，且一条命令都没发', async (path) => {
+    const dev = deviceWith(path)
+    const before = dev.tree()
+    const result = await service(dev.client).rename('S', path, 'hacked')
+    expect(result).toEqual({ ok: false, code: 'E_PROTECTED_PATH' })
+    expect(dev.commands).toEqual([])
+    expect(dev.tree()).toEqual(before)
+  })
+
+  it('同一批里混入别名受保护项：只有它被拒，其余照常执行', async () => {
+    const dev = deviceWith('/mnt/sdcard/Android/data')
+    const result = await service(dev.client).remove('S', ['/sdcard/Download', '/mnt/sdcard/Android/data'])
+    expect(result.results).toEqual([
+      { name: 'Download', ok: true },
+      { name: 'data', ok: false, code: 'E_PROTECTED_PATH' },
+    ])
+    // 只对合法那一项发了命令（含 stat/ls 这类探测），且没有任何一条命令提到别名路径
+    expect(dev.commands.length).toBeGreaterThan(0)
+    expect(dev.commands.some((c) => c.includes('/mnt/sdcard'))).toBe(false)
+    expect(dev.tree()).toContain('/mnt/sdcard/Android/data')
+  })
+})
