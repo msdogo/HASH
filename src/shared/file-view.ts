@@ -347,24 +347,6 @@ export function openTarget(
   return { kind: 'enter', path: resolved, followedLink: true }
 }
 
-/**
- * 把「跟随链接后 fs:list 的失败」翻译成更准确的错误码（N4）。
- *
- * 场景（真机实测）：`adb_keys -> /product/etc/security/adb_keys` 是个指向**普通文件**的快捷方式。
- * 双击它时我们按目录去列举，主进程返回 E_NOT_FOUND（ls 说 "Not a directory"），
- * 界面于是显示「这个路径不存在」—— 但路径明明存在，只是不是目录，文案把人带偏了。
- *
- * 因此：只要失败的是「跟随链接进入」这个动作，E_NOT_FOUND 一律升级为 E_NOT_A_DIRECTORY。
- * 普通目录的真实失败（打错字、目录被删）保持原样，不受影响。
- */
-export function mapListError(code: string, entryName: string, target: string): string {
-  // entryName / target 参与签名是为了让调用点必须显式交待「这次是跟随哪个链接」，
-  // 也方便将来按目标类型（文件 / 设备节点 / 断链）细分文案。
-  if (code !== 'E_NOT_FOUND') return code
-  if (entryName === '' && target === '') return code
-  return 'E_NOT_A_DIRECTORY'
-}
-
 /* ============ I7：键盘命令 ============ */
 
 /** 导航级快捷键的语义（组件只做「把 event.key 翻成命令」这一步）。 */

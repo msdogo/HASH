@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
   isHiddenName,
-  mapListError,
   navKeyCommand,
   openTarget,
   summarizeEntries,
@@ -134,21 +133,9 @@ export function FilesPage() {
         // 【N2】跟随链接时把 linkTarget 传下去，reducer 才会真正写轨迹与跳数；
         // 普通目录不传（会重置轨迹），这样防环只在「连续跟随链接」的链上生效。
         //
-        // 【N4】跟随链接失败时（目标其实是文件/断链），把 E_NOT_FOUND 升级成
-        // E_NOT_A_DIRECTORY，避免「路径不存在」的错误文案 —— 路径是存在的。
-        const followed = target.followedLink ? target.path : undefined
-        if (followed === undefined) {
-          void openDir(serial, target.path)
-          return
-        }
-        void openDir(serial, target.path, followed).then(() => {
-          const view = useFileStore.getState().views[serial]
-          if (view === undefined || view.addressError === null) return
-          const mapped = mapListError(view.addressError, entry.name, followed)
-          if (mapped !== view.addressError) {
-            dispatch(serial, { type: 'addressError', code: mapped })
-          }
-        })
+        // 【M2】错误码由主进程给准（E_NOT_FOUND / E_NOT_A_DIRECTORY 已在 remote 的
+        // classifyError 里按 stderr 区分），前端不再做任何「猜测式」改写。
+        void openDir(serial, target.path, target.followedLink ? target.path : undefined)
         return
       }
       if (target.kind === 'error') {

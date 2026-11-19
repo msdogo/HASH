@@ -1308,7 +1308,6 @@ describe('M1：跟随失败不累积轨迹，后续合法链接仍能进入', ()
   const linkEntry = (name: string, target: string): FileEntry =>
     entry({ name, isLink: true, linkTarget: target, linkTargetResolved: target })
 
-  /** 进到 /data/local/tmp/t7x 并等它 ready，作为「同一个目录」的基线。 */
   async function enterBaseline(h: ReturnType<typeof modelHarness>) {
     const enter = h.model.openDir('S', '/data/local/tmp/t7x')
     h.resolveAt(0, { dir: '/data/local/tmp/t7x', entries: [] })
@@ -1316,7 +1315,6 @@ describe('M1：跟随失败不累积轨迹，后续合法链接仍能进入', ()
     expect(h.views.S.loadedOnce).toBe(true)
   }
 
-  /** 在同一目录里连续点 N 次打不开的链接（/adb_keys、断链），每次都以失败告终。 */
   async function failFollows(h: ReturnType<typeof modelHarness>, times: number) {
     let index = 1
     for (let i = 0; i < times; i++) {
@@ -1396,5 +1394,34 @@ describe('M1：跟随失败不累积轨迹，后续合法链接仍能进入', ()
     }
     expect(view.linkHops).toBe(0)
     expect(view.linkTrail).toEqual([])
+  })
+})
+
+/* ============ N3（审查轮 2 回归护栏）：淘汰必须立 tombstone ============ */
+
+describe('N3：LRU 淘汰不得被在飞响应复活', () => {
+  it('被淘汰的分片不会被迟到的响应复活（淘汰 = forget：立 tombstone + reset 协调器）', async () => {
+    const h = modelHarness({ maxSerials: 2 })
+    const loadA = h.model.openDir('A', '/sdcard')
+    h.model.ensure('B')
+    h.model.ensure('C')
+    expect(h.model.serials()).not.toContain('A')
+    expect(h.views.A).toBeUndefined()
+
+    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'ghost' })] })
+    await loadA
+    expect(h.views.A).toBeUndefined()
+    expect(h.model.serials()).not.toContain('A')
+    expect(Object.keys(h.views).length).toBeLessThanOrEqual(2)
+  })
+
+  it('在线设备不会被淘汰（裁决 7：切回各自恢复）', () => {
+    const h = modelHarness({ maxSerials: 2 })
+    h.model.syncDevices(['A', 'B'])
+    h.model.ensure('D')
+    h.model.syncDevices(['A', 'B'])
+    expect(h.views.A).toBeDefined()
+    expect(h.views.B).toBeDefined()
+    expect(h.views.D).toBeUndefined()
   })
 })
