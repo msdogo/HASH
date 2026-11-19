@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { openSync, closeSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { AdbClient } from '../electron/adb/client'
@@ -38,6 +39,33 @@ import { E_DEVICE_OFFLINE, E_TIMEOUT } from '../src/shared/errors'
 const ADB = process.env.ADB_PATH ?? 'adb'
 
 /**
+ * 跨进程的「设备独占」锁（【N14】的根因修复）。
+ *
+ * ===== 为什么固定 sleep 改轮询还不够 =====
+ * 复审把真机用例与全量测试**同时在两个进程里**跑时，两边各红一条。
+ * 我照做复现了同样现象（3 轮全红）。
+ *
+ * 根因不是「等得不够久」，而是**两个进程在抢同一台设备**：
+ *   - 两边都用同一个 serial，`adb -s <serial> shell rm -f ...` 互相删对方的临时文件；
+ *   - 两个进程同时 screencap 到 `/sdcard/.adbfm/<serial>/adbfm-shot-*.png` 同名空间。
+ * 轮询解决的是「我的 rm 多久落地」，解决不了「别人的 rm 删了我的在途文件」。
+ *
+ * 所以真机用例在**模块顶层**抢一个文件锁（设备级），抢不到就整组跳过并打印原因 ——
+ * 与「没有设备」同一语义：不是失败，是资源不可用。并行跑全部用例仍然绿。
+ */
+function acquireDeviceLock(serial: string): (() => void) | null {
+  const safe = serial.replace(/[^A-Za-z0-9._-]/g, '_')
+  const lockPath = path.join(tmpdir(), 'adbfm-batch-real-' + safe + '.lock')
+  try {
+    // wx：文件已存在即失败 —— 跨进程互斥
+    closeSync(openSync(lockPath, 'wx'))
+    return () => { try { unlinkSync(lockPath) } catch { /* 已被清掉 */ } }
+  } catch {
+    return null
+  }
+}
+
+/**
  * 取一台**当前**处于 device 状态的设备。
  *
  * ADB_TEST_SERIAL 指定了但设备已经拔掉时必须**跳过**，不能硬跑 ——
@@ -63,14 +91,23 @@ function resolveSerial(): string | null {
 }
 
 const SERIAL = resolveSerial()
-const skip = SERIAL === null
+/**
+ * 设备锁：抢不到就把整组 skip（另一个进程正在用这台设备）。
+ *
+ * 必须在**模块顶层**抢（与 SERIAL 解析同级）：放在 beforeAll 里就晚了 ——
+ * 那时临时目录、TransferService、BatchService 都已经建好。
+ */
+const lockRelease = SERIAL === null ? null : acquireDeviceLock(SERIAL)
+const skip = SERIAL === null || lockRelease === null
 if (skip) {
   const wanted = process.env.ADB_TEST_SERIAL
   console.log(
     '[batch-real] 跳过真机用例：'
-      + (wanted !== undefined && wanted !== ''
-        ? 'ADB_TEST_SERIAL=' + wanted + ' 不在 device 状态（可能是 offline/unauthorized/已拔掉）'
-        : '没有找到在线设备（adb devices 里没有 device 状态的设备）'),
+      + (lockRelease === null && SERIAL !== null
+        ? '设备 ' + SERIAL + ' 正被另一个进程独占（跨进程锁），避免两边互相删临时文件'
+        : wanted !== undefined && wanted !== ''
+          ? 'ADB_TEST_SERIAL=' + wanted + ' 不在 device 状态（可能是 offline/unauthorized/已拔掉）'
+          : '没有找到在线设备（adb devices 里没有 device 状态的设备）'),
   )
 }
 
@@ -132,12 +169,45 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     }
   }
 
-  /** 执行所有挂起的清理回调（模拟传输终态事件），并等它们把 rm 发出去。 */
+  /**
+   * 轮询等条件成立（【N14】）。
+   *
+   * 为什么不能用固定 sleep：真机上 rm 是 fire-and-forget 的子进程，
+   * 落到设备上要多久取决于机器负载。固定 1500ms 在本机空闲时够用，
+   * 但复审把「真机用例」与「全量测试」并跑时两边各红一条（负载竞态）。
+   *
+   * 轮询把「等多久」交给事实本身：条件满足立刻返回，最坏等满 timeout。
+   * 断言强度没降（超时仍判失败），只是不再赌固定的那 1.5 秒。
+   */
+  async function waitUntil(
+    check: () => boolean | Promise<boolean>,
+    what: string,
+    timeoutMs = 15_000,
+    intervalMs = 100,
+  ): Promise<void> {
+    const start = Date.now()
+    for (;;) {
+      if (await check()) return
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('等 ' + what + ' 超时（' + timeoutMs + 'ms）')
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+  }
+
+  /**
+   * 执行所有挂起的清理回调（模拟传输终态事件），并等 rm 真正落到设备上。
+   *
+   * 【N14】原来固定等 600ms。rm 是 fire-and-forget 的子进程，600ms 在空闲时够、
+   * 在并发跑测试时不够 —— 复审复现到的假红就是这一类。现在先等挂起的回调放完，
+   * 再由调用方按事实轮询（下面的用例里用 waitUntil 等残留归零）。
+   */
   async function settleAll(): Promise<void> {
     const callbacks = [...pending.values()]
     pending.clear()
     for (const callback of callbacks) callback()
-    await new Promise((resolve) => setTimeout(resolve, 600))
+    // 给已发出的 rm 一个很短的起步窗口（之后由 waitUntil 按事实收敛）
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
   beforeAll(() => {
@@ -196,6 +266,8 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     try { shell('rm -rf -- ' + quote(SHOT_FALLBACK_DIR + '/' + SERIAL)) } catch { /* 忽略 */ }
     transfer.dispose()
     if (root !== '') rmSync(root, { recursive: true, force: true })
+    // 释放设备锁（最后一个动作：确保设备侧清理已经跑完）
+    if (lockRelease !== null) lockRelease()
   }, 120_000)
 
   it('I2：批量截图落到隐藏目录 /sdcard/.adbfm，本地是真 PNG，设备临时文件已删', async () => {
@@ -224,8 +296,10 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
 
     // 终态结算后：设备上的临时文件必须消失（I1/I2：隐藏目录里残留数 = 0）
     await settleAll()
+    await waitUntil(() => leftoverShots(SHOT_TEMP_DIR) === 0, '本机子目录残留归零')
     expect(leftoverShots(SHOT_TEMP_DIR)).toBe(0)
     // 用户可见的下载目录里一个都不许有
+    await waitUntil(() => leftoverShots(SHOT_FALLBACK_DIR) === 0, '回退目录残留归零')
     expect(leftoverShots(SHOT_FALLBACK_DIR)).toBe(0)
   }, 180_000)
 
@@ -248,7 +322,8 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
      * 注意：dispose 里的 rm 是 fire-and-forget，这里等一小会儿让它真的落地。
      */
     service.dispose()
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    // 【N14】按事实轮询：满足即返回，最坏 15s 才判失败（不是赌一个固定秒数）
+    await waitUntil(() => leftoverShots(SHOT_TEMP_DIR) === 0, 'dispose 后设备残留归零')
     expect(leftoverShots(SHOT_TEMP_DIR)).toBe(0)
   }, 180_000)
 

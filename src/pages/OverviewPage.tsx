@@ -12,7 +12,7 @@ import {
 } from '@shared/batch'
 import { deviceLabel, statusDot, DOT_CLASS, DOT_LABEL_KEY } from '@shared/device-view'
 import { errorText, t, tf } from '@shared/i18n'
-import { submitShell } from '@shared/batch-shell'
+import { makeShellSubmitter } from '@shared/batch-shell'
 import { useBatchStore, resultRows } from '@/store/batchStore'
 import type { BatchResultRow } from '@/store/batchStore'
 import { useDeviceStore } from '@/store/deviceStore'
@@ -35,11 +35,43 @@ import { useTransferStore } from '@/store/transferStore'
  * 页面底部有一条说明：电量与存储暂不可用 —— 用户看到「—」时知道这是能力缺失，
  * 而不是设备真的没有电池。
  */
-export function OverviewPage() {
-  const devices = useDeviceStore((state) => state.devices)
+/**
+ * 可选的初始输入。
+ *
+ * 【N9】为什么需要它：渲染期门禁原先只能渲染「什么都没勾」这一种状态，
+ * 于是 buttonStates 恒返回「四个全禁用」，渲染出来的也永远全禁用 ——
+ * 那种形态分辨不出任何接线错误（交叉接线照样绿）。
+ *
+ * 这不是测试后门，而是与 defaultValue 同义的受控初始值：生产代码一个字段都不传，
+ * 行为与之前逐字相同。传了就把界面还原到那个状态（勾了哪些设备、填了什么命令），
+ * 于是「部分可用 / 全可用」这些**非全同**的形态才能在渲染结果里被断言。
+ *
+ * devices / running 单独说明：zustand 的 useSyncExternalStore 在 SSR 下取的是**初始**
+ * 快照（getServerSnapshot），所以 renderToStaticMarkup 里 store.setState 拿不到新值 ——
+ * 设备表恒为空、picked 全被过滤掉、running 恒 false。为了让渲染态可复现，
+ * 这两个 store 值也允许经 initial 传入；生产环境不传，仍然读 store（App.tsx 就是这么用的）。
+ */
+export interface OverviewPageProps {
+  initial?: Partial<{
+    picked: string[]
+    dstDir: string
+    command: string
+    files: string[]
+    devices: DeviceSession[]
+    /** 运行中标志（同上：SSR 下 store 的 getServerSnapshot 取不到，需要可注入）。 */
+    running: boolean
+  }>
+}
+
+export function OverviewPage({ initial }: OverviewPageProps = {}) {
+  const storeDevices = useDeviceStore((state) => state.devices)
+  // 生产不传 initial.devices → 与改前逐字相同（读 store）
+  const devices = initial?.devices ?? storeDevices
   const tasks = useTransferStore((state) => state.snapshot.tasks)
 
-  const running = useBatchStore((state) => state.running)
+  const storeRunning = useBatchStore((state) => state.running)
+  // 生产不传 initial.running → 与改前逐字相同（读 store）
+  const running = initial?.running ?? storeRunning
   const results = useBatchStore((state) => state.results)
   const action = useBatchStore((state) => state.action)
   const error = useBatchStore((state) => state.error)
@@ -48,13 +80,13 @@ export function OverviewPage() {
   const dismiss = useBatchStore((state) => state.dismiss)
 
   /** 勾选的 serial（顺序即用户点击顺序；结果矩阵的顺序由主进程按入参回填）。 */
-  const [picked, setPicked] = useState<string[]>([])
+  const [picked, setPicked] = useState<string[]>(initial?.picked ?? [])
   /** 批量推送的目标目录（设备上的绝对路径）。 */
-  const [dstDir, setDstDir] = useState('/sdcard/Download')
+  const [dstDir, setDstDir] = useState(initial?.dstDir ?? '/sdcard/Download')
   /** 批量执行命令的内容。 */
-  const [command, setCommand] = useState('')
+  const [command, setCommand] = useState(initial?.command ?? '')
   /** 批量推送选中的本地文件（走主进程的文件选择框）。 */
-  const [files, setFiles] = useState<string[]>([])
+  const [files, setFiles] = useState<string[]>(initial?.files ?? [])
 
   const toggle = useCallback((serial: string) => {
     setPicked((current) =>
@@ -155,22 +187,30 @@ export function OverviewPage() {
     const affected = serials
       .map((serial) => devices.find((device) => device.serial === serial))
       .filter((device): device is DeviceSession => device !== undefined)
-    submitShell(
-      {
-        confirm: (plan) =>
-          window.confirm(
-            tf('batch.confirmDangerousBody', {
-              count: plan.count,
-              kind: plan.kind,
-              command: plan.command,
-              devices: plan.devices,
-            }),
-          ),
-        run: (text) => { void run({ action: 'shell', serials, command: text }) },
-      },
+    /*
+     * 【N10】入口是 makeShellSubmitter，不是「组件里自己写一遍确认逻辑」。
+     *
+     * 上一轮这一行是 \`submitShell({...}, command, affected)\` 的内联调用 ——
+     * 复审把整段换成直接 run(...) 之后 tsc 与全量 1128 全绿：没有任何东西
+     * 约束组件必须走这条链路。现在构造与调用分开：
+     *   - 构造（哪些设备、什么命令、confirm/run 是谁）是纯数据，可测；
+     *   - 调用是 () => ShellSubmitOutcome，测试用假后端驱动同一个函数。
+     * tests/batch-shell.test.ts 的「组件级」一组就是按组件真实形状构造的。
+     */
+    makeShellSubmitter({
       command,
-      affected,
-    )
+      devices: affected,
+      confirm: (plan) =>
+        window.confirm(
+          tf('batch.confirmDangerousBody', {
+            count: plan.count,
+            kind: plan.kind,
+            command: plan.command,
+            devices: plan.devices,
+          }),
+        ),
+      run: (text) => { void run({ action: 'shell', serials, command: text }) },
+    })()
   }, [run, serials, command, devices])
 
   const rows = resultRows(results)
@@ -183,6 +223,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={() => { void handleScreenshot() }}
+          data-batch-action="screenshot"
           disabled={buttons.screenshot}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
@@ -192,6 +233,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={() => { void handleInstall() }}
+          data-batch-action="install"
           disabled={buttons.install}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
@@ -201,6 +243,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={handlePush}
+          data-batch-action="push"
           disabled={buttons.push}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
@@ -210,6 +253,7 @@ export function OverviewPage() {
         <button
           type="button"
           onClick={handleShell}
+          data-batch-action="shell"
           disabled={buttons.shell}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >

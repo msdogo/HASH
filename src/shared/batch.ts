@@ -1,3 +1,5 @@
+import { serialTail } from './device-view'
+
 /**
  * 批量操作的共享类型与纯函数（任务 10）。
  *
@@ -254,7 +256,16 @@ export function buttonStates(state: {
  */
 const DANGEROUS_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
   { label: 'kill-server', re: /(^|[^a-z0-9_-])kill-server($|[^a-z0-9_-])/ },
-  { label: 'reboot', re: /(^|[^a-z0-9_-])reboot($|[^a-z0-9_-])/ },
+  /*
+   * reboot 的各种变体（【N13】）。只写 \breboot\b 会漏掉这些：
+   *   - reboot-bootloader / reboot bootloader：进 bootloader，设备会离开正常系统；
+   *   - reboot recovery / reboot edl / reboot sideload：进 recovery / 9008 / 侧载模式，
+   *     用户这时候往往拔线，后续命令全部失败，看起来像应用坏了；
+   *   - fastboot：刷机通道，写错分区直接变砖。
+   * 正则里的 reboot[-a-z]* 覆盖 reboot-bootloader 这类连写形态。
+   */
+  { label: 'reboot', re: /(^|[^a-z0-9_-])reboot(-[a-z]+)*($|[^a-z0-9_-])/ },
+  { label: 'fastboot', re: /(^|[^a-z0-9_-])fastboot($|[^a-z0-9_-])/ },
   { label: 'root', re: /(^|[^a-z0-9_-])(un)?root($|[^a-z0-9_-])/ },
   /*
    * rm -rf / rm -fr / rm -r -f —— 只要同一条命令里同时出现了含 r 与含 f 的选项就算。
@@ -281,11 +292,6 @@ export function isDangerousCommand(command: string): boolean {
   return dangerousCommandKind(command) !== null
 }
 
-/** 设备 serial 尾号（与设备栏的 serialTail 同规则：最多 4 位）。 */
-function serialTailOf(serial: string): string {
-  return serial.length <= 4 ? serial : serial.slice(-4)
-}
-
 /**
  * 确认框里的设备清单文本（【N7】）。
  *
@@ -299,7 +305,7 @@ export function describeDevicesForConfirm(
   return devices
     .map((device) => {
       const model = (device.model ?? '').trim()
-      return model === '' ? device.serial : model + ' (' + serialTailOf(device.serial) + ')'
+      return model === '' ? device.serial : model + ' (' + serialTail(device.serial) + ')'
     })
     .join('、')
 }

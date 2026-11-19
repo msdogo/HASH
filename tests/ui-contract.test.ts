@@ -339,6 +339,34 @@ describe('任务 10：批量操作与总览页契约（静态断言）', () => {
     }
   })
 
+  /**
+   * 【复审 N10】唯一可接受的静态断言。
+   *
+   * 前一轮我删掉的三条假护栏之所以假，是因为它们用「源码里有某个字样」冒充
+   * 「行为正确」—— 注释就能满足它们。这一条不同：它约束的是一个**结构性事实**，
+   * 「危险命令的提交必须经过 makeShellSubmitter 这个唯一入口」，而这个事实
+   * 在渲染期无法观测（onClick 渲染不出来，SSR 拿不到回调）。
+   *
+   * 所以采用两条互补的约束：
+   *   1. 组件必须 import 并以 makeShellSubmitter 作为提交入口（这条，结构）；
+   *   2. makeShellSubmitter 本身的行为由 tests/batch-shell.test.ts 的 6 条驱动（行为）。
+   * 任意一条单独都能被绕过（删调用 / 删确认逻辑），合起来不能：
+   * 删调用 → 这条红；删确认 → batch-shell 那组红。
+   */
+  it('危险命令的提交必须经 makeShellSubmitter（唯一入口，N10）', () => {
+    const page = read('src/pages/OverviewPage.tsx')
+    expect(page).toContain("from '@shared/batch-shell'")
+    expect(page).toContain('makeShellSubmitter(')
+    // 不得绕过它直接提交 shell 动作（这条是上一轮变异 M5 的形态）
+    const directShellRuns = page.split('\n').filter((line) =>
+      line.includes("action: 'shell'") && line.includes('run(') && !line.includes('makeShellSubmitter'),
+    )
+    for (const line of directShellRuns) {
+      // 组件里唯一的 shell 提交点必须写在 makeShellSubmitter 的 run 回调里
+      expect(line.trim(), line).toContain('run:')
+    }
+  })
+
   it('总览页文案全部走 i18n（无硬编码中文）', () => {
     for (const rel of ['src/pages/OverviewPage.tsx', 'src/store/batchStore.ts']) {
       const source = read(rel)

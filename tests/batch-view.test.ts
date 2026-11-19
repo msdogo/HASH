@@ -327,6 +327,24 @@ describe('isDangerousCommand：规格 §9.6 的二次确认判据', () => {
     expect(isDangerousCommand('cat rebootlog.txt')).toBe(false)
     expect(isDangerousCommand('echo ddx')).toBe(false)
     expect(isDangerousCommand('echo adder')).toBe(false)
+    // rebootX（字母紧邻）不是 reboot 变体：变体必须用连字符
+    expect(isDangerousCommand('rebootX')).toBe(false)
+  })
+
+  it('【N13】reboot 的变体都要拦：bootloader / recovery / edl / sideload / fastboot', () => {
+    for (const command of [
+      'reboot-bootloader',
+      'reboot bootloader',
+      'reboot recovery',
+      'reboot edl',
+      'reboot sideload',
+      'adb reboot-bootloader',
+      'reboot fastboot',
+      'fastboot devices',
+      'fastboot flash boot boot.img',
+    ]) {
+      expect(isDangerousCommand(command), command).toBe(true)
+    }
   })
 })
 

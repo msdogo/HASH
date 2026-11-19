@@ -9,6 +9,7 @@ import {
   E_TIMEOUT,
   E_ABORTED,
   E_STDOUT_LIMIT,
+  sliceByCodePoint,
   adbChildCount,
   killAllAdbChildren,
 } from '../electron/adb/client'
@@ -357,4 +358,57 @@ describe('AdbClient', () => {
     await wait(500)
     await expect(pending).rejects.toThrow(E_STDOUT_LIMIT)
   }, 30_000)
+})
+
+/*
+ * ---- 复审 N12：sliceByCodePoint 的三条边界 ----
+ *
+ * 这个函数是 N5 的修法（替代会切出 U+FFFD 的 Buffer.subarray），
+ * 但上一轮**零测试** —— 复审把它改回 Buffer.subarray，client 测试仍 16 passed 全绿。
+ * 它的调用点在 client.ts 的限额分支里，一旦退回去，主进程就可能把半个汉字
+ * 塞进 stdout 局部变量（当前该变量在 abort 路径上被丢弃，所以没泄漏到用户，
+ * 但那是「靠调用方约定」而不是「靠实现正确」）。
+ */
+describe('sliceByCodePoint：按码点截断（N12）', () => {
+  it('切在 ASCII 中间：只保留放得下的字节，无 U+FFFD', () => {
+    expect(sliceByCodePoint('abcdefghij', 4)).toBe('abcd')
+    expect(sliceByCodePoint('abcdefghij', 10)).toBe('abcdefghij')
+    expect(sliceByCodePoint('abcdefghij', 0)).toBe('')
+    expect(sliceByCodePoint('abcdefghij', -3)).toBe('')
+  })
+
+  it('切在汉字中间：预算 2 字节放不下一个 3 字节汉字 → 返回空串（不是 U+FFFD）', () => {
+    // Buffer.from('汉字').subarray(0,2).toString('utf8') === '\uFFFD' —— 这正是要避免的
+    expect(sliceByCodePoint('汉字', 2)).toBe('')
+    expect(sliceByCodePoint('汉字', 5)).toBe('汉')
+    expect(sliceByCodePoint('汉字', 6)).toBe('汉字')
+    for (const budget of [1, 2, 3, 4, 5, 6, 7]) {
+      expect(sliceByCodePoint('汉字', budget)).not.toContain('\uFFFD')
+    }
+  })
+
+  it('切在 emoji（代理对）中间：4 字节字符不被劈开', () => {
+    const emoji = '😀'
+    expect(Buffer.byteLength(emoji, 'utf8')).toBe(4)
+    expect(sliceByCodePoint(emoji, 3)).toBe('')
+    expect(sliceByCodePoint(emoji, 4)).toBe(emoji)
+    // 前面的 ASCII 保得住，emoji 整体丢弃
+    expect(sliceByCodePoint('a' + emoji, 3)).toBe('a')
+    expect(sliceByCodePoint('a' + emoji, 5)).toBe('a' + emoji)
+    // 关键：结果里不能出现孤立代理（那是 '\uFFFD' 的来源）
+    for (const budget of [1, 2, 3, 4, 5]) {
+      const out = sliceByCodePoint('a' + emoji + 'b', budget)
+      expect(out).not.toContain('\uFFFD')
+      expect([...out].some((ch) => (ch.codePointAt(0) ?? 0) > 0xffff)).toBe(budget >= 5)
+    }
+  })
+
+  it('输出字节数永不超过预算，且是原串的真前缀', () => {
+    const text = 'a汉😀b中'
+    for (let budget = 0; budget <= 20; budget += 1) {
+      const out = sliceByCodePoint(text, budget)
+      expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(budget)
+      expect(text.startsWith(out)).toBe(true)
+    }
+  })
 })

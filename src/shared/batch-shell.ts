@@ -88,3 +88,42 @@ export function submitShell(
   deps.run(command)
   return 'submitted'
 }
+
+/**
+ * 一次批量命令提交的完整入参（组件把自己的状态与副作用交给它）。
+ *
+ * 【N10】为什么需要这一层：submitShell 本身有 10 条单测，但「组件必须调它」
+ * 这件事上一轮**零门禁** —— 复审把 OverviewPage 的 handleShell 改成绕过
+ * submitShell、直接 run(...)，tsc 与全量 1128 全绿。这与 N1 的形态一样：
+ * 测的函数和跑的函数可以不是同一个。
+ *
+ * 所以把「组件侧的那一次调用」也做成可注入、可单测的入口：
+ * 组件只负责把（当前命令、勾选的设备、confirm、run）交给它，
+ * 测试则用一个假后端驱动整条链路并断言 confirm 与 run 的调用次数。
+ */
+export interface ShellSubmitterInput {
+  /** 用户输入的命令原文。 */
+  command: string
+  /** 勾选且仍存在的设备（确认框的影响清单就取它）。 */
+  devices: ReadonlyArray<{ serial: string; model?: string }>
+  /** 弹确认框（组件传 window.confirm + i18n 文案；测试传记录器）。 */
+  confirm: (plan: ShellSubmitPlan) => boolean
+  /** 真正发起批量执行（组件传 store 的 run）。 */
+  run: (command: string) => void
+}
+
+/**
+ * 造一个「提交器」：把上面那份入参变成一次调用。
+ *
+ * 组件写成 makeShellSubmitter({...})()，于是「必须经 submitShell」这条
+ * 不再依赖组件里某段可以被删掉的代码 —— 提交器本身就是唯一入口。
+ */
+export function makeShellSubmitter(input: ShellSubmitterInput): () => ShellSubmitOutcome {
+  return () =>
+    submitShell(
+      { confirm: input.confirm, run: input.run },
+      input.command,
+      input.devices,
+    )
+}
+
