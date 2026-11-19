@@ -26,8 +26,17 @@ const EXE_PATH = path.join(DEST, EXE)
 const ZIP_URL = 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip'
 const LOCAL_ZIP = process.env.ADB_PLATFORM_TOOLS_ZIP ?? ''
 
-/** 打印「怎么手动补」的指引；所有失败分支都走这里，保证错误可读。 */
-function fail(reason) {
+/** 失败信号：由 fail() 抛出，让 main 的 finally 有机会清理临时目录。 */
+class BuildFailure extends Error {}
+
+/**
+ * 打印「怎么手动补」的指引。所有失败分支都走这里，保证错误可读。
+ *
+ * 注意这里**不直接 process.exit**（审查 M1）：process.exit 会跳过 main 里的
+ * finally，把临时目录（最坏 13 MB：zip 7.67 MB + 解压产物）永久留在 %TEMP%。
+ * 改成打印后抛 BuildFailure，由 finally 清理，再由最外层 catch 统一 exit 1。
+ */
+function printFailure(reason) {
   console.error('')
   console.error('[错误] ' + reason)
   console.error('')
@@ -37,7 +46,12 @@ function fail(reason) {
   console.error('  2) 手动下载 ' + ZIP_URL + '，解压后同样把 platform-tools/ 内容拷过去')
   console.error('')
   console.error('放好后重新运行：npm run fetch-platform-tools（会校验 adb version 后直接通过）')
-  process.exit(1)
+}
+
+/** 打印指引并抛出失败信号（不在这里 exit，交给 finally 清理后再退出）。 */
+function fail(reason) {
+  printFailure(reason)
+  throw new BuildFailure(reason)
 }
 
 /** 跑 adb version，返回输出；失败返回 null。校验「文件存在」不等于「能跑」。 */
@@ -142,6 +156,12 @@ async function main() {
   }
 }
 
+// 这里是唯一的退出点：main 的 finally 已经把临时目录清干净了，此时才 exit 1。
 main().catch((err) => {
-  fail('未预期的错误：' + (err instanceof Error ? (err.stack ?? err.message) : String(err)))
+  if (err instanceof BuildFailure) {
+    // fail() 已经打印过可读指引，这里只负责给出非零退出码
+    process.exit(1)
+  }
+  printFailure('未预期的错误：' + (err instanceof Error ? (err.stack ?? err.message) : String(err)))
+  process.exit(1)
 })

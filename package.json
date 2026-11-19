@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "fetch-platform-tools": "node scripts/fetch-platform-tools.mjs",
-    "dist": "npm run build && electron-builder"
+    "assert-platform-tools": "node scripts/assert-platform-tools.mjs",
+    "dist": "npm run fetch-platform-tools && npm run assert-platform-tools && npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

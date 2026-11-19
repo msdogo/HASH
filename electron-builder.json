@@ -6,8 +6,7 @@
   },
   "files": [
     "dist/**",
-    "dist-electron/**",
-    "package.json"
+    "dist-electron/**"
   ],
   "extraResources": [
     {
@@ -16,6 +15,7 @@
     }
   ],
   "asar": true,
+  "beforePack": "scripts/before-pack.cjs",
   "win": {
     "target": [
       "nsis",
