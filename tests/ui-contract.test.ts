@@ -339,33 +339,22 @@ describe('任务 10：批量操作与总览页契约（静态断言）', () => {
     }
   })
 
-  /**
-   * 【复审 N10】唯一可接受的静态断言。
+  /*
+   * 【第 4 轮 N10】这里原本有一条「危险命令的提交必须经 makeShellSubmitter」的断言，
+   * 判据是 expect(source).toContain('makeShellSubmitter(')。**已删除。**
    *
-   * 前一轮我删掉的三条假护栏之所以假，是因为它们用「源码里有某个字样」冒充
-   * 「行为正确」—— 注释就能满足它们。这一条不同：它约束的是一个**结构性事实**，
-   * 「危险命令的提交必须经过 makeShellSubmitter 这个唯一入口」，而这个事实
-   * 在渲染期无法观测（onClick 渲染不出来，SSR 拿不到回调）。
+   * 复审实测：把组件里的真调用整段删掉、只留一行
+   *   // 曾经调用 makeShellSubmitter( ，N10 后已改写
+   * —— 断言仍然绿（ui-contract 37 passed、全量 1148 passed、tsc 0）。
+   * 它抓的只是「字符串出现过」，注释即满足；更糟的是连「用变量传参」都抓不住
+   * （void run(shellArgs) 里没有 action: 'shell' 字样，过滤出空集，整段空转）。
    *
-   * 所以采用两条互补的约束：
-   *   1. 组件必须 import 并以 makeShellSubmitter 作为提交入口（这条，结构）；
-   *   2. makeShellSubmitter 本身的行为由 tests/batch-shell.test.ts 的 6 条驱动（行为）。
-   * 任意一条单独都能被绕过（删调用 / 删确认逻辑），合起来不能：
-   * 删调用 → 这条红；删确认 → batch-shell 那组红。
+   * 替代品是 tests/overview-shell.test.ts —— 直接驱动 buildShellSubmitter
+   * 并断言 confirm / run 的调用次数与载荷，不读任何源码文本。
+   *
+   * 组件里 onClick 那一行（把 deps 交给 buildShellSubmitter）**确实没有门禁**，
+   * 且渲染期无法观测。这一层如实记为「靠 code review」——不再编造断言。
    */
-  it('危险命令的提交必须经 makeShellSubmitter（唯一入口，N10）', () => {
-    const page = read('src/pages/OverviewPage.tsx')
-    expect(page).toContain("from '@shared/batch-shell'")
-    expect(page).toContain('makeShellSubmitter(')
-    // 不得绕过它直接提交 shell 动作（这条是上一轮变异 M5 的形态）
-    const directShellRuns = page.split('\n').filter((line) =>
-      line.includes("action: 'shell'") && line.includes('run(') && !line.includes('makeShellSubmitter'),
-    )
-    for (const line of directShellRuns) {
-      // 组件里唯一的 shell 提交点必须写在 makeShellSubmitter 的 run 回调里
-      expect(line.trim(), line).toContain('run:')
-    }
-  })
 
   it('总览页文案全部走 i18n（无硬编码中文）', () => {
     for (const rel of ['src/pages/OverviewPage.tsx', 'src/store/batchStore.ts']) {

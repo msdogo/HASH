@@ -300,6 +300,48 @@ describe('AdbClient', () => {
     expect(result.stdout.length).toBe(100_000)
   }, 30_000)
 
+  /*
+   * 【第 4 轮 N16】sliceByCodePoint 的**调用点**门禁。
+   *
+   * 上一轮补了 sliceByCodePoint 自己的 4 条边界测试，但复审指出：把
+   * client.ts:220 的调用点改回 Buffer.subarray(0, room).toString('utf8')，
+   * 函数级测试仍然全绿 —— 因为没人验证「截断时真的用了它」。
+   *
+   * 这里构造「中文跨上限」的场景，直接从 onStdout 收部分输出，断言里面
+   * **不含 U+FFFD**。这是行为断言：只要调用点退回按字节切，就会切出半个汉字。
+   */
+  it('N16：截断处的部分输出不含 U+FFFD（调用点真的用了 sliceByCodePoint）', async () => {
+    /*
+     * 让假 adb 连续吐 3 字节汉字。上限设成 7 字节：
+     *   7 = 2 个完整汉字（6 字节）+ 1 字节余量
+     * 按字节切会把第 3 个汉字劈开 → 出现 U+FFFD；按码点切只会丢掉它。
+     */
+    const dir = scriptDir()
+    const script = path.join(dir, 'flood-cjk.mjs')
+    writeFileSync(script, [
+      "const chunk = Buffer.from('汉'.repeat(4000), 'utf8')",
+      'for (let i = 0; i < 8; i++) process.stdout.write(chunk)',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+
+    const client = new AdbClient('ABC123')
+    const streamed: string[] = []
+    await expect(
+      client.run(nodeAdbArgs(script), {
+        adbPath: SHELL,
+        maxStdoutBytes: 7,
+        onStdout: (chunk) => { streamed.push(chunk) },
+      }),
+    ).rejects.toThrow(E_STDOUT_LIMIT)
+
+    const partial = streamed.join('')
+    // 关键断言：没有替换字符。按字节切必然产生它。
+    expect(partial).not.toContain('\uFFFD')
+    // 拿到的必须是完整的汉字序列（真前缀），长度不超过预算
+    expect(partial).toBe('汉汉')
+    expect(Buffer.byteLength(partial, 'utf8')).toBeLessThanOrEqual(7)
+  }, 30_000)
+
   it('N2-2：超过 maxStdoutBytes 时 reject E_STDOUT_LIMIT（不是静默成功）', async () => {
     const script = floodScript('flood-cap.mjs', 100_000)
     const client = new AdbClient('ABC123')

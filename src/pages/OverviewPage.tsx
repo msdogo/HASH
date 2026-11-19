@@ -12,7 +12,7 @@ import {
 } from '@shared/batch'
 import { deviceLabel, statusDot, DOT_CLASS, DOT_LABEL_KEY } from '@shared/device-view'
 import { errorText, t, tf } from '@shared/i18n'
-import { makeShellSubmitter } from '@shared/batch-shell'
+import { buildShellSubmitter } from '@shared/batch-shell'
 import { useBatchStore, resultRows } from '@/store/batchStore'
 import type { BatchResultRow } from '@/store/batchStore'
 import { useDeviceStore } from '@/store/deviceStore'
@@ -188,18 +188,18 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
       .map((serial) => devices.find((device) => device.serial === serial))
       .filter((device): device is DeviceSession => device !== undefined)
     /*
-     * 【N10】入口是 makeShellSubmitter，不是「组件里自己写一遍确认逻辑」。
+     * 【N10 第 4 轮】入口是 buildShellSubmitter。
      *
-     * 上一轮这一行是 \`submitShell({...}, command, affected)\` 的内联调用 ——
-     * 复审把整段换成直接 run(...) 之后 tsc 与全量 1128 全绿：没有任何东西
-     * 约束组件必须走这条链路。现在构造与调用分开：
-     *   - 构造（哪些设备、什么命令、confirm/run 是谁）是纯数据，可测；
-     *   - 调用是 () => ShellSubmitOutcome，测试用假后端驱动同一个函数。
-     * tests/batch-shell.test.ts 的「组件级」一组就是按组件真实形状构造的。
+     * 第 3 轮我在 ui-contract 里加了一条 toContain('makeShellSubmitter(') 当门禁，
+     * 复审把真调用删掉只留一行写着这串字符的注释 —— 断言照样绿。那是本项目第 8 次
+     * 假护栏，而且是我自己声称「唯一可接受的静态断言」的那一条。
+     *
+     * 现在决策与载荷拼装都在 buildShellSubmitter 里（行为测试见
+     * tests/overview-shell.test.ts）。**组件里这一行仍然没有门禁** ——
+     * onClick 渲染不出来，SSR 也拿不到回调，我不再为它编造断言，如实记为
+     * 「靠 code review」。宁可写清缺口，也不留一条能骗过自己的断言。
      */
-    makeShellSubmitter({
-      command,
-      devices: affected,
+    buildShellSubmitter({
       confirm: (plan) =>
         window.confirm(
           tf('batch.confirmDangerousBody', {
@@ -209,8 +209,8 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
             devices: plan.devices,
           }),
         ),
-      run: (text) => { void run({ action: 'shell', serials, command: text }) },
-    })()
+      run: (payload) => { void run(payload) },
+    })({ serials, command, devices: affected })
   }, [run, serials, command, devices])
 
   const rows = resultRows(results)

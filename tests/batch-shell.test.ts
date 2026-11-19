@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { makeShellSubmitter, planShellSubmit, submitShell } from '../src/shared/batch-shell'
+import { planShellSubmit, submitShell } from '../src/shared/batch-shell'
 
 /*
  * 规格 §9.6 二次确认的行为测试。
@@ -124,106 +124,16 @@ describe('planShellSubmit：提交计划（渲染与弹窗同源）', () => {
   })
 })
 
+
 /*
- * ===== 组件级：makeShellSubmitter（复审 N10）=====
+ * ===== 组件级入口的测试搬走了（第 4 轮 N10）=====
  *
- * 复审把 OverviewPage 的 handleShell 改成绕过 submitShell、直接 run(...)，
- * tsc 与全量 1128 全绿 —— 纯函数的 10 条单测拦不住「组件不调它」。
+ * 这里原本有一组 describe('makeShellSubmitter：组件真正用的那个入口（N10）')。
+ * 第 4 轮把 makeShellSubmitter 换成了 buildShellSubmitter（载荷拼装也进函数），
+ * 相应行为测试整体搬到 tests/overview-shell.test.ts —— 那里是**新函数**的门禁，
+ * 保留旧函数名的用例只会变成两份互相漂移的实现。
  *
- * 下面这一组按组件**真实的构造形状**驱动 makeShellSubmitter：
- * 组件把 (command, devices, confirm, run) 交给它，这里给同样的四样东西，
- * 只是 confirm / run 换成记录器。于是「入口必须经过 makeShellSubmitter→submitShell」
- * 这件事有了行为门禁：绕过 submitShell 就没有这一步确认。
+ * 本文件继续只负责决策层：submitShell（要不要确认、取消后跑不跑）与
+ * planShellSubmit（确认框文案从哪来）。
  */
 
-describe('makeShellSubmitter：组件真正用的那个入口（N10）', () => {
-  it('危险命令：confirm 被调用一次，用户取消时 run 零调用', () => {
-    const sees: string[] = []
-    let confirmCalls = 0
-    const submit = makeShellSubmitter({
-      command: 'reboot',
-      devices: DEVICES,
-      confirm: () => { confirmCalls += 1; return false },
-      run: (text) => { sees.push(text) },
-    })
-    expect(submit()).toBe('cancelled')
-    expect(confirmCalls).toBe(1)
-    expect(sees).toEqual([])
-  })
-
-  it('危险命令：用户确认后 run 被调用一次，命令原文逐字节传下去', () => {
-    const sees: string[] = []
-    let confirmCalls = 0
-    const command = 'su -c "reboot -p"'
-    const submit = makeShellSubmitter({
-      command,
-      devices: DEVICES,
-      confirm: () => { confirmCalls += 1; return true },
-      run: (text) => { sees.push(text) },
-    })
-    expect(submit()).toBe('submitted')
-    expect(confirmCalls).toBe(1)
-    expect(sees).toEqual([command])
-  })
-
-  it('安全命令：confirm 零调用，run 一次', () => {
-    let confirmCalls = 0
-    const sees: string[] = []
-    const submit = makeShellSubmitter({
-      command: 'echo ok',
-      devices: DEVICES,
-      confirm: () => { confirmCalls += 1; return true },
-      run: (text) => { sees.push(text) },
-    })
-    expect(submit()).toBe('submitted')
-    expect(confirmCalls).toBe(0)
-    expect(sees).toEqual(['echo ok'])
-  })
-
-  it('空命令：confirm 与 run 都零调用', () => {
-    let confirmCalls = 0
-    const sees: string[] = []
-    const submit = makeShellSubmitter({
-      command: '   ',
-      devices: DEVICES,
-      confirm: () => { confirmCalls += 1; return true },
-      run: (text) => { sees.push(text) },
-    })
-    expect(submit()).toBe('empty')
-    expect(confirmCalls).toBe(0)
-    expect(sees).toEqual([])
-  })
-
-  it('确认框拿到的是本台清单（尾号）与台数 —— 与组件传参同源', () => {
-    const plans: Array<{ count: string; devices: string; kind: string }> = []
-    const submit = makeShellSubmitter({
-      command: 'reboot',
-      devices: DEVICES,
-      confirm: (plan) => { plans.push(plan); return false },
-      run: () => { /* 不该被调用 */ },
-    })
-    submit()
-    expect(plans).toEqual([{
-      needsConfirm: true,
-      kind: 'reboot',
-      count: '2',
-      command: 'reboot',
-      devices: 'SM S9360 (73DA)、SM S9360 (2A3P)',
-    }])
-  })
-
-  it('提交器可重复调用（组件每次点击都新建一个，不会共享状态）', () => {
-    let confirmCalls = 0
-    const sees: string[] = []
-    const make = (answer: boolean) => makeShellSubmitter({
-      command: 'reboot',
-      devices: DEVICES,
-      confirm: () => { confirmCalls += 1; return answer },
-      run: (text) => { sees.push(text) },
-    })
-    expect(make(false)()).toBe('cancelled')
-    expect(make(true)()).toBe('submitted')
-    expect(confirmCalls).toBe(2)
-    expect(sees).toEqual(['reboot'])
-  })
-})

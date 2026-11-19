@@ -90,40 +90,65 @@ export function submitShell(
 }
 
 /**
- * 一次批量命令提交的完整入参（组件把自己的状态与副作用交给它）。
+ * 提交依赖：确认框 + 真正执行。
  *
- * 【N10】为什么需要这一层：submitShell 本身有 10 条单测，但「组件必须调它」
- * 这件事上一轮**零门禁** —— 复审把 OverviewPage 的 handleShell 改成绕过
- * submitShell、直接 run(...)，tsc 与全量 1128 全绿。这与 N1 的形态一样：
- * 测的函数和跑的函数可以不是同一个。
- *
- * 所以把「组件侧的那一次调用」也做成可注入、可单测的入口：
- * 组件只负责把（当前命令、勾选的设备、confirm、run）交给它，
- * 测试则用一个假后端驱动整条链路并断言 confirm 与 run 的调用次数。
+ * 【第 4 轮 N10】run 的入参是**完整载荷**（action + serials + command），
+ * 而不是一个命令字符串 —— 这样「batch:shell 请求长什么样」这件事也落在
+ * 可测函数里，组件不再自己拼 BatchRequest。
  */
-export interface ShellSubmitterInput {
-  /** 用户输入的命令原文。 */
-  command: string
-  /** 勾选且仍存在的设备（确认框的影响清单就取它）。 */
-  devices: ReadonlyArray<{ serial: string; model?: string }>
-  /** 弹确认框（组件传 window.confirm + i18n 文案；测试传记录器）。 */
+export interface ShellSubmitterDeps {
+  /** 弹确认框；返回 true 表示用户点了「执行」。 */
   confirm: (plan: ShellSubmitPlan) => boolean
-  /** 真正发起批量执行（组件传 store 的 run）。 */
-  run: (command: string) => void
+  /** 真正发起批量执行（载荷就是 BatchRequest 的 shell 分支）。 */
+  run: (payload: ShellSubmitPayload) => void
 }
 
 /**
- * 造一个「提交器」：把上面那份入参变成一次调用。
+ * batch:shell 的完整载荷 —— 与 src/shared/batch.ts 的 BatchRequest 'shell' 分支同形。
  *
- * 组件写成 makeShellSubmitter({...})()，于是「必须经 submitShell」这条
- * 不再依赖组件里某段可以被删掉的代码 —— 提交器本身就是唯一入口。
+ * 它由 buildShellSubmitter 拼出来，组件不再自己拼：这样「传给主进程的请求长什么样」
+ * 也落在可测函数里（测试断言 action === 'shell'、serials 逐项相同）。
  */
-export function makeShellSubmitter(input: ShellSubmitterInput): () => ShellSubmitOutcome {
-  return () =>
+export interface ShellSubmitPayload {
+  action: 'shell'
+  serials: string[]
+  command: string
+}
+
+/** 一次批量命令提交要用的全部状态（组件从自己的 state 里取）。 */
+export interface ShellSubmitRequest {
+  /** 勾选的 serial（顺序原样传给主进程，结果矩阵按下标回填）。 */
+  serials: string[]
+  /** 用户输入的命令原文。 */
+  command: string
+  /** 勾选且仍存在的设备（确认框的影响清单取它）。 */
+  devices: ReadonlyArray<{ serial: string; model?: string }>
+}
+
+/**
+ * 造一个「提交器」：把组件侧那一次调用做成可注入、可行为测试的函数。
+ *
+ * 【N10 第 3 轮与第 4 轮的区别 —— 这一条必须写清楚】
+ * 第 3 轮我把这段做成 makeShellSubmitter(input)，然后在 ui-contract 里加了一句
+ * expect(source).toContain('makeShellSubmitter(') 当门禁。复审证明那句话是**假护栏**：
+ * 把真调用删掉、只留一行写着这串字符的注释，断言照样绿（37 passed）。
+ *
+ * 教训：**任何以「源码里出现过某串字符」为判据的断言都不是门禁**，注释即可满足。
+ * 所以第 4 轮删掉那条断言，改为让这个函数自己就是被测试的对象 ——
+ * tests/overview-shell.test.ts 直接调用它并断言 confirm / run 的调用次数与载荷。
+ *
+ * 剩下的、确实测不到的一环（组件里 onClick 那一行把 deps 交给它）如实记录为
+ * 「靠 code review」：SSR 渲染不出回调，我也不再为它编造断言。
+ */
+export function buildShellSubmitter(deps: ShellSubmitterDeps): (request: ShellSubmitRequest) => ShellSubmitOutcome {
+  return (request) =>
     submitShell(
-      { confirm: input.confirm, run: input.run },
-      input.command,
-      input.devices,
+      {
+        confirm: deps.confirm,
+        run: (command) => { deps.run({ action: 'shell', serials: request.serials, command }) },
+      },
+      request.command,
+      request.devices,
     )
 }
 

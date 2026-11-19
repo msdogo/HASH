@@ -53,13 +53,84 @@ const ADB = process.env.ADB_PATH ?? 'adb'
  * 所以真机用例在**模块顶层**抢一个文件锁（设备级），抢不到就整组跳过并打印原因 ——
  * 与「没有设备」同一语义：不是失败，是资源不可用。并行跑全部用例仍然绿。
  */
-function acquireDeviceLock(serial: string): (() => void) | null {
+const LOCK_STALE_MS = 15 * 60_000
+
+/** 锁文件内容：谁持着它、从什么时候开始。 */
+interface LockRecord {
+  pid: number
+  startedAt: number
+}
+
+function lockPathOf(serial: string): string {
   const safe = serial.replace(/[^A-Za-z0-9._-]/g, '_')
-  const lockPath = path.join(tmpdir(), 'adbfm-batch-real-' + safe + '.lock')
+  return path.join(tmpdir(), 'adbfm-batch-real-' + safe + '.lock')
+}
+
+/** 读锁内容；读不懂（旧格式 / 空文件 / 半个 JSON）一律视为陈旧。 */
+function readLockRecord(lockPath: string): LockRecord | null {
   try {
-    // wx：文件已存在即失败 —— 跨进程互斥
+    const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { pid, startedAt } = parsed as Partial<LockRecord>
+    if (typeof pid !== 'number' || typeof startedAt !== 'number') return null
+    return { pid, startedAt }
+  } catch {
+    return null
+  }
+}
+
+/** 持锁进程还活着吗（signal 0 只探测，不发送）。 */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 抢设备锁；抢不到时**判断持有者是否已死**，死了就接管。
+ *
+ * 【N15】上一版只写 wx、只在 afterAll unlink —— 进程崩溃或 Ctrl-C 后锁永久留下，
+ * 之后每次跑都整组静默 skip，而套件仍然是绿的（复审实测：造一个陈旧锁 →
+ * 5 skipped、全量 1143 passed | 6 skipped、EXIT=0）。
+ * **静默通过比失败更危险**：失败有人看，静默跳过没人看。
+ *
+ * 现在的判据（任一成立即接管，并打印 warning）：
+ *   1. 锁里的 pid 不存活（process.kill(pid, 0) 抛错）—— 崩溃/Ctrl-C 的典型形态；
+ *   2. 锁文件 mtime 超过 15 分钟 —— pid 被别的进程复用的兜底。
+ */
+function acquireDeviceLock(serial: string): (() => void) | null {
+  const lockPath = lockPathOf(serial)
+  const release = (): void => { try { unlinkSync(lockPath) } catch { /* 已被清掉 */ } }
+  const claim = (): (() => void) => {
+    // wx：文件已存在即失败 —— 跨进程互斥。建文件与写内容不能合并成一个原子操作，
+    // 所以「先 wx 占位、再写 {pid, startedAt}」；读到空内容时 readLockRecord 返回 null，
+    // 会被当成陈旧锁（写入方要么正在写、要么已崩溃，两者都不该长期阻塞后来者）。
     closeSync(openSync(lockPath, 'wx'))
-    return () => { try { unlinkSync(lockPath) } catch { /* 已被清掉 */ } }
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), 'utf8')
+    return release
+  }
+
+  try {
+    return claim()
+  } catch {
+    // 抢不到：下面判断持有者是否还活着
+  }
+
+  const record = readLockRecord(lockPath)
+  const age = Date.now() - (record?.startedAt ?? 0)
+  const stale = record === null || !pidAlive(record.pid) || age > LOCK_STALE_MS
+  if (!stale) return null
+
+  console.warn(
+    '[batch-real] 接管陈旧设备锁：' + lockPath
+      + '（' + (record === null ? '内容不可解析' : 'pid=' + record.pid + ' 已不存活或超时') + '）',
+  )
+  try {
+    rmSync(lockPath, { force: true })
+    return claim()
   } catch {
     return null
   }

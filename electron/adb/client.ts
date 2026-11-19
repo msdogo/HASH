@@ -201,7 +201,6 @@ export class AdbClient {
       child.stdout?.on('data', (text: string) => {
         // 已经废止（settled）之后到达的 chunk 一律丢弃：否则内存又会随输出涨回去
         if (settled) return
-        opts.onStdout?.(text)
         const limit = opts.maxStdoutBytes
         /*
          * 有上限时：先把本 chunk 截到剩余预算内再累积，然后**立即**中止。
@@ -211,17 +210,35 @@ export class AdbClient {
          * 不会把这次中止误判成正常结束（那正是取消路径踩过的坑）。
          */
         if (limit === undefined) {
+          opts.onStdout?.(text)
           stdout += text
           return
         }
         const size = Buffer.byteLength(text, 'utf8')
         const room = limit - stdoutBytes
         if (size > room) {
-          if (room > 0) stdout += sliceByCodePoint(text, room)
+          /*
+           * 【第 4 轮 N16】超限时交给调用方的必须是**截断后**的那一段，不是原 chunk。
+           *
+           * 修前这里先 opts.onStdout?.(text) 再截断，于是：
+           *   - 调用方（batch/service 的 budget）收到的是完整 chunk，比预算多；
+           *   - sliceByCodePoint 的结果只进了局部 stdout，而这条路径随后 reject，
+           *     Error 里只有错误码 —— 那个值**根本没人读**，等于死代码。
+           * 复审因此指出：把调用点改回 Buffer.subarray 全套仍绿（调用点无门禁）。
+           *
+           * 现在把「按码点切好的余量」真正交付出去，调用点的正确性就有了
+           * 行为门禁（tests/client.test.ts 的 N16：中文跨界时不能出现 U+FFFD）。
+           */
+          const kept = room > 0 ? sliceByCodePoint(text, room) : ''
+          if (kept !== '') {
+            stdout += kept
+            opts.onStdout?.(kept)
+          }
           stdoutBytes = limit
           abortOrTimeout(E_STDOUT_LIMIT)
           return
         }
+        opts.onStdout?.(text)
         stdoutBytes += size
         stdout += text
       })
