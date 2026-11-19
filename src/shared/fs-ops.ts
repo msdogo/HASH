@@ -20,6 +20,15 @@ export interface OpItemResult {
   ok: boolean
   /** 失败错误码；ok 时不出现。 */
   code?: string
+  /**
+   * 【审查 I5】部分完成的计数（只在 code === E_OP_PARTIAL 时出现）。
+   *
+   * 「递归删除中途失败」与「什么都没删掉」用同一个错误码是说不清的：
+   * 前者必须告诉用户「已经删掉 N 项」，否则他会以为重试是安全的；
+   * 后者可以放心重试。这两个数字就是把它们分开的唯一依据。
+   */
+  removed?: number
+  remaining?: number
 }
 
 /** 批量结果的汇总（界面显示「N 成功 / M 失败」+ 失败项可展开）。 */

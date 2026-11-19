@@ -47,6 +47,11 @@ describe('共享错误码', () => {
       'E_READ_ONLY',
       'E_NO_SPACE',
       'E_OUTSIDE_ROOT',
+      // 审查轮 1（任务 9）：三条复审 Critical/Important 各自的专属错误码。
+      // 每一条都对应一种「无法用既有码说清」的语义，所以必须分开：
+      'E_INTO_SELF',    // C3：复制/移动到自己里面（否则用户看到的是笼统失败）
+      'E_CROSS_DEVICE', // I4：跨文件系统移动不可回滚（必须让用户改走两步）
+      'E_OP_PARTIAL',   // I5：部分完成（不能说「文件保持原样」）
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

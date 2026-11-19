@@ -260,8 +260,17 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(ops).toMatch(/rm -rf -- |'rm -rf -- '/)
     // 移动必须带 -n（不覆盖）
     expect(ops).toContain('mv -n -- ')
-    // 不允许出现非 shellQuote 转义的命令拼接旁路
-    expect(ops).not.toMatch(/\['\s*\+\s*path\b/)
+    /*
+     * 【审查 I2】这里原来是一条正则：expect(ops).not.toMatch(/\['\s*\+\s*path\b/)。
+     * 它匹配的是「数组字面量后紧跟 + path」，而真实的旁路形态是字符串字面量
+     * 'raw ' + path（前面是引号不是 [）。复审把 opPath 返回值改成 'raw ' + path
+     * （完全绕过 shellQuote）后，本文件仍是 34 passed —— 这条断言从来没生效过。
+     *
+     * 现在改为**行为断言**，放在 tests/operations.test.ts 的
+     * describe('审查 I1/I2：闸门行为') 里：直接比较命令构造函数的输出
+     * 与 shellQuote 的产物，并验证含 .. 的输入真的会抛 E_PATH_UNSAFE。
+     * 那种断言无法被「换个写法绕过正则」骗过去。
+     */
   })
 
   it('裁决 2：所有远程写路径都来自 shared/path-guard 的单一闸门', () => {
@@ -269,10 +278,17 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(guard).toContain('export function checkRemotePath')
     expect(guard).toContain('export function assertSafeRemotePath')
     expect(guard).toContain('export function checkName')
-    // 其它文件不得自己再写一份「含 .. 就拒」的规则（那正是本任务要收敛的分叉）
-    for (const rel of ['electron/fs/operations.ts', 'electron/fs/op-service.ts']) {
-      expect(read(rel), rel).not.toMatch(/split\('\/'\).*=== '\\.\\.'/)
-    }
+    /*
+     * 【审查 I1】这里原来是一条正则：not.toMatch(/split(...).*=== '..'/)
+     * —— 源码里从来没有这种形态（真实写法是 .some((seg) => seg === '..')），
+     * 所以它在任何情况下都通过。复审往 gate() 里塞了一份重复的 '..' 规则后，
+     * 本文件仍是 34 passed（全绿），一条断言都没变红。
+     *
+     * 改成**行为断言**（见 tests/operations.test.ts 的「审查 I1/I2：闸门行为」块）：
+     * 对含 '..' 的输入，命令构造函数必须一律抛 E_PATH_UNSAFE；
+     * 合法输入的命令输出必须逐字节等于 shellQuote 的产物。
+     * 判据从「源码长什么样」变成「行为是什么」—— 换个写法骗不过去。
+     */
   })
 
   it('裁决 5：本地访问必须在主进程做 realpath 判定（词法检查防不住符号链接）', () => {

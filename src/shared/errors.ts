@@ -83,6 +83,29 @@ export const E_NO_SPACE = 'E_NO_SPACE'
  * 而 E_PATH_UNSAFE 是设备侧的目录穿越，两者该做的事不一样。
  */
 export const E_OUTSIDE_ROOT = 'E_OUTSIDE_ROOT'
+/**
+ * 目标落在源自身之内（复制/移动目录到它自己的子目录）。
+ *
+ * 这是唯一能**一条操作就把设备写满**的输入：`cp -a A A/inner` 会无界递归
+ * （真机实测一分钟 122MB、深度 16385 层才因 Too many open files 停下，
+ * 且产物层数太深，连删除本身都会失败）。必须在校验阶段直接拒。
+ */
+export const E_INTO_SELF = 'E_INTO_SELF'
+/**
+ * 源与目标不在同一个文件系统上，移动无法保证原子性。
+ *
+ * toybox 跨 FS 的 mv 会退化成「逐文件复制+删除」，中途失败 = 一半已搬走、
+ * 源被部分删除 —— 这是唯一无法回滚的移动形态，因此**显式拒绝**，
+ * 让用户改走「复制到目标 + 确认后删除源」两步（那是可回滚的）。
+ */
+export const E_CROSS_DEVICE = 'E_CROSS_DEVICE'
+/**
+ * 操作只完成了一部分（多文件移动/递归删除中途失败）。
+ *
+ * 与 E_OP_FAILED 分开：后者承诺「什么都没发生」，而部分完成时那句承诺是假话。
+ * 用户据此会认为重试是安全的，但重试可能以「目标已存在」大面积失败。
+ */
+export const E_OP_PARTIAL = 'E_OP_PARTIAL'
 
 /**
  * 全部错误码，顺序即「匹配优先级」的参考顺序。
@@ -118,6 +141,9 @@ export const ERROR_CODES = [
   E_READ_ONLY,
   E_NO_SPACE,
   E_OUTSIDE_ROOT,
+  E_INTO_SELF,
+  E_CROSS_DEVICE,
+  E_OP_PARTIAL,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

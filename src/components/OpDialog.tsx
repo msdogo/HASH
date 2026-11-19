@@ -226,6 +226,16 @@ function OpResultNotice(props: { summary: OpSummary; onDismiss: () => void }) {
           {summary.failures.map((item, index) => (
             <li key={item.name + '-' + index} className="truncate" title={errorText(item.code ?? 'E_UNKNOWN')}>
               {item.name === '' ? errorText(item.code ?? 'E_UNKNOWN') : item.name + ' · ' + errorText(item.code ?? 'E_UNKNOWN')}
+              {/*
+                【审查 I5】部分完成时把「已删 N / 剩余 M」显示出来。
+                只说「操作只完成了一部分」等于没说 —— 用户既不知道现场长什么样，
+                也不知道重试会撞上什么。这两个数字是唯一能让他做决定的依据。
+              */}
+              {item.removed !== undefined && item.remaining !== undefined && (
+                <span className="ml-1 text-amber-300">
+                  （{tf('op.result.partial', { removed: item.removed, remaining: item.remaining })}）
+                </span>
+              )}
             </li>
           ))}
         </ul>

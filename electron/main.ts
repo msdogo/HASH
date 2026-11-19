@@ -69,9 +69,32 @@ const onlineTracker = new TransferOnlineTracker()
  * 此时 adbPath 可能还是空串 —— 服务内部每次用一个 getter 取当前值，
  * 不会把「还没定位到 adb」这个瞬时状态固化成空路径。
  */
+/**
+ * 本地根目录（裁决 5）。
+ *
+ * 缺省是用户主目录 —— 比「用户自己挑一个」更可用（大多数下载/上传都发生在主目录下），
+ * 又比「整台机器」安全得多。用户可以通过本地栏的「选择目录」改成别处，
+ * 一旦改了，所有本地访问（读与写）都被限制在新根内。
+ *
+ * root 是变量而不是常量：选择框改它之后，下一次访问立刻生效，不需要重启。
+ *
+ * 注意它必须在 TransferService / LocalFs 之前声明：两个服务都通过 getter 读它，
+ * 声明放在后面虽然运行时没问题（getter 是延迟求值），但读代码的人会以为
+ * 「构造时 localRoot 还是 undefined」—— 声明顺序即事实顺序。
+ */
+let localRoot = homedir()
+
 const transfer = new TransferService({
   adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
   clientFor: (serial) => createClient(serial),
+  /*
+   * 【审查 C1】本地根目录必须注入传输服务。
+   *
+   * 修前 TransferService 根本没有这个依赖，于是传输成了唯一不过根目录闸门的
+   * 本地写入口：pull 可以落到用户选定的根之外，且默认覆盖 —— 被注入的 dstDir
+   * 能让 pull 静默覆盖任意位置的既有文件。getter 形式是为了跟随本地栏的「更换目录」。
+   */
+  localRoot: () => localRoot,
   // emit 里的 broadcast 是函数声明（会提升），窗口还没建好时它自然只会遍历到空窗口列表。
   emit: () => { broadcastTransfer() },
 })
@@ -85,16 +108,6 @@ const fsOps = new FsOpsService({
   adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
 })
 
-/**
- * 本地根目录（裁决 5）。
- *
- * 缺省是用户主目录 —— 比「用户自己挑一个」更可用（大多数下载/上传都发生在主目录下），
- * 又比「整台机器」安全得多。用户可以通过本地栏的「选择目录」改成别处，
- * 一旦改了，所有本地访问（读与写）都被限制在新根内。
- *
- * root 是变量而不是常量：选择框改它之后，下一次访问立刻生效，不需要重启。
- */
-let localRoot = homedir()
 const localFs = new LocalFs({ root: () => localRoot })
 
 /** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */

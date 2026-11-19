@@ -68,7 +68,7 @@ function harness(over: Partial<HandlerDeps> = {}, hasDevice = true): Harness {
     local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
     pickRoot: async () => '',
     transfer: {
-      enqueue: (input) => {
+      enqueue: async (input) => {
         enqueued.push(input)
         const created = task({ direction: input.direction, src: input.src })
         tasks.set(created.id, created)

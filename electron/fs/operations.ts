@@ -4,14 +4,19 @@ import {
   assertSafeRemotePath,
   checkName,
   isProtectedRemotePath,
+  isRemoteInside,
   remoteParent,
 } from '../../src/shared/path-guard'
+import { isErrorCode } from '../../src/shared/errors'
 import {
   E_ALREADY_EXISTS,
+  E_CROSS_DEVICE,
+  E_INTO_SELF,
   E_NO_PERMISSION,
   E_NO_SPACE,
   E_NOT_FOUND,
   E_OP_FAILED,
+  E_OP_PARTIAL,
   E_PROTECTED_PATH,
   E_READ_ONLY,
 } from '../../src/shared/errors'
@@ -23,9 +28,12 @@ import { E_PATH_UNSAFE } from '../../src/shared/path-guard'
  */
 export {
   E_ALREADY_EXISTS,
+  E_CROSS_DEVICE,
+  E_INTO_SELF,
   E_NO_SPACE,
   E_NOT_FOUND,
   E_OP_FAILED,
+  E_OP_PARTIAL,
   E_PROTECTED_PATH,
   E_PATH_UNSAFE,
   E_READ_ONLY,
@@ -42,7 +50,12 @@ export {
  * 2. **删除是唯一不可逆操作**（裁决 1）。因此删除前一定先 stat：
  *    - 不存在就报 E_NOT_FOUND，而不是让 rm 静默成功（用户会以为删掉了）；
  *    - 是符号链接就只删链接本身（rm 默认不跟随操作数链接，这一点用 rm -f 显式钉住，
- *      而不是依赖「rm 的默认行为」这个隐含假设）；
+ *      而不是依赖「rm 的默认行为」这个隐含假设）。
+ *      **准确边界（复审 I7）**：这条只保证「被删的操作数自身是链接」时不递归展开。
+ *      如果路径**中间**有一段是链接（/data/link/sub，link -> real）而 sub 是真实目录，
+ *      rm -rf 会穿过链接把 real/sub 的内容删掉 —— 这是内核的解引用语义，
+ *      本模块**没有**拦截（拦截需要对每个祖先段 realpath 比对，代价较高）。
+ *      不要把「操作数是链接」这个特例当成「符号链接一律安全」的普遍结论；
  *    - 受保护的根路径（/sdcard、/storage/emulated/0 …）直接 E_PROTECTED_PATH，
  *      连 stat 都不发。
  *
@@ -63,8 +76,16 @@ export {
 /** 设备上一个路径的存在性/类型。 */
 export type RemoteKind = 'file' | 'dir' | 'link'
 
-/** 操作结果（与 shared/fs-ops 的 OpItemResult 同构，只是不带 name）。 */
-export type OpResult = { ok: true } | { ok: false; code: string }
+/**
+ * 操作结果（与 shared/fs-ops 的 OpItemResult 同构，只是不带 name）。
+ *
+ * removed / remaining 只由**部分完成**的失败携带（审查 I5）：递归删除中途失败时，
+ * 「失败」不等于「什么都没发生」，界面必须能说出「已删 N 项、还剩 M 项」，
+ * 否则用户会以为重试是安全的。
+ */
+export type OpResult =
+  | { ok: true }
+  | { ok: false; code: string; removed?: number; remaining?: number }
 
 /**
  * 操作所依赖的最小客户端契约（AdbClient 满足它；测试可注入假 fs）。
@@ -182,6 +203,27 @@ export class RemoteOps {
     }
   }
 
+  /**
+   * 设备号（st_dev）—— 用于判断源与目标是否在同一文件系统（审查 I4）。
+   *
+   * 探测失败返回 undefined：**取不到不等于跨 FS**，把探测失败当成拒绝会让正常
+   * 移动在网络抖动时莫名失败；而「取得到且不同」是明确证据，必须拒。
+   */
+  async statDevice(path: string): Promise<number | undefined> {
+    let operand: string
+    try {
+      operand = shellQuote(assertSafeRemotePath(path))
+    } catch {
+      return undefined
+    }
+    const result = await this.shell('stat -c %d -- ' + operand)
+    if (result.code !== 0) return undefined
+    const text = result.stdout.replace(/[\r\n]+/g, '').trim()
+    if (!/^\d+$/.test(text)) return undefined
+    const value = Number(text)
+    return Number.isSafeInteger(value) ? value : undefined
+  }
+
   /** 探测路径类型；不存在返回 undefined。 */
   async statKind(path: string): Promise<RemoteKind | undefined> {
     const result = await this.shell(opsIfExistsCommand(path))
@@ -209,6 +251,26 @@ export class RemoteOps {
     const result = await this.shell('LC_ALL=C ls -1A -- ' + shellQuote(operand))
     if (result.code !== 0) return true
     return result.stdout.replace(/[\r\n]+/g, '') !== ''
+  }
+
+  /**
+   * 目录的**浅层**条目数（删除失败时算「已删 / 剩余」，审查 I5）。
+   *
+   * 只数一层：深递归的清单本身在大目录上可能要几秒，而我们只需要一个
+   * 「有没有删掉东西」的可解释数字。取不到时返回 undefined（调用方沿用普通错误码）。
+   */
+  async entryCount(dir: string): Promise<number | undefined> {
+    let operand: string
+    try {
+      const safe = assertSafeRemotePath(dir)
+      operand = safe === '/' ? '/' : safe + '/'
+    } catch {
+      return undefined
+    }
+    const result = await this.shell('LC_ALL=C ls -1A -- ' + shellQuote(operand))
+    if (result.code !== 0) return undefined
+    const text = result.stdout.replace(/[\r\n]+/g, '\n').trim()
+    return text === '' ? 0 : text.split('\n').length
   }
 
   /** 新建目录（不递归建父级：父目录必须已存在，错误更明确）。 */
@@ -277,9 +339,41 @@ export class RemoteOps {
       return { ok: false, code: errorCodeOf(err) }
     }
 
+    /*
+     * 【C3】目标是源自身的子目录 → 拒绝，连 stat 都不发。
+     *
+     * mv 到自己的子目录在 toybox 上会先 mkdir 目标再把内容搬进去，
+     * 而目标恰好在源里 —— 结果要么报错要么留下一个自我嵌套的空壳。
+     * 与 copy 的递归爆炸相比危害小，但同样属于「用户根本不可能想要」的输入。
+     */
+    if (isRemoteInside(from, to)) return { ok: false, code: E_INTO_SELF }
+
     const sourceKind = await this.statKind(from)
     if (sourceKind === undefined) return { ok: false, code: E_NOT_FOUND }
     if ((await this.statKind(to)) !== undefined) return { ok: false, code: E_ALREADY_EXISTS }
+
+    /*
+     * 【I4】跨文件系统移动必须拒绝（不可回滚）。
+     *
+     * toybox 的 mv 跨 FS 会退化成「逐文件复制 + 删除」：真机实测源里的
+     * top.txt 在 mv 返回 1 时已经消失、目标侧留下半棵树。裁决 3 要求
+     * 「失败不能毁原文件」，而这条路径做不到，所以改成显式不支持，
+     * 让用户走「复制到目标 + 确认后删除源」两步（复制失败时源完好）。
+     *
+     * 顺序：放在「目标已存在」检查之后 —— 那是更常见的用户错误，先报它更准确；
+     * 但仍在发 mv 之前，所以不会有任何副作用。
+     */
+    /*
+     * 目标此时**一定还不存在**（上面刚确认过），所以不能直接 stat 目标本身 ——
+     * 要 stat 它**所在目录**的设备号：一台设备上目标会落在哪个文件系统，
+     * 完全由父目录决定。这一步的偏差会让「/data/local/tmp → /sdcard/...」
+     * 这种真实跨 FS 场景探测不到。
+     */
+    const toProbe = remoteParent(to) ?? to
+    const [fromDev, toDev] = await Promise.all([this.statDevice(from), this.statDevice(toProbe)])
+    if (fromDev !== undefined && toDev !== undefined && fromDev !== toDev) {
+      return { ok: false, code: E_CROSS_DEVICE }
+    }
 
     let command: string
     try {
@@ -316,6 +410,19 @@ export class RemoteOps {
     } catch (err) {
       return { ok: false, code: errorCodeOf(err) }
     }
+    /*
+     * 【C3】复制到自身或自身子目录 → 拒绝。
+     *
+     * 这是本任务里**唯一能用一条操作把设备写满**的输入：cp -a A A/inner
+     * 会无界递归。真机实测一分钟 122MB、深度 16385 层，最后因
+     * Too many open files 才停，而产物层数太深，连删除本身都会失败
+     * （rm -rf 递归到 16385 层同样撞栈/句柄上限）。所以必须在这里拒。
+     *
+     * 判据用完整目标路径，不能用 dstDir：用户「在 A 里新建 inner、全选、复制到 inner」
+     * 的路径极其自然，完全属于可预见的误操作，不是恶意输入。
+     */
+    if (isRemoteInside(from, to)) return { ok: false, code: E_INTO_SELF }
+
     if ((await this.statKind(from)) === undefined) return { ok: false, code: E_NOT_FOUND }
     if ((await this.statKind(to)) !== undefined) return { ok: false, code: E_ALREADY_EXISTS }
 
@@ -359,18 +466,50 @@ export class RemoteOps {
     } catch (err) {
       return { ok: false, code: errorCodeOf(err) }
     }
+
+    /*
+     * 【I5】递归删除前记一个浅层条目数，失败时用来区分「什么都没删掉」
+     * 和「删掉了一部分」。
+     *
+     * 为什么必须区分：rm -rf 是一条命令一个退出码，它对「一个子项删不掉」
+     * 和「一个子项都没删掉」返回同一个 1。而真机实测（父目录含 chmod 500
+     * 子目录）中间那些**确实已经删掉了**。修前统一报 E_OP_FAILED，其文案
+     * 「操作没有完成，文件保持原样」在部分成功时是假话 —— 用户会据此
+     * 认为重试是安全的，但重试可能以「目标已不存在」大面积失败。
+     *
+     * 代价：目录非空时多一条 ls（毫秒级）；文件删除不数。
+     */
+    const before = recursive ? await this.entryCount(path) : undefined
+
     const result = await this.shell(command)
-    if (result.code !== 0) return { ok: false, code: classifyFailure(result.stderr) }
+    if (result.code !== 0) {
+      const code = classifyFailure(result.stderr)
+      if (before === undefined) return { ok: false, code }
+      const after = await this.entryCount(path)
+      /*
+       * after === undefined 意味着目录本身已经不在了（删完了最后一步才失败，
+       * 或 stat 竞态）—— 那就按「全部删掉」算 remaining = 0，仍报部分完成：
+       * 用户需要知道它真的消失了，而不是「保持原样」。
+       */
+      const remaining = after ?? 0
+      const removed = Math.max(0, before - remaining)
+      if (removed > 0) return { ok: false, code: E_OP_PARTIAL, removed, remaining }
+      return { ok: false, code }
+    }
     return { ok: true }
   }
 }
 
-/** 从异常里取错误码（本模块只抛已知码，别的都算 E_OP_FAILED）。 */
+/**
+ * 从异常里取错误码（本模块只抛已知码，别的都算 E_OP_FAILED）。
+ *
+ * 【审查 M1】原来这里用裸字符串 'E_PATH_UNSAFE'，而常量在 shared/path-guard。
+ * 改常量的值时会静默失配（比较永远不成立 → 真实错误码被吞成 E_OP_FAILED）。
+ * 现在统一用 ERROR_CODES 表判定：新增的错误码不需要在这里再抄一遍。
+ */
 function errorCodeOf(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
-  if (message === E_PROTECTED_PATH || message === E_INVALID_PATH) return message
-  if (message === 'E_PATH_UNSAFE') return message
-  return E_OP_FAILED
+  return isErrorCode(message) ? message : E_OP_FAILED
 }
 
 /** 基目录 + 名字 → 完整路径（不校验，交由调用方统一 assertSafeRemotePath）。 */

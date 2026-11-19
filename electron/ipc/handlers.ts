@@ -92,12 +92,18 @@ export interface HandlerDeps {
  * 由调度器负责拼出完整目标路径与取 totalBytes（裁决 5）。
  */
 export interface TransferController {
+  /**
+   * 入队。**返回 Promise** —— 因为入队前要校验本地根目录（realpath 是 IO）。
+   *
+   * 复审 C1 之前这里是同步的，而「同步」正是当时没法做根目录判定的直接原因
+   * （符号链接逃逸只有 realpath 能看出来）。IPC handler 本来就是 async，代价为零。
+   */
   enqueue(input: {
     serial: string
     direction: 'push' | 'pull'
     src: string
     dstDir: string
-  }): TransferTask
+  }): Promise<TransferTask>
   cancel(id: string): boolean
   retry(id: string): boolean
   get(id: string): TransferTask | undefined
@@ -346,7 +352,7 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
      * 现在与 fs:list 一致：收敛成 { ok:false, error:<码> }。
      */
     try {
-      const target = deps.transfer.enqueue({ serial, direction, src, dstDir })
+      const target = await deps.transfer.enqueue({ serial, direction, src, dstDir })
       return { ok: true, data: target }
     } catch (err) {
       return fail(toErrorCode(err))

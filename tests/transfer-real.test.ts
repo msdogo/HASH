@@ -149,7 +149,8 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
 
     // 2) 传一个不可压缩的大文件到同一目标，中途取消
     const bigLocal = path.join(dir, 'big-overwrite.bin')
-    const big = Buffer.alloc(120 * 1024 * 1024)
+    // 400MB：按实测 ~186MB/s，写盘阶段约 2s，400ms 的取消点确定落在写入途中
+    const big = Buffer.alloc(400 * 1024 * 1024)
     // 伪随机，避免被 adb 压缩掉而瞬间传完
     let seed = 12345
     for (let i = 0; i < big.length; i++) {
@@ -161,24 +162,37 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
     const controller = new AbortController()
     const task = runner.createPush('itest-overwrite', SERIAL as string, bigLocal, remotePath, big.length)
     /*
-     * 【任务 9 修正】取消条件从「进度 > 25MB」改成「定时 250ms」。
+     * 【任务 9 复审 I3】取消必须发生在**传输中途**，而且这件事要被用例自己证实。
      *
-     * 判断谁错：断言（取消要留下原文件）是对的，红的是**夹具窗口太窄**。
-     * 任务 8 写这条用例时设备离线，它一直处于 skip；任务 9 设备恢复后实测
-     * 这台设备 USB 速度约 186MB/s（120MB 的 push 只用 674ms 就结束），
-     * 而进度轮询间隔是 500ms —— 第一次采样时传输已经完成，
-     * 「进度 > 25MB」这个取消条件**永远不会先于完成触发**，传输自然成功。
-     * 所以改成按时间取消（250ms 落在 674ms 的传输中途），
-     * 断言一条都没放宽：仍然要求 ok=false、旧文件逐字节未变、无残留。
+     * 复审打回的事实：上一版用 250ms 定时取消，但把 discardPart 插桩后读到
+     * 取消瞬间的 .adbfm-part 已经是 125829120 字节 —— **正好是完整的 120MB**。
+     * 也就是说那次「中途取消」实际发生在「数据已全部落盘、只差改名」的窗口里，
+     * 用例名不副实；而且原来的 onProgress 兜底会在「已经传完」时也 abort，
+     * 把「传完了」伪装成「取消成功」。
+     *
+     * 这一版做三件事：
+     *   1. 文件放大到 400MB —— 按实测 ~186MB/s，写盘阶段约 2s，
+     *      400ms 时最多写进 ~75MB，取消点确定落在**数据仍在写入**的区间；
+     *   2. 取消**之前**同步采一次临时文件的真实大小，并断言它 < 源文件大小 ——
+     *      前提不成立就直接红，而不是继续跑一个名不副实的用例；
+     *   3. 删掉 onProgress 兜底 abort：它会让「传完了」被当成「取消成功」。
      */
-    const timer = setTimeout(() => { if (!controller.signal.aborted) controller.abort() }, 250)
-    const running = runner.run(task, {
-      signal: controller.signal,
-      onProgress: () => {
-        // 兜底：万一某个更慢的环境里 250ms 内已经传完，这条会先触发，避免用例假红
-        if (!controller.signal.aborted) controller.abort()
-      },
-    })
+    const partRemote = remotePath + '.adbfm-part'
+    let partSizeAtCancel: number | null = null
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return
+      // 采样必须在 abort 之前：abort 会触发 discardPart 删掉临时文件
+      try {
+        const out = shell('stat -c %s ' + JSON.stringify(partRemote)).trim()
+        partSizeAtCancel = /^\d+$/.test(out) ? Number(out) : null
+      } catch {
+        partSizeAtCancel = null
+      }
+      controller.abort()
+    }, 400)
+    // 这里是**故意**不接进度回调的：上一版用 onProgress 兜底 abort，
+    // 会让「其实已经传完」也被当成「取消成功」（复审 I3 的第二个缺陷）。
+    const running = runner.run(task, { signal: controller.signal, onProgress: () => {} })
     let result
     try {
       result = await running
@@ -186,6 +200,22 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
       clearTimeout(timer)
     }
     expect(result.ok).toBe(false)
+
+    /*
+     * 【复审 I3 的核心】先把「这次取消真的发生在中途」证实，再验证数据安全。
+     *
+     * 上一版丢掉的正是这一条：取消点在 250ms，而临时文件已经是完整 120MB，
+     * 用例照样全绿 —— 它测的是「传完之后取消」，不是「传输中途取消」。
+     * 前提不成立时必须**直接红**，否则这个用例会一直给出虚假的安心。
+     */
+    const sizeAtCancel: number | null = partSizeAtCancel
+    expect(sizeAtCancel, '取消瞬间没能读到临时文件大小，前提无法证实').not.toBeNull()
+    expect(
+      sizeAtCancel ?? 0,
+      '取消瞬间临时文件已是完整大小：本次取消落在「数据已写完、只差改名」的窗口，不是传输中途',
+    ).toBeLessThan(big.length)
+    // 也不该是 0：那说明取消发生在 adb 还没开始写的时候，同样不算「中途」
+    expect(sizeAtCancel ?? 0).toBeGreaterThan(0)
 
     // 3) 给清理一点时间（rm 是另一条 adb 命令）
     await new Promise((r) => setTimeout(r, 1500))

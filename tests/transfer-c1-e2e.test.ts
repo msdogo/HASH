@@ -86,11 +86,13 @@ describe.skipIf(!hasFake)('C1 端到端：真实装配路径能真正 spawn 到 
       const svc = new TransferService({
         adbPath: () => adbPath,
         clientFor: (serial) => new AdbClient(serial),
+        // C1：本地根目录 = 用例自己的临时目录（文件确实在它里面）
+        localRoot: () => dir,
         emit: () => {},
       })
       adbPath = FAKE_EXE
 
-      const task = svc.enqueue({ serial: 'FAKE123', direction: 'push', src: local, dstDir: '/sdcard/Download' })
+      const task = await svc.enqueue({ serial: 'FAKE123', direction: 'push', src: local, dstDir: '/sdcard/Download' })
       const deadline = Date.now() + 30000
       while (Date.now() < deadline && svc.manager.get(task.id)?.status === 'running') {
         await new Promise((r) => setTimeout(r, 20))
@@ -122,9 +124,10 @@ describe.skipIf(!hasFake)('C1 端到端：真实装配路径能真正 spawn 到 
       const svc = new TransferService({
         adbPath: () => '',
         clientFor: (serial) => new AdbClient(serial),
+        localRoot: () => dir,
         emit: () => {},
       })
-      const task = svc.enqueue({ serial: 'FAKE123', direction: 'push', src: local, dstDir: '/sdcard/Download' })
+      const task = await svc.enqueue({ serial: 'FAKE123', direction: 'push', src: local, dstDir: '/sdcard/Download' })
       const deadline = Date.now() + 5000
       while (Date.now() < deadline && svc.manager.get(task.id)?.status === 'running') {
         await new Promise((r) => setTimeout(r, 20))

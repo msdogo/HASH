@@ -8,6 +8,7 @@ import {
   checkRemotePath,
   isInsideRoot,
   isProtectedRemotePath,
+  isRemoteInside,
   normalizeLocalPath,
   remoteBaseName,
   remoteJoin,
@@ -131,11 +132,48 @@ describe('裁决 1：根路径白名单式保护', () => {
     expect(isProtectedRemotePath(path)).toBe(true)
   })
 
+  /*
+   * 【审查 I6】/sdcard/Android 及其两个独立挂载子目录。
+   *
+   * 真机实测：/storage/emulated/0/Android、.../Android/data、.../Android/obb
+   * 都**不是**保护路径，而 /sdcard/Android/data 与 /sdcard 是不同设备号的独立 f2fs 挂载点。
+   * 删它等于清掉所有 App 的私有数据（部分不可再生），而界面只会说「非空目录」。
+   * 两次点击就能做到 —— 这是必须堵的。
+   */
+  it.each([
+    '/sdcard/Android',
+    '/sdcard/Android/data',
+    '/sdcard/Android/obb',
+    '/storage/emulated/0/Android',
+    '/storage/emulated/0/Android/data',
+    '/storage/emulated/0/Android/obb',
+  ])('%s 受保护（I6：Android 目录是全部应用数据）', (path) => {
+    expect(isProtectedRemotePath(path)).toBe(true)
+  })
+
+  /*
+   * 【审查 M2】/mnt/* 是 /storage 的老别名，指同一批挂载点。
+   * 真机上删它们会因权限失败（root 拥有的 symlink），所以不构成绕过；
+   * 但错误码会是 E_NO_PERMISSION，文案误导用户去「申请权限」。
+   * 补进名单让文案说对人话。
+   */
+  it.each([
+    '/mnt/sdcard',
+    '/mnt/user/0/emulated/0',
+    '/mnt/runtime/default/emulated/0',
+    '/storage/emulated/0',
+    '/storage/self/primary',
+  ])('%s 受保护（M2：别名与等价路径）', (path) => {
+    expect(isProtectedRemotePath(path)).toBe(true)
+  })
+
   it.each([
     '/sdcard/Download',
     '/sdcard/Download/测试 目录',
     '/storage/emulated/0/Download/a.txt',
     '/data/local/tmp/x',
+    // Android 下的**普通子目录**不在保护范围：不能因为防 Android 就把整棵树锁死
+    '/sdcard/Android/data/com.example.app',
   ])('%s 不在保护名单内', (path) => {
     expect(isProtectedRemotePath(path)).toBe(false)
   })
@@ -146,6 +184,28 @@ describe('裁决 1：根路径白名单式保护', () => {
       expect(path === '/' || !path.endsWith('/')).toBe(true)
       expect(path).not.toContain('..')
     }
+  })
+})
+
+describe('裁决 3 / C3：自包含判定（复制到自身子目录会无界递归）', () => {
+  it.each([
+    ['相等', '/sdcard/A', '/sdcard/A', true],
+    ['直接子目录', '/sdcard/A', '/sdcard/A/inner', true],
+    ['深子目录', '/sdcard/A', '/sdcard/A/x/y/z', true],
+    ['带尾斜杠的子目录', '/sdcard/A', '/sdcard/A/inner/', true],
+    ['父目录同名前缀但不相干', '/sdcard/A', '/sdcard/AB', false],
+    ['兄弟目录', '/sdcard/A', '/sdcard/B', false],
+    ['父目录', '/sdcard/A', '/sdcard', false],
+    ['完全不同', '/sdcard/A', '/data/local/tmp/x', false],
+    ['根比较', '/', '/sdcard/A', true],
+  ])('%s：%s ⊃ %s → %s', (_label, parent, child, expected) => {
+    expect(isRemoteInside(parent, child)).toBe(expected)
+  })
+
+  it('对含 .. 的输入保守返回 true（宁可拒操作，也不放行一次可能递归的复制）', () => {
+    // 这里不是路径校验（那个由 checkRemotePath 负责），而是「复制/移动前的最后一道自包含检查」：
+    // 看不懂的输入一律当成「可能自包含」，让它被拒绝而不是被执行。
+    expect(isRemoteInside('/sdcard/A', '/sdcard/A/../A/inner')).toBe(true)
   })
 })
 

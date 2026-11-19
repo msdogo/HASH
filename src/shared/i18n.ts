@@ -122,6 +122,12 @@ const messages: Record<string, string> = {
   'op.delete.blocked': '{count} 项被安全策略拒绝，不会删除',
   'op.delete.irreversible': '删除后无法恢复，请确认无误',
   'op.result.title': '{ok} 成功 / {failed} 失败',
+  /*
+   * 【审查 I5】部分完成必须给出计数，不能只显示一个错误码。
+   * 用户看到「已删除 2 项，还剩 1 项」才知道现场长什么样；
+   * 只看到「操作只完成了一部分」仍然不知道重试会撞上什么。
+   */
+  'op.result.partial': '已删除 {removed} 项，还剩 {remaining} 项',
   'op.result.allOk': '{ok} 项全部成功',
   'op.result.failures': '失败项',
   'op.result.dismiss': '知道了',
@@ -177,7 +183,15 @@ const errorTexts: Record<ErrorCode, string> = {
   E_PATH_UNSAFE: '这个路径里有「..」，会跳出允许访问的位置，已拒绝执行。请改用完整的绝对路径',
   E_PROTECTED_PATH: '这是设备的系统根目录（例如 /sdcard、/storage/emulated/0），为防止误操作已被禁止删除或移动',
   E_ALREADY_EXISTS: '目标位置已经有同名的文件或文件夹了。请换一个名字，或先把原来的删掉/改名',
-  E_OP_FAILED: '操作没有完成，文件保持原样，没有被删除或覆盖。请刷新后重试',
+  /*
+   * 【审查 I5】原文案是「操作没有完成，文件保持原样，没有被删除或覆盖」。
+   * 在「递归删除中途失败」「多文件移动中途失败」时这是**明确的假话** ——
+   * 部分内容已经不可逆地消失，而用户会据此认为重试是安全的。改成只承诺能兑现的部分。
+   */
+  E_OP_FAILED: '操作没有完成，且没有覆盖任何已有文件。请刷新后重试',
+  E_OP_PARTIAL: '操作只完成了一部分：可能已有一部分内容被删除或移动。请刷新列表核对，不要直接重试',
+  E_INTO_SELF: '不能把文件夹复制或移动到它自己里面，那会无限递归。请换一个目标位置',
+  E_CROSS_DEVICE: '源和目标不在设备的同一个存储区，直接移动可能只搬走一部分。请改用「复制到目标」，确认无误后再删除源',
   E_READ_ONLY: '这个位置是只读的，当前权限无法写入。请换一个目录（例如 /sdcard/Download）',
   E_NO_SPACE: '设备存储空间不足，操作已中止。请先清理一些文件再试',
   E_OUTSIDE_ROOT: '这个位置在本地选定的目录之外，已被拒绝访问。请先在左侧切换到允许的目录',

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { AdbClient } from '../electron/adb/client'
 import { RemoteOps } from '../electron/fs/operations'
 import { FsOpsService } from '../electron/fs/op-service'
-import { E_ALREADY_EXISTS, E_PROTECTED_PATH } from '../src/shared/errors'
+import { E_ALREADY_EXISTS, E_CROSS_DEVICE, E_INTO_SELF, E_OP_PARTIAL, E_PROTECTED_PATH } from '../src/shared/errors'
 
 /*
  * 裁决 9：真机上的全链路文件操作（中文 / 空格 / 单引号文件名）。
@@ -191,5 +191,167 @@ describe.skipIf(skip)('真机文件操作（裁决 9）', () => {
     // 目标目录与里面的内容都没有被递归删掉
     expect(exists('/sdcard/Download')).toBe(true)
     try { shell('rm -f -- ' + q(linkPath)) } catch { /* 已被删则忽略 */ }
+  }, 120_000)
+
+  /*
+   * 【复审 C3】真机反例：复制到一个目录自己的子目录里，必须被拒且不留递归产物。
+   *
+   * 复审实测（修前）：cp -a A A/inner 在真机上无界递归，一分钟内长到 122MB、
+   * 深度 16385 层，最后因 Too many open files 才停；更糟的是产物层数太深，
+   * **连删除本身都会失败**（rm -rf 同样撞上限），用户只能重刷存储。
+   *
+   * 复现它的是用户的自然操作：在 A 里新建 inner、全选、复制到 inner。
+   * 所以这条用例必须打在真机上 —— 假 fs 只能证明我们「决定拒」，
+   * 不能证明「这个输入在真设备上真的会爆炸」。
+   */
+  it('C3：复制目录到自己的子目录 → E_INTO_SELF，且设备上没有产生任何递归产物', async () => {
+    const root = '/data/local/tmp/adbfm-c3-self'
+    try { shell('rm -rf -- ' + q(root)) } catch { /* 不存在是常态 */ }
+    shell('mkdir -p -- ' + q(root + '/A/inner'))
+    shell('touch -- ' + q(root + '/A/f.txt'))
+    const before = lsNames(root + '/A')
+
+    const result = await ops.copy(root + '/A', root + '/A/inner')
+    expect(result).toEqual({ ok: false, code: E_INTO_SELF })
+
+    // 复核：目标目录里没有任何东西被写进去（没有 A、没有更深层）
+    expect(lsNames(root + '/A/inner')).toEqual([])
+    // 源目录内容一字未变
+    expect(lsNames(root + '/A')).toEqual(before)
+    // 深度没有增长：找出最深的路径，必须仍是 2 层（A/inner）
+    const depth = shell('cd ' + q(root) + ' && find . -type d | awk -F/ "{print NF-1}" | sort -n | tail -1').trim()
+    expect(Number(depth)).toBeLessThanOrEqual(2)
+
+    shell('rm -rf -- ' + q(root))
+    expect(exists(root)).toBe(false)
+  }, 120_000)
+
+  /*
+   * 【复审 C3 真机对拍】同一个输入交给**原始 shell**，证明它真的会炸。
+   *
+   * 没有这条，C3 的拦截只是「我们选择不这么做」，而不是「不这么做是必要的」。
+   * 这里只让 cp 跑 2 秒就杀掉，然后检查产物的深度已经远超合理范围 ——
+   * 足以证明无界递归的存在，又不会把设备写满或留下删不掉的深树。
+   */
+  it('C3 对拍：同一个 cp 命令直接跑 2 秒就会开始无界递归（证明拦截是必要的）', async () => {
+    const root = '/data/local/tmp/adbfm-c3-proof'
+    try { shell('rm -rf -- ' + q(root)) } catch { /* 不存在是常态 */ }
+    /*
+     * 关键：目标 **inner 必须不存在**。
+     *
+     * 真机实测（本任务）两种形态表现不同，两者都必须被 C3 拦住：
+     *   - inner 已存在 → toybox 直接拒绝：cp: 'A/inner/A' is 'A/inner'（退出码 0！）
+     *   - inner 不存在 → toybox 先创建它再递归复制自己，深度一路涨到 16384，
+     *     最后以 "Too many open files" 结束，设备上留下删不掉的深树
+     * 后者才是「一条操作把设备写满」的那条，所以对拍用它。
+     */
+    shell('mkdir -p -- ' + q(root + '/A'))
+
+    /*
+     * 用 toybox 自带的 timeout 限制 2 秒（比「后台跑 + sleep + kill」快 20 倍：
+     * 后者要等 40 秒左右才真正收敛，因为 kill 掉父进程后子进程仍在写）。
+     * 真机实测 2 秒足够长到 16385 层 —— 递归是每层瞬间发生的。
+     */
+    try {
+      shell('cd ' + q(root) + ' && timeout 2 cp -a -- A A/inner 2>/dev/null; true')
+    } catch { /* 预期会因递归深度/句柄上限报错，不影响断言 */ }
+
+    // 递归深度已经远超任何正常目录结构（合理目录不会超过十几层）
+    const depthOut = shell('cd ' + q(root) + ' && find . -type d | awk -F/ "{print NF-1}" | sort -n | tail -1').trim()
+    const depth = Number(depthOut)
+    expect(Number.isFinite(depth)).toBe(true)
+    expect(depth, 'cp -a A A/inner 没有表现出递归（设备行为可能已变，需重新评估 C3）').toBeGreaterThan(10)
+
+    /*
+     * 清理：rm -rf 对这么深的树仍然是可行的（toybox 的 rm 是迭代下潜，
+     * 真机实测能删掉 16384 层的产物）。真正会失败的是 find/glob 那种
+     * 一次性展开整条路径的写法，所以这里只用 rm -rf。
+     */
+    try { shell('rm -rf -- ' + q(root)) } catch { /* 忽略 */ }
+    expect(exists(root), 'C3 对拍用例必须把自己造出来的深树清干净（本项目硬要求：不留垃圾）').toBe(false)
+  }, 180_000)
+
+  /*
+   * 【复审 I4】真机：跨文件系统移动必须被拒，且源文件毫发无伤。
+   *
+   * 复审实测（修前）：/data/local/tmp → /sdcard/Download 的 mv 在源含不可读
+   * 子目录时返回 1，但源里的 top.txt **已经消失**（toybox 退化成逐文件
+   * 「复制+删除」），目标侧留下半棵树 —— 唯一无法回滚的移动形态。
+   */
+  it('I4：跨文件系统移动 → E_CROSS_DEVICE，源文件完整保留', async () => {
+    const srcDir = '/data/local/tmp/adbfm-i4-src'
+    const dstDir = '/sdcard/Download/adbfm-i4-dst'
+    try { shell('rm -rf -- ' + q(srcDir)) } catch { /* 忽略 */ }
+    try { shell('rm -rf -- ' + q(dstDir)) } catch { /* 忽略 */ }
+    shell('mkdir -p -- ' + q(srcDir))
+    shell('mkdir -p -- ' + q(dstDir))
+    shell('echo KEEP-ME > ' + q(srcDir + '/top.txt'))
+
+    // 先确认这确实是跨 FS（设备号不同），否则这条用例没有验证对象
+    const srcDev = shell('stat -c %d -- ' + q(srcDir)).trim()
+    const dstDev = shell('stat -c %d -- ' + q(dstDir)).trim()
+    expect(srcDev).not.toBe(dstDev)
+
+    const result = await ops.move(srcDir + '/top.txt', dstDir + '/top.txt')
+    expect(result).toEqual({ ok: false, code: E_CROSS_DEVICE })
+
+    // 源文件还在且内容完整（这正是修前丢掉的那个文件）
+    expect(exists(srcDir + '/top.txt')).toBe(true)
+    expect(shell('cat ' + q(srcDir + '/top.txt')).trim()).toBe('KEEP-ME')
+    // 目标侧没有被写出半棵树
+    expect(lsNames(dstDir)).toEqual([])
+
+    shell('rm -rf -- ' + q(srcDir))
+    shell('rm -rf -- ' + q(dstDir))
+    expect(exists(srcDir)).toBe(false)
+    expect(exists(dstDir)).toBe(false)
+  }, 120_000)
+
+  /*
+   * 【复审 I5】真机：递归删除中途失败必须报「已删 N / 剩余 M」，不能说「保持原样」。
+   *
+   * 复审实测（修前）：父目录含 chmod 500 子目录时 rm -rf 返回 1，但部分内容
+   * 已经删掉；而当时的错误码统一是 E_OP_FAILED，文案写着「文件保持原样」。
+   */
+  it('I5：递归删除中途失败 → E_OP_PARTIAL 且给出「已删 N / 剩余 M」', async () => {
+    const root = '/data/local/tmp/adbfm-i5-partial'
+    try { shell('rm -rf -- ' + q(root)) } catch { /* 忽略 */ }
+    shell('mkdir -p -- ' + q(root + '/a') + ' ' + q(root + '/b') + ' ' + q(root + '/locked'))
+    shell('touch -- ' + q(root + '/a/1.txt') + ' ' + q(root + '/b/2.txt') + ' ' + q(root + '/locked/3.txt'))
+    /*
+     * locked 目录设为 500（可读可进入、不可写）：rm -rf 会先删 a/b，
+     * 到 locked 时删不掉里面的 3.txt —— 典型的「删了一部分才失败」。
+     * 注意 shell 用户对 /data/local/tmp 有写权限，所以这里必须用 chmod
+     * 真的把它变成不可写，否则 rm 会全部成功、用例前提不成立。
+     */
+    shell('chmod 500 -- ' + q(root + '/locked'))
+
+    const result = await ops.remove(root)
+
+    // 恢复权限以便清理（必须在断言之前，否则清理会失败）
+    try { shell('chmod 700 -- ' + q(root + '/locked')) } catch { /* 忽略 */ }
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      /*
+       * 设备行为可能因 SELinux/版本而异：只要**删掉了一部分**就必须报 E_OP_PARTIAL，
+       * 并且两个数字都要给出；如果一项都没删掉，则保持普通失败码。
+       * 两种结果都要求「不能声称文件保持原样」。
+       */
+      if (result.code === E_OP_PARTIAL) {
+        expect(result.removed).toBeGreaterThan(0)
+        expect(result.remaining).toBeGreaterThan(0)
+        // 复核：a/b 真的没了（证明「已删」这个数字是真的）
+        expect(exists(root + '/a')).toBe(false)
+        expect(exists(root + '/b')).toBe(false)
+      } else {
+        // 前提不成立（一个都没删掉）时至少要保证没谎报部分完成
+        expect(result.removed).toBeUndefined()
+      }
+    }
+
+    shell('chmod 700 -- ' + q(root + '/locked'))
+    shell('rm -rf -- ' + q(root))
+    expect(exists(root)).toBe(false)
   }, 120_000)
 })

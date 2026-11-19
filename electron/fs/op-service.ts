@@ -124,9 +124,20 @@ export class FsOpsService {
 
     const executed = await runSequential(runnable.map((item) => item.path), async (path) => {
       const outcome = await ops.remove(path)
-      return outcome.ok
-        ? { name: remoteBaseName(path), ok: true }
-        : { name: remoteBaseName(path), ok: false, code: outcome.code }
+      if (outcome.ok) return { name: remoteBaseName(path), ok: true }
+      /*
+       * 【审查 I5】把「已删 N / 剩余 M」原样带上去。
+       *
+       * 丢掉这两个数字，界面就只剩一个 E_OP_PARTIAL 码，用户看到的仍是
+       * 「操作失败」—— 而真正要传递的信息是「已经删掉了一部分，别直接重试」。
+       */
+      return {
+        name: remoteBaseName(path),
+        ok: false,
+        code: outcome.code,
+        ...(outcome.removed === undefined ? {} : { removed: outcome.removed }),
+        ...(outcome.remaining === undefined ? {} : { remaining: outcome.remaining }),
+      }
     })
     runnable.forEach((item, i) => {
       results[item.index] = executed[i]

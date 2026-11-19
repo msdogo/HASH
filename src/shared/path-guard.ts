@@ -50,14 +50,64 @@ export const PROTECTED_REMOTE_PATHS: readonly string[] = [
   '/storage/emulated',
   '/storage/emulated/0',
   '/storage/self/primary',
+  /*
+   * 【审查 I6】Android 目录是全部应用私有数据（/sdcard/Android/data 与 /sdcard
+   * 是**不同设备号**的独立 f2fs 挂载点，删它等于清掉所有 App 数据且部分不可再生）。
+   * 界面上只有两次点击就能做到，而确认框只会说「非空目录」——
+   * 这是本任务里唯一「一条误操作毁掉整机应用数据」的路径，必须拦在名单里。
+   *
+   * 只拦整棵 Android 目录本身，不拦它下面的普通子目录：
+   * 用户仍然可以管理 /sdcard/Android/data/com.example.app 里的单个文件。
+   */
+  '/sdcard/Android',
+  // data / obb 是**独立挂载点**（真机实测 /sdcard/Android/data 与 /sdcard 设备号不同），
+  // 删它们等于清掉所有 App 的数据库与扩展包
+  '/sdcard/Android/data',
+  '/sdcard/Android/obb',
+  '/storage/emulated/0/Android',
+  '/storage/emulated/0/Android/data',
+  '/storage/emulated/0/Android/obb',
   '/mnt',
   '/mnt/user/0/primary',
+  // 【审查 M2】/mnt/* 是 /storage 的老别名，指同一批挂载点
+  '/mnt/sdcard',
+  '/mnt/user/0/emulated/0',
+  '/mnt/runtime/default/emulated/0',
   '/system',
   '/system_ext',
   '/vendor',
   '/product',
   '/odm',
   '/data',
+  '/cache',
+  '/proc',
+  '/sys',
+  '/dev',
+  '/root',
+  '/init',
+]
+
+/**
+ * 整棵子树都禁止传输的「系统区」（裁决 2 / 审查 C2）。
+ *
+ * 与 PROTECTED_REMOTE_PATHS 的区别：
+ *   - 上面那份名单是**精确匹配**，用于删/移/改名的对象本身（用户区目录如
+ *     /sdcard/Download 完全没问题，所以不能连子树一起禁）；
+ *   - 这一份是**子树**：/data、/system 这类系统分区，普通权限本来就不该往里写，
+ *     读也属于越权（/data/local/tmp 是 shell 可写的调试区，但那正是
+ *     「任何应用都能借调试口写进去」的地方，传输通道不该成为它的后门）。
+ *
+ * 用途：只用于**传输通道**（push 的设备目标、pull 的设备源）。
+ * 传输的路径完全来自渲染层入参，是攻击面最大的入口；而 fs:* 的操作对象来自
+ * 用户实际浏览到的位置（例如 /data/local/tmp 下的调试文件），保持精确匹配即可。
+ */
+export const PROTECTED_REMOTE_SUBTREES: readonly string[] = [
+  '/data',
+  '/system',
+  '/system_ext',
+  '/vendor',
+  '/product',
+  '/odm',
   '/cache',
   '/proc',
   '/sys',
@@ -179,10 +229,59 @@ export function assertSafeRemotePath(input: string): string {
   return verdict.path
 }
 
-/** 是否是受保护的根路径（裁决 1）。调用方必须先归一化（用 checkRemotePath 的返回值）。 */
+/**
+ * 是否是受保护的根路径（裁决 1）。调用方必须先归一化（用 checkRemotePath 的返回值）。
+ *
+ * 判据是「归一化后相等」而不是前缀匹配：/sdcard/Android/data/com.example.app
+ * 必须放行（用户要能管理单个 App 的文件），只有 /sdcard/Android 这一层本身不可删。
+ */
 export function isProtectedRemotePath(path: string): boolean {
   const normalized = normalizeSegments(path)
   return PROTECTED_REMOTE_PATHS.includes(normalized)
+}
+
+/**
+ * 传输通道用的更严判定：精确受保护 **或** 落在系统区子树内。
+ *
+ * 单独一个函数而不是给 isProtectedRemotePath 加参数：两种语义的调用点
+ * 差别很大（一个是「用户点到的对象」，一个是「渲染层给的任意字符串」），
+ * 混成一个带 flag 的函数，将来一定会有人传错。
+ */
+export function isProtectedTransferPath(path: string): boolean {
+  if (isProtectedRemotePath(path)) return true
+  const normalized = normalizeSegments(path)
+  for (const root of PROTECTED_REMOTE_SUBTREES) {
+    if (normalized === root || normalized.startsWith(root + '/')) return true
+  }
+  return false
+}
+
+/**
+ * child 是否落在 parent 之内（含相等）—— 复制/移动的自包含判定（裁决 3 / C3）。
+ *
+ * ===== 为什么必须有这一条 =====
+ * `cp -a A A/inner` 会让 toybox 无界递归：真机实测一分钟内 122MB、深度 16385 层，
+ * 最后因 Too many open files 才停，而产物层数太深，**连删除本身都会失败**。
+ * 用户的操作路径极其自然：在 A 里新建 inner、全选、复制到 inner。
+ * 所以必须在发命令之前拒掉，而不是指望 cp 自己出错。
+ *
+ * 实现注意：
+ * 1. **必须比完整目标路径**（`remoteJoin(dstDir, name)`），不是只比 dstDir ——
+ *    dstDir 是 A/inner 而目标是 A/inner/A 的情况同样要拦；
+ * 2. **含 '..' 的输入保守返回 true**：这个函数是「最后一道闸门」，看不懂就拒；
+ *    真正的路径语法校验在 checkRemotePath，不在这里重复。
+ */
+export function isRemoteInside(parent: string, child: string): boolean {
+  if (parent === '' || child === '') return false
+  const parentSeg = parent.split('/')
+  const childSeg = child.split('/')
+  if (parentSeg.some((seg) => seg === '..') || childSeg.some((seg) => seg === '..')) return true
+  const p = normalizeSegments(parent)
+  const c = normalizeSegments(child)
+  if (p === c) return true
+  // 父是根时一切都是它的后代（/ 的唯一特殊情形）
+  if (p === '/') return true
+  return c.startsWith(p + '/')
 }
 
 /** 路径的最后一段（名字）；根返回空串。 */

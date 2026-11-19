@@ -63,7 +63,7 @@ export function fakeTransfer(): TransferController & { tasks: Map<string, Transf
   return {
     tasks,
     enqueued,
-    enqueue: (input) => {
+    enqueue: async (input) => {
       enqueued.push(input)
       const task: TransferTask = {
         id: 'task-' + (tasks.size + 1),

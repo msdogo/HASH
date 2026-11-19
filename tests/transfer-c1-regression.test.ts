@@ -49,6 +49,8 @@ describe('C1：adbPath 必须惰性解析，不能在构造时固化', () => {
           return { code: 0, stdout: '', stderr: local + ': 1 file pushed, 0 skipped. 1.0 MB/s (1024 bytes in 0.001s)\r\n' }
         },
       }) as never,
+      // C1：本地根目录 = 用例自己的临时目录
+      localRoot: () => dir,
       emit: () => {},
       // 测试用：不真的轮询设备（假 client 的 stat 会返回空）
       runner: (getPath) => new TransferRunner({
@@ -75,7 +77,7 @@ describe('C1：adbPath 必须惰性解析，不能在构造时固化', () => {
     // 现在「自检成功」
     adbPath = 'C:/platform-tools/adb.exe'
 
-    const task = svc.enqueue({ serial: 'S1', direction: 'push', src: local, dstDir: '/sdcard/Download' })
+    const task = await svc.enqueue({ serial: 'S1', direction: 'push', src: local, dstDir: '/sdcard/Download' })
     // 等任务跑完（假 client 是立即返回的）
     const deadline = Date.now() + 3000
     while (Date.now() < deadline && svc.manager.get(task.id)?.status === 'running') {
@@ -100,6 +102,7 @@ describe('C1：adbPath 必须惰性解析，不能在构造时固化', () => {
     const svc = new TransferService({
       adbPath: () => '',
       clientFor: () => ({ serial: 'S1', run: async () => { calls += 1; return { code: 0, stdout: '', stderr: '' } } }) as never,
+      localRoot: () => dir,
       emit: () => {},
       runner: (getPath) => new TransferRunner({
         adbPath: getPath,
@@ -116,7 +119,7 @@ describe('C1：adbPath 必须惰性解析，不能在构造时固化', () => {
       }),
     })
 
-    const task = svc.enqueue({ serial: 'S1', direction: 'push', src: local, dstDir: '/sdcard/Download' })
+    const task = await svc.enqueue({ serial: 'S1', direction: 'push', src: local, dstDir: '/sdcard/Download' })
     const deadline = Date.now() + 3000
     while (Date.now() < deadline && svc.manager.get(task.id)?.status === 'running') {
       await new Promise((r) => setTimeout(r, 10))
