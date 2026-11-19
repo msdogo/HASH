@@ -1,0 +1,36 @@
+{
+  "appId": "com.local.adbfilemanager",
+  "productName": "ADB 文件管家",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**",
+    "dist-electron/**",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/platform-tools",
+      "to": "platform-tools"
+    }
+  ],
+  "asar": true,
+  "win": {
+    "target": [
+      "nsis",
+      "portable"
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "ADB 文件管家"
+  },
+  "portable": {
+    "artifactName": "ADB-File-Manager-${version}-portable.${ext}"
+  }
+}
