@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildShellSubmitter, planShellSubmit, submitShell } from '../src/shared/batch-shell'
+import { buildShellSubmitter } from '../src/shared/batch-shell'
 import type { ShellSubmitOutcome, ShellSubmitPayload, ShellSubmitRequest } from '../src/shared/batch-shell'
 import type { ShellSubmitPlan } from '../src/shared/batch-shell'
 
@@ -77,12 +77,33 @@ describe('buildShellSubmitter：组件真正的提交入口（N10 行为门禁�
     expect(seen.runs[0]).toEqual({ action: 'shell', serials: ['R5CY10S73DA'], command: 'ls /sdcard' })
   })
 
-  it('serials 为空 → 返回 empty，confirm 与 run 都零调用', () => {
+  it('命令为空 → 返回 empty，confirm 与 run 都零调用', () => {
     const { submit, seen } = harness(true)
-    // 注意：命令非空但没勾设备也不行 —— 「会在 0 台设备上执行」没有意义
     expect(submit({ serials: [], command: '', devices: DEVICES })).toBe('empty')
     expect(seen.confirms).toEqual([])
     expect(seen.runs).toEqual([])
+  })
+
+  it('【N23】空 serials 不在这里拦 —— 真正拦它的是 canSubmit（如实记录分工）', () => {
+    /*
+     * 第 4 轮这条用例的注释写的是「命令非空但没勾设备也不行 —— 会在 0 台设备上执行
+     * 没有意义」，但它实际传的是 `command: ''`，命中的是「空命令」分支。
+     * 复审实测 `{serials: [], command: 'echo hi'}` → 返回 'submitted' 并发出
+     * `serials: []` 载荷 —— **注释在撒谎**。
+     *
+     * 真实分工：
+     *   - 「一台设备都没勾就不许提交」拦在 src/shared/batch.ts 的 canSubmit
+     *     （pickedCount <= 0 → 按钮 disabled），有 buttonStates 的单测；
+     *   - buildShellSubmitter 只负责「这条命令要不要确认、取消后跑不跑、载荷长什么样」。
+     *
+     * 所以这里**不**加第二份 defensive 判断（两处判据会漂移），而是把真实行为
+     * 写成断言，让后来者一眼看到边界在哪。命令为空由本函数拦（见上一条），
+     * serials 为空**不由本函数拦** —— 这一条就是边界。
+     */
+    const { submit, seen } = harness(false)
+    expect(submit({ serials: [], command: 'echo hi', devices: DEVICES })).toBe('submitted')
+    expect(seen.confirms).toEqual([])
+    expect(seen.runs).toEqual([{ action: 'shell', serials: [], command: 'echo hi' }])
   })
 
   it('确认框拿到可区分的设备标识（型号 + 尾号，N7）与台数', () => {

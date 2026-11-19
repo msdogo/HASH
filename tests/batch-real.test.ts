@@ -17,6 +17,7 @@ import {
 import type { ShellRunner } from '../electron/fs/remote'
 import type { TransferTask } from '../src/shared/transfer'
 import { E_DEVICE_OFFLINE, E_TIMEOUT } from '../src/shared/errors'
+import { isStaleLock, type LockRecord } from './device-lock'
 
 /*
  * 真机批量动作（任务 10 / 简报「步骤 5」）。
@@ -53,13 +54,7 @@ const ADB = process.env.ADB_PATH ?? 'adb'
  * 所以真机用例在**模块顶层**抢一个文件锁（设备级），抢不到就整组跳过并打印原因 ——
  * 与「没有设备」同一语义：不是失败，是资源不可用。并行跑全部用例仍然绿。
  */
-const LOCK_STALE_MS = 15 * 60_000
-
-/** 锁文件内容：谁持着它、从什么时候开始。 */
-interface LockRecord {
-  pid: number
-  startedAt: number
-}
+/** 锁文件内容与陈旧判定都在 tests/device-lock.ts（可单测的纯函数，N21）。 */
 
 function lockPathOf(serial: string): string {
   const safe = serial.replace(/[^A-Za-z0-9._-]/g, '_')
@@ -97,9 +92,17 @@ function pidAlive(pid: number): boolean {
  * 5 skipped、全量 1143 passed | 6 skipped、EXIT=0）。
  * **静默通过比失败更危险**：失败有人看，静默跳过没人看。
  *
- * 现在的判据（任一成立即接管，并打印 warning）：
- *   1. 锁里的 pid 不存活（process.kill(pid, 0) 抛错）—— 崩溃/Ctrl-C 的典型形态；
- *   2. 锁文件 mtime 超过 15 分钟 —— pid 被别的进程复用的兜底。
+ * 判据只有一条：**持有者死了吗**（isStaleLock，见 tests/device-lock.ts）。
+ *
+ * 【第 5 轮 N20】第 4 轮这里还有一个「超过 15 分钟即接管」的 TTL 分支，
+ * 而且它是无条件 OR —— 不看 pid 是否还活着。复审当场指出这会**抢走活锁**：
+ * 真机用例本来就可能跑很久，一个持锁 16 分钟的合法进程会被后来者 rm 掉锁、
+ * 夺走设备，N14 的并发症（两个进程互删在途临时文件）原封不动地回来。
+ *
+ * 那个 TTL 是照着「pid 复用兜底」的想象写的，但注释与实际实现不符（代码里
+ * 从来没有 stat 过 mtime，算的是锁内容里的 startedAt）。现在整条删除：
+ * 进程活着时年龄毫无意义，跑 5 小时的用例仍然是合法持有者。
+ * pid 复用的极小概率后果是「需要手工删一个锁文件」，远轻于抢走活锁。
  */
 function acquireDeviceLock(serial: string): (() => void) | null {
   const lockPath = lockPathOf(serial)
@@ -120,13 +123,11 @@ function acquireDeviceLock(serial: string): (() => void) | null {
   }
 
   const record = readLockRecord(lockPath)
-  const age = Date.now() - (record?.startedAt ?? 0)
-  const stale = record === null || !pidAlive(record.pid) || age > LOCK_STALE_MS
-  if (!stale) return null
+  if (!isStaleLock(record, pidAlive)) return null
 
   console.warn(
     '[batch-real] 接管陈旧设备锁：' + lockPath
-      + '（' + (record === null ? '内容不可解析' : 'pid=' + record.pid + ' 已不存活或超时') + '）',
+      + '（' + (record === null ? '内容不可解析' : 'pid=' + record.pid + ' 已不存活') + '）',
   )
   try {
     rmSync(lockPath, { force: true })
