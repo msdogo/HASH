@@ -1,5 +1,7 @@
 import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
+import { useLocalStore } from '@/store/localStore'
+import { useOpStore } from '@/store/opStore'
 
 /**
  * 开发期调试钩子（仅在 dev 构建里生效，生产构建被 import.meta.env.DEV 常量折叠掉）。
@@ -15,7 +17,14 @@ import { useFileStore } from '@/store/fileStore'
  */
 export function exposeStoresForDebug(): void {
   if (!import.meta.env.DEV) return
-  window.__stores = { device: useDeviceStore, file: useFileStore }
+  window.__stores = {
+    device: useDeviceStore,
+    file: useFileStore,
+    // 任务 9：本地栏与文件操作的状态也要能被手工验证脚本读到
+    // （否则「下载到本地」这条入口只能靠肉眼看底栏，无法断言本地目标路径）
+    local: useLocalStore,
+    op: useOpStore,
+  }
 }
 
 declare global {
@@ -24,6 +33,8 @@ declare global {
     __stores?: {
       device: typeof useDeviceStore
       file: typeof useFileStore
+      local: typeof useLocalStore
+      op: typeof useOpStore
     }
   }
 }

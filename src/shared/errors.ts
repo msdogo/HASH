@@ -56,6 +56,34 @@ export const E_SYNC_FAILED = 'E_SYNC_FAILED'
 /** 传输途中设备掉线（裁决 4）：该设备的队列暂停，任务保留可重试。 */
 export const E_DEVICE_OFFLINE = 'E_DEVICE_OFFLINE'
 
+/* ===== 任务 9：文件操作与本地双栏 ===== */
+
+/**
+ * 路径语法合法但语义越界：含 '..' 段，试图跳出允许的根（裁决 2 / 5）。
+ *
+ * 与 E_INVALID_PATH 分开的理由：前者是「这个字符串根本不是一个能用的路径」，
+ * 后者是「路径本身没问题，但它指向了不该去的地方」。用户看到的文案完全不同 ——
+ * 一个是「你输入错了」，另一个是「这个操作被安全策略拦下了」。
+ */
+export const E_PATH_UNSAFE = 'E_PATH_UNSAFE'
+/** 目标是受保护的根路径（/、/sdcard、/storage/emulated/0 …），拒绝删除/移动/改名（裁决 1）。 */
+export const E_PROTECTED_PATH = 'E_PROTECTED_PATH'
+/** 目标已存在（新建/重命名/复制/移动一律不覆盖，裁决 3）。 */
+export const E_ALREADY_EXISTS = 'E_ALREADY_EXISTS'
+/** 文件操作失败，且 stderr 里认不出已知原因。 */
+export const E_OP_FAILED = 'E_OP_FAILED'
+/** 设备上的目标位置只读（例如未 root 时写 /system）。 */
+export const E_READ_ONLY = 'E_READ_ONLY'
+/** 设备存储空间不足。 */
+export const E_NO_SPACE = 'E_NO_SPACE'
+/**
+ * 本地路径落在用户选定的根目录之外（含符号链接逃逸，裁决 5）。
+ *
+ * 与 E_PATH_UNSAFE 分开：这条是**本地**盘的越界，文案要引导用户去改根目录设置，
+ * 而 E_PATH_UNSAFE 是设备侧的目录穿越，两者该做的事不一样。
+ */
+export const E_OUTSIDE_ROOT = 'E_OUTSIDE_ROOT'
+
 /**
  * 全部错误码，顺序即「匹配优先级」的参考顺序。
  * 新增错误码必须同时在这里与 i18n 的中文文案表里登记，否则 errors.test 会红。
@@ -82,6 +110,14 @@ export const ERROR_CODES = [
   E_NOT_A_DIRECTORY,
   E_SYNC_FAILED,
   E_DEVICE_OFFLINE,
+  // 任务 9：文件操作与本地双栏
+  E_PATH_UNSAFE,
+  E_PROTECTED_PATH,
+  E_ALREADY_EXISTS,
+  E_OP_FAILED,
+  E_READ_ONLY,
+  E_NO_SPACE,
+  E_OUTSIDE_ROOT,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

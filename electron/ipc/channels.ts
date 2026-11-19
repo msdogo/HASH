@@ -27,6 +27,24 @@ export const CH = {
   TRANSFER_PICK_FILES: 'transfer:pick-files',
   /** event（主进程 → 渲染层）：传输队列有变化（进度已节流）。 */
   TRANSFER_CHANGED: 'transfer:changed',
+
+  /* ===== 任务 9：文件操作与本地双栏 ===== */
+  /** invoke：新建目录。 */
+  FS_MKDIR: 'fs:mkdir',
+  /** invoke：重命名（同目录内改名）。 */
+  FS_RENAME: 'fs:rename',
+  /** invoke：删除前的确认事实（数量 / 前 3 个名字 / 是否有非空目录）。 */
+  FS_REMOVE_FACTS: 'fs:remove-facts',
+  /** invoke：删除（**唯一不可逆操作**，必须由渲染层二次确认后才调）。 */
+  FS_REMOVE: 'fs:remove',
+  /** invoke：复制（同一设备内 cp）。 */
+  FS_COPY: 'fs:copy',
+  /** invoke：移动（同一设备内 mv）。 */
+  FS_MOVE: 'fs:move',
+  /** invoke：列举本地目录（限制在用户选定的根目录内）。 */
+  LOCAL_LIST: 'local:list',
+  /** invoke：让用户挑选本地根目录（系统目录选择框）。 */
+  LOCAL_PICK_ROOT: 'local:pick-root',
 } as const
 
 export type Channel = (typeof CH)[keyof typeof CH]
@@ -35,6 +53,15 @@ export type Channel = (typeof CH)[keyof typeof CH]
 export const INVOKE_CHANNELS = [
   CH.DEVICES_LIST,
   CH.FS_LIST,
+  // 任务 9：写操作 + 本地双栏
+  CH.FS_MKDIR,
+  CH.FS_RENAME,
+  CH.FS_REMOVE_FACTS,
+  CH.FS_REMOVE,
+  CH.FS_COPY,
+  CH.FS_MOVE,
+  CH.LOCAL_LIST,
+  CH.LOCAL_PICK_ROOT,
   CH.TRANSFER_ENQUEUE,
   CH.TRANSFER_CANCEL,
   CH.TRANSFER_RETRY,

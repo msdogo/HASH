@@ -39,6 +39,14 @@ describe('共享错误码', () => {
       'E_SYNC_FAILED',
       // 任务 8：传输途中设备掉线（裁决 4）
       'E_DEVICE_OFFLINE',
+      // 任务 9：文件操作与本地双栏（裁决 1 / 2 / 3 / 5）
+      'E_PATH_UNSAFE',
+      'E_PROTECTED_PATH',
+      'E_ALREADY_EXISTS',
+      'E_OP_FAILED',
+      'E_READ_ONLY',
+      'E_NO_SPACE',
+      'E_OUTSIDE_ROOT',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

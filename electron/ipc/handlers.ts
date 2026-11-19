@@ -1,9 +1,16 @@
 import {
+  FS_BATCH_INPUT,
   FS_LIST_INPUT,
+  FS_MKDIR_INPUT,
+  FS_REMOVE_FACTS_INPUT,
+  FS_RENAME_INPUT,
+  LOCAL_LIST_INPUT,
+  LOCAL_PICK_ROOT_INPUT,
   TRANSFER_CLEAR_INPUT,
   TRANSFER_ENQUEUE_INPUT,
   TRANSFER_ID_INPUT,
 } from '../../src/shared/api-contract'
+import type { FsOpData, FsRemoveFactsData, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
 import { normalizeDir } from '../fs/remote'
@@ -57,6 +64,12 @@ export interface HandlerDeps {
    * 而且「取消选择」与「选中若干文件」这两条路径都能被测到。
    */
   pickFiles: () => Promise<string[]>
+  /** 文件操作服务（新建/重命名/删除/复制/移动）。 */
+  ops: FileOpsController
+  /** 本地目录访问（限制在用户选定的根目录内）。 */
+  local: LocalController
+  /** 让用户挑选本地根目录（系统目录选择框）；取消返回空串。 */
+  pickRoot: () => Promise<string>
   /** 目录列举实现（默认 listDirDetailed；测试可注入）。 */
   fs: {
     list: (client: ShellRunner, adbPath: string, dir: string) => Promise<{
@@ -90,6 +103,26 @@ export interface TransferController {
   get(id: string): TransferTask | undefined
   snapshot(): TransferSnapshot
   clearFinished(): number
+}
+
+/**
+ * 文件操作对 IPC 层暴露的最小面（electron/fs/op-service 的 FsOpsService 满足它）。
+ *
+ * 只依赖接口而不是具体类：测试可以塞一个假实现验证
+ * 「校验 / 会话检查 / 错误码收敛 / 逐项结果透传」，不必起真 adb。
+ */
+export interface FileOpsController {
+  mkdir(serial: string, dir: string, name: string): Promise<{ ok: true } | { ok: false; code: string }>
+  rename(serial: string, from: string, newName: string): Promise<{ ok: true } | { ok: false; code: string }>
+  removeFacts(serial: string, targets: readonly string[]): Promise<FsRemoveFactsData>
+  remove(serial: string, targets: readonly string[]): Promise<FsOpData>
+  copy(serial: string, sources: readonly string[], dstDir: string | undefined): Promise<FsOpData>
+  move(serial: string, sources: readonly string[], dstDir: string | undefined): Promise<FsOpData>
+}
+
+/** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
+export interface LocalController {
+  list(dir?: string): Promise<LocalListData>
 }
 
 /** 统一的失败出口。 */
@@ -151,6 +184,140 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
           tzOffsetMinutes: result.tzOffsetMinutes,
         },
       }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ 文件操作（任务 9） ============ */
+
+  /**
+   * 所有写操作通道共用的前置检查。
+   *
+   * 三条判据（与 fs:list 一致，且**必须**一致 —— 不一致就是一条能被绕过的旁路）：
+   * 1. serial 必须是主进程掌握的会话，否则渲染层可以命令任意设备；
+   * 2. adb 必须已定位，否则下游 spawn('') 会变成一个语焉不详的 E_SYNC_FAILED；
+   * 3. 入参必须过 zod。
+   *
+   * 返回 Ok 时把 deps 里的 serial 收窄成分支，避免每个 handler 再写一遍。
+   */
+  const preflight = <T>(payload: unknown, schema: { safeParse: (value: unknown) => { success: boolean; data?: T; error?: unknown } }): { ok: true; data: T } | { ok: false; error: string } => {
+    const parsed = schema.safeParse(payload)
+    if (!parsed.success || parsed.data === undefined) return { ok: false, error: E_BAD_ARGS }
+    return { ok: true, data: parsed.data }
+  }
+
+  handle(CH.FS_MKDIR, async (_event, payload): Promise<IpcResult<FsOpData>> => {
+    const parsed = preflight<{ serial: string; dir: string; name: string }>(payload, FS_MKDIR_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    const { serial, dir, name } = parsed.data
+    if (deps.devices.get(serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      const result = await deps.ops.mkdir(serial, dir, name)
+      // 单项目操作也统一成逐项结果：渲染层只需处理一种形状（裁决 4 的同一条原则）
+      return {
+        ok: true,
+        data: { results: [result.ok ? { name, ok: true } : { name, ok: false, code: result.code }] },
+      }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.FS_RENAME, async (_event, payload): Promise<IpcResult<FsOpData>> => {
+    const parsed = preflight<{ serial: string; from: string; name: string }>(payload, FS_RENAME_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    const { serial, from, name } = parsed.data
+    if (deps.devices.get(serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      const result = await deps.ops.rename(serial, from, name)
+      return {
+        ok: true,
+        data: { results: [result.ok ? { name, ok: true } : { name, ok: false, code: result.code }] },
+      }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.FS_REMOVE_FACTS, async (_event, payload): Promise<IpcResult<FsRemoveFactsData>> => {
+    const parsed = preflight<{ serial: string; targets: string[] }>(payload, FS_REMOVE_FACTS_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    if (deps.devices.get(parsed.data.serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      return { ok: true, data: await deps.ops.removeFacts(parsed.data.serial, parsed.data.targets) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 删除。
+   *
+   * 这个通道**不做二次确认** —— 确认是渲染层的职责（裁决 1 要求确认框列事实）。
+   * 主进程侧的另一半防线是 fs/path-guard 的受保护路径：即使渲染层被绕过，
+   * /sdcard、/storage/emulated/0 这类根路径依然删不掉。
+   * 两层各自独立，不把安全押在单一层上。
+   */
+  handle(CH.FS_REMOVE, async (_event, payload): Promise<IpcResult<FsOpData>> => {
+    const parsed = preflight<{ serial: string; targets: string[] }>(payload, FS_REMOVE_FACTS_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    if (deps.devices.get(parsed.data.serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      return { ok: true, data: await deps.ops.remove(parsed.data.serial, parsed.data.targets) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.FS_COPY, async (_event, payload): Promise<IpcResult<FsOpData>> => {
+    const parsed = preflight<{ serial: string; sources: string[]; dstDir?: string }>(payload, FS_BATCH_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    if (deps.devices.get(parsed.data.serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      return { ok: true, data: await deps.ops.copy(parsed.data.serial, parsed.data.sources, parsed.data.dstDir) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.FS_MOVE, async (_event, payload): Promise<IpcResult<FsOpData>> => {
+    const parsed = preflight<{ serial: string; sources: string[]; dstDir?: string }>(payload, FS_BATCH_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    if (deps.devices.get(parsed.data.serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      return { ok: true, data: await deps.ops.move(parsed.data.serial, parsed.data.sources, parsed.data.dstDir) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ 本地目录（任务 9 本地双栏，裁决 5） ============ */
+
+  handle(CH.LOCAL_LIST, async (_event, payload): Promise<IpcResult<LocalListData>> => {
+    const parsed = preflight<{ dir?: string }>(payload, LOCAL_LIST_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.local.list(parsed.data.dir) }
+    } catch (err) {
+      // 越界（E_OUTSIDE_ROOT）与不存在（E_NOT_FOUND）都必须如实传出去：
+      // 前者是安全策略，后者是用户路径写错了，界面要给不同提示。
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.LOCAL_PICK_ROOT, async (_event, payload): Promise<IpcResult<string>> => {
+    const parsed = preflight<unknown>(payload, LOCAL_PICK_ROOT_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      // 取消选择返回空串（不是错误）：与 transfer:pick-files 的「取消 = 空数组」一致
+      return { ok: true, data: await deps.pickRoot() }
     } catch (err) {
       return fail(toErrorCode(err))
     }

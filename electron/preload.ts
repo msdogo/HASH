@@ -2,11 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from './ipc/channels'
 import type {
   DshApi,
+  FsBatchInput,
   FsListInput,
+  FsMkdirInput,
+  FsRemoveFactsInput,
+  FsRenameInput,
+  LocalListInput,
   TransferEnqueueInput,
   TransferIdInput,
 } from '../src/shared/api-contract'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
+import type { FsOpData, FsRemoveFactsData, LocalListData } from '../src/shared/file-ops'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 
 /**
@@ -74,6 +80,27 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 列举远程目录（裁决 7：真实实现，带 degraded/exitCode）。 */
       list: (payload: FsListInput): Promise<IpcResult<FsListData>> =>
         deps.invoke(CH.FS_LIST, payload) as Promise<IpcResult<FsListData>>,
+      /* ---- 任务 9：写操作。全部逐项返回（shared/file-ops 的 FsOpData） ---- */
+      mkdir: (payload: FsMkdirInput): Promise<IpcResult<FsOpData>> =>
+        deps.invoke(CH.FS_MKDIR, payload) as Promise<IpcResult<FsOpData>>,
+      rename: (payload: FsRenameInput): Promise<IpcResult<FsOpData>> =>
+        deps.invoke(CH.FS_RENAME, payload) as Promise<IpcResult<FsOpData>>,
+      removeFacts: (payload: FsRemoveFactsInput): Promise<IpcResult<FsRemoveFactsData>> =>
+        deps.invoke(CH.FS_REMOVE_FACTS, payload) as Promise<IpcResult<FsRemoveFactsData>>,
+      remove: (payload: FsRemoveFactsInput): Promise<IpcResult<FsOpData>> =>
+        deps.invoke(CH.FS_REMOVE, payload) as Promise<IpcResult<FsOpData>>,
+      copy: (payload: FsBatchInput): Promise<IpcResult<FsOpData>> =>
+        deps.invoke(CH.FS_COPY, payload) as Promise<IpcResult<FsOpData>>,
+      move: (payload: FsBatchInput): Promise<IpcResult<FsOpData>> =>
+        deps.invoke(CH.FS_MOVE, payload) as Promise<IpcResult<FsOpData>>,
+    },
+    local: {
+      /** 列举本地目录（限制在用户选定的根目录内）。 */
+      list: (payload: LocalListInput): Promise<IpcResult<LocalListData>> =>
+        deps.invoke(CH.LOCAL_LIST, payload) as Promise<IpcResult<LocalListData>>,
+      /** 挑选本地根目录；取消返回空串。 */
+      pickRoot: (): Promise<IpcResult<string>> =>
+        deps.invoke(CH.LOCAL_PICK_ROOT) as Promise<IpcResult<string>>,
     },
     transfer: {
       /** 加入传输队列。 */

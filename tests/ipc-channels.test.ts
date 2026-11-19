@@ -21,7 +21,17 @@ describe('IPC 通道常量（契约形状）', () => {
   it('invoke 与 event 通道不重叠（避免把推送挂到 handle 上）', () => {
     for (const channel of INVOKE_CHANNELS) expect(isEventChannel(channel)).toBe(false)
     for (const channel of EVENT_CHANNELS) expect(isInvokeChannel(channel)).toBe(false)
-    expect(INVOKE_CHANNELS.length + EVENT_CHANNELS.length).toBe(Object.keys(CH).length)
+    /*
+     * 每个通道都必须归入 invoke 或 event 之一，且不重复登记。
+     *
+     * 修前的写法是「两者数量之和 == CH 的键数」，任务 9 加了 8 个 invoke 通道后
+     * 那条断言会红 —— 但红的原因是「清单没跟上」，不是「实现有问题」。
+     * 改成按**通道值**去重再比：漏登记会少一个值，重复登记会多一个值，
+     * 两种错误都能抓到，且新增通道时只要清单同步就一定通过。
+     */
+    const all = [...INVOKE_CHANNELS, ...EVENT_CHANNELS]
+    expect(new Set(all).size).toBe(all.length)
+    expect([...all].sort()).toEqual([...Object.values(CH)].sort())
   })
 
   it('白名单判定拒绝任何未登记通道', () => {

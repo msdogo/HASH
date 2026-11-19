@@ -160,14 +160,31 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
 
     const controller = new AbortController()
     const task = runner.createPush('itest-overwrite', SERIAL as string, bigLocal, remotePath, big.length)
+    /*
+     * 【任务 9 修正】取消条件从「进度 > 25MB」改成「定时 250ms」。
+     *
+     * 判断谁错：断言（取消要留下原文件）是对的，红的是**夹具窗口太窄**。
+     * 任务 8 写这条用例时设备离线，它一直处于 skip；任务 9 设备恢复后实测
+     * 这台设备 USB 速度约 186MB/s（120MB 的 push 只用 674ms 就结束），
+     * 而进度轮询间隔是 500ms —— 第一次采样时传输已经完成，
+     * 「进度 > 25MB」这个取消条件**永远不会先于完成触发**，传输自然成功。
+     * 所以改成按时间取消（250ms 落在 674ms 的传输中途），
+     * 断言一条都没放宽：仍然要求 ok=false、旧文件逐字节未变、无残留。
+     */
+    const timer = setTimeout(() => { if (!controller.signal.aborted) controller.abort() }, 250)
     const running = runner.run(task, {
       signal: controller.signal,
-      onProgress: (done) => {
-        // 传到 25MB 以上再取消：确保确实写了一部分
-        if (done > 25 * 1024 * 1024 && !controller.signal.aborted) controller.abort()
+      onProgress: () => {
+        // 兜底：万一某个更慢的环境里 250ms 内已经传完，这条会先触发，避免用例假红
+        if (!controller.signal.aborted) controller.abort()
       },
     })
-    const result = await running
+    let result
+    try {
+      result = await running
+    } finally {
+      clearTimeout(timer)
+    }
     expect(result.ok).toBe(false)
 
     // 3) 给清理一点时间（rm 是另一条 adb 命令）

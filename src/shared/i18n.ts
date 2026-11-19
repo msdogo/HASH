@@ -83,6 +83,66 @@ const messages: Record<string, string> = {
   'transfer.summary': '{running} 个传输中 · {queued} 个排队',
   'transfer.queuedOnOffline': '设备离线，等待重连',
   'transfer.noDevice': '请先选择设备',
+  /*
+   * 【任务 9 / 裁决 7】恢复 transfer.download：
+   * 任务 8 审查 I4 记录的「有队列能力、没有界面入口」在本任务补上了 ——
+   * 文件页选中项 → 「下载到本地」按钮 → 走队列。留 key 不留入口才是问题，现在两者都有。
+   */
+  'transfer.download': '下载到本地',
+
+  // ---- 文件操作（任务 9）----
+  'op.toolbar.newFolder': '新建文件夹',
+  'op.toolbar.rename': '重命名',
+  'op.toolbar.delete': '删除',
+  'op.toolbar.copyTo': '复制到…',
+  'op.toolbar.moveTo': '移动到…',
+  'op.toolbar.refresh': '刷新',
+  'op.toolbar.download': '下载到本地',
+  'op.kind.delete': '删除',
+  'op.kind.copy': '复制',
+  'op.kind.move': '移动',
+  'op.kind.newFolder': '新建文件夹',
+  'op.kind.rename': '重命名',
+  'op.field.name': '名称',
+  'op.field.namePlaceholder': '输入新的名称',
+  'op.field.dstPlaceholder': '输入设备上的目标目录，如 /sdcard/Download',
+  'op.field.folderPlaceholder': '输入新文件夹的名字',
+  'op.confirm': '确定',
+  'op.cancel': '取消',
+  'op.busy': '处理中…',
+  /*
+   * 删除确认框（裁决 1 + 规格 §9.6）：
+   * 必须说清「将删除 N 项」「前 3 个名字」「其中有非空目录」「有几项被拒绝」。
+   * 这几条不是装饰 —— 用户是凭它们判断自己有没有选错的。
+   */
+  'op.delete.title': '确认删除',
+  'op.delete.count': '将删除 {count} 项：',
+  'op.delete.more': '…另有 {rest} 项未列出',
+  'op.delete.nonEmpty': '其中有非空文件夹，里面的文件会一起被删除，且无法恢复',
+  'op.delete.blocked': '{count} 项被安全策略拒绝，不会删除',
+  'op.delete.irreversible': '删除后无法恢复，请确认无误',
+  'op.result.title': '{ok} 成功 / {failed} 失败',
+  'op.result.allOk': '{ok} 项全部成功',
+  'op.result.failures': '失败项',
+  'op.result.dismiss': '知道了',
+  'op.noSelection': '请先选中要操作的项',
+  'op.newFolder.title': '新建文件夹',
+  'op.rename.title': '重命名',
+  'op.copy.title': '复制到目录',
+  'op.move.title': '移动到目录',
+  'op.needLocalDir': '请先在本地面板里选择一个目标文件夹',
+  'op.downloaded': '已加入下载队列，可在下方查看进度',
+
+  // ---- 本地栏（任务 9 / 裁决 5）----
+  'local.title': '本地',
+  'local.root': '范围：{root}',
+  'local.pickRoot': '更换目录',
+  'local.up': '上一级',
+  'local.empty': '这个文件夹是空的',
+  'local.loading': '正在读取本地目录…',
+  'local.restricted': '这个位置在本地选定目录之外，无法访问',
+  'local.selectHint': '点击文件夹进入，选中文件后可上传',
+  'local.refresh': '刷新',
 }
 
 /**
@@ -113,6 +173,14 @@ const errorTexts: Record<ErrorCode, string> = {
   E_NOT_A_DIRECTORY: '这个快捷方式指向的是一个文件而不是目录，因此不能进入。可以双击文件本身来查看或下载它',
   E_SYNC_FAILED: '传输没有完成，可能是中途断开、空间不足或目标位置不可写。可以直接重试这一次传输',
   E_DEVICE_OFFLINE: '设备已断开，这台设备的传输已暂停。重新连接后可以一键重试',
+  // ---- 任务 9：文件操作与本地双栏 ----
+  E_PATH_UNSAFE: '这个路径里有「..」，会跳出允许访问的位置，已拒绝执行。请改用完整的绝对路径',
+  E_PROTECTED_PATH: '这是设备的系统根目录（例如 /sdcard、/storage/emulated/0），为防止误操作已被禁止删除或移动',
+  E_ALREADY_EXISTS: '目标位置已经有同名的文件或文件夹了。请换一个名字，或先把原来的删掉/改名',
+  E_OP_FAILED: '操作没有完成，文件保持原样，没有被删除或覆盖。请刷新后重试',
+  E_READ_ONLY: '这个位置是只读的，当前权限无法写入。请换一个目录（例如 /sdcard/Download）',
+  E_NO_SPACE: '设备存储空间不足，操作已中止。请先清理一些文件再试',
+  E_OUTSIDE_ROOT: '这个位置在本地选定的目录之外，已被拒绝访问。请先在左侧切换到允许的目录',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */

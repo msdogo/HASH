@@ -167,6 +167,132 @@ describe('任务 7：文件页契约（静态断言）', () => {
     expect(store).not.toMatch(/switch \(action\.type\)/)
   })
 })
+describe('任务 9：文件操作与本地双栏契约（静态断言）', () => {
+  const OP_SOURCES = [
+    'src/components/FileToolbar.tsx',
+    'src/components/LocalPanel.tsx',
+    'src/components/OpDialog.tsx',
+    'src/pages/FilesPage.tsx',
+    'src/store/opStore.ts',
+    'src/store/localStore.ts',
+    'src/shared/op-view.ts',
+    'src/shared/fs-ops.ts',
+    'src/shared/path-guard.ts',
+    'src/shared/file-ops.ts',
+  ]
+
+  it('新增源码不 import node 内置模块 / electron，且无 as any', () => {
+    for (const rel of OP_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('新增组件文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of ['src/components/FileToolbar.tsx', 'src/components/LocalPanel.tsx', 'src/components/OpDialog.tsx']) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('渲染层的文件操作与本地访问只经 window.api（不绕过 preload）', () => {
+    const opStore = read('src/store/opStore.ts')
+    // 写操作必须走 api-contract 里的通道
+    for (const call of ['window.api.fs.mkdir(', 'window.api.fs.rename(', 'window.api.fs.removeFacts(', 'window.api.fs.remove(', 'window.api.fs.copy(', 'window.api.fs.move(']) {
+      expect(opStore, call).toContain(call)
+    }
+    // 裁决 7：下载必须走传输队列（不是自己 spawn / 不是 fs.copy）
+    expect(opStore).toContain('window.api.transfer.enqueue(')
+    expect(opStore).toContain("direction: 'pull'")
+    // 本地访问只经 local 命名空间
+    expect(read('src/store/localStore.ts')).toContain('window.api.local.list(')
+    expect(read('src/store/localStore.ts')).toContain('window.api.local.pickRoot(')
+  })
+
+  it('裁决 1：删除必须先取事实再开确认框（渲染层不允许盲删）', () => {
+    const opStore = read('src/store/opStore.ts')
+    // prepareDelete 里 removeFacts 必须在 openConfirm 之前
+    const fnStart = opStore.indexOf('prepareDelete: async')
+    const fnBody = opStore.slice(fnStart, fnStart + 900)
+    expect(fnBody.indexOf('removeFacts(')).toBeGreaterThan(-1)
+    expect(fnBody.indexOf('removeFacts(')).toBeLessThan(fnBody.indexOf("type: 'openConfirm'"))
+    // 确认按钮的可用性来自 shared 的 canConfirm（有单测），不在组件里重写
+    expect(read('src/components/OpDialog.tsx')).toContain('canConfirm(')
+    expect(opStore).not.toMatch(/facts:\s*\{[^}]*count:\s*\d/)
+  })
+
+  it('裁决 1：确认框必须显示数量、前 3 个名字与非空提示', () => {
+    const dialog = read('src/components/OpDialog.tsx')
+    // 标题经 titleKey() 映射到 i18n key（不是直接 t('op.delete.title')）
+    expect(dialog).toContain("return 'op.delete.title'")
+    expect(dialog).toContain('t(titleKey(dialog))')
+    expect(dialog).toContain("tf('op.delete.count'")
+    expect(dialog).toContain('facts.names.map')
+    expect(dialog).toContain('facts.hasNonEmptyDir')
+    expect(dialog).toContain("t('op.delete.nonEmpty')")
+    expect(dialog).toContain('facts.blocked')
+    expect(dialog).toContain("t('op.delete.irreversible')")
+  })
+
+  it('裁决 4：界面显示「N 成功 / M 失败」且失败项可展开看文案', () => {
+    const dialog = read('src/components/OpDialog.tsx')
+    expect(dialog).toContain("tf('op.result.title'")
+    expect(dialog).toContain('summary.failures.map')
+    expect(dialog).toContain('errorText(')
+  })
+
+  it('裁决 5：本地面板显示当前限制范围（用户必须看得见）', () => {
+    expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.root'")
+  })
+
+  it('裁决 1：主进程写操作必须过统一路径闸门与受保护判定', () => {
+    const ops = read('electron/fs/operations.ts')
+    expect(ops).toContain('assertSafeRemotePath')
+    expect(ops).toContain('isProtectedRemotePath')
+    // 删除前必须 stat 判类型（决定递归与链接处理）
+    expect(ops).toContain('statKind(')
+    expect(ops).toMatch(/rm -rf -- |'rm -rf -- '/)
+    // 移动必须带 -n（不覆盖）
+    expect(ops).toContain('mv -n -- ')
+    // 不允许出现非 shellQuote 转义的命令拼接旁路
+    expect(ops).not.toMatch(/\['\s*\+\s*path\b/)
+  })
+
+  it('裁决 2：所有远程写路径都来自 shared/path-guard 的单一闸门', () => {
+    const guard = read('src/shared/path-guard.ts')
+    expect(guard).toContain('export function checkRemotePath')
+    expect(guard).toContain('export function assertSafeRemotePath')
+    expect(guard).toContain('export function checkName')
+    // 其它文件不得自己再写一份「含 .. 就拒」的规则（那正是本任务要收敛的分叉）
+    for (const rel of ['electron/fs/operations.ts', 'electron/fs/op-service.ts']) {
+      expect(read(rel), rel).not.toMatch(/split\('\/'\).*=== '\\.\\.'/)
+    }
+  })
+
+  it('裁决 5：本地访问必须在主进程做 realpath 判定（词法检查防不住符号链接）', () => {
+    const local = read('electron/fs/local.ts')
+    expect(local).toContain('realpath')
+    expect(local).toContain('isInsideRoot')
+    expect(local).toContain('E_OUTSIDE_ROOT')
+  })
+
+  it('裁决 7：文件页有下载入口（不允许「有队列没界面」）', () => {
+    const toolbar = read('src/components/FileToolbar.tsx')
+    expect(toolbar).toContain("t('op.toolbar.download')")
+    const page = read('src/pages/FilesPage.tsx')
+    expect(page).toContain('onDownload=')
+    expect(page).toContain('download(')
+    // i18n 里必须有对应文案（任务 8 曾主动删掉该 key，说「留 key 不留入口是许愿池」）
+    expect(read('src/shared/i18n.ts')).toContain("'transfer.download'")
+  })
+})
+
 describe('任务 8：传输底栏契约（静态断言）', () => {
   const TRANSFER_SOURCES = [
     'src/components/TransferDock.tsx',
@@ -213,6 +339,17 @@ describe('任务 8：传输底栏契约（静态断言）', () => {
     expect(main).toContain('TransferOnlineTracker')
     // 必须在设备变化回调里做，而不是启动时做一次
     expect(main).toMatch(/onDevicesChanged\([\s\S]{0,700}wireBatchToTransfer\(/)
+    /*
+     * 【裁决 8 / 任务 9】反向断言：回调里禁止再调用 devices.list()。
+     *
+     * 复审变异 M1c 抓到的缺口：喂一个空批次时上面那条静态断言仍然全绿 ——
+     * 它只证明了「接线存在」，证明不了「接线拿的是真实变化」。
+     * 第 1 轮的死路正是「回调里读两次 list() 再自 diff」，所以这条禁用是它的另一半：
+     * 少了它，将来有人把 wireBatchToTransfer 的参数换成「现取的快照」也不会被发现。
+     */
+    const callback = /onDevicesChanged\(\([^)]*\)\s*=>\s*\{[\s\S]*?\n\s*\}\)/.exec(main)
+    expect(callback).not.toBeNull()
+    if (callback !== null) expect(callback[0]).not.toMatch(/devices\.list\(/)
     // 反例：不允许退回「取两次快照再自 diff」
     expect(main).not.toContain('diffOnlineSerials(')
   })

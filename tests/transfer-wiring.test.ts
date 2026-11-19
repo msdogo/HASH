@@ -96,7 +96,13 @@ describe('I1 行为级：设备状态变化真的会驱动 setDeviceOnline', () 
     ])
   })
 
-  it('设备整台从会话表移除（gc）→ 也按掉线处理', () => {
+  /*
+   * 【裁决 8 / 任务 9】用例名改准：本条实际走的是 markLost 产生的 offline changed 分支，
+   * 而不是 removed 分支（复审变异实证：删掉 removed 分支的 push，本条仍绿）。
+   * 真正的 removed 分支由下面那条「直接构造批次」的用例压住。
+   * 保留本条是因为它覆盖的是**真实生产路径**（gc 之前设备已先掉线）。
+   */
+  it('设备掉线后整台从会话表移除（gc）→ 掉线判定仍然成立', () => {
     const chain = createChain()
     chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
     chain.tracker.flush()
@@ -131,6 +137,36 @@ describe('I1 行为级：设备状态变化真的会驱动 setDeviceOnline', () 
     chain.tracker.flush()
 
     expect(chain.target.calls).toEqual([{ serial: 'A', online: false }])
+  })
+})
+
+describe('裁决 8：removed 分支本身（直接构造批次，绕过 changed）', () => {
+  /*
+   * 生产路径上 removed 分支基本不可达（gc 只删 lostAt，而 lostAt 只在发过 offline
+   * changed 之后才设置）。它是防御性代码，正因为如此更需要一条能压住它的用例：
+   * 用「只在 removed 里出现的 serial」直接构造批次 —— 这时若删掉 removed 分支的 push，
+   * 本用例必红（复审已用变异验证过）。
+   */
+  it('批次里只有 removed、没有对应 changed 时，以 online=false 推送', () => {
+    const tracker = new TransferOnlineTracker()
+    const target = recorder()
+    // 先让它上线，模拟「上一次批次里它是可传输的」
+    const first = tracker.apply({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 0 }], removed: [] })
+    expect(first).toEqual({ wentOffline: [], cameOnline: ['A'] })
+    expect(target.calls).toEqual([])
+    wireBatchToTransfer(tracker, { changed: [], removed: ['A'] }, target)
+
+    expect(target.calls).toEqual([{ serial: 'A', online: false }])
+    // 也确认 known 被清掉：再收到同 serial 的 device 会重新算 cameOnline
+    const after = tracker.apply({ changed: [{ serial: 'A', status: 'device', transport: 'usb', lastSeenAt: 0 }], removed: [] })
+    expect(after).toEqual({ wentOffline: [], cameOnline: ['A'] })
+  })
+
+  it('removed 里是未知 serial 时不产生任何调用（不误报掉线）', () => {
+    const tracker = new TransferOnlineTracker()
+    const target = recorder()
+    wireBatchToTransfer(tracker, { changed: [], removed: ['NEVER-SEEN'] }, target)
+    expect(target.calls).toEqual([])
   })
 })
 

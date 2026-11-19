@@ -13,6 +13,9 @@ import { CH } from './ipc/channels'
 import { registerHandlers } from './ipc/handlers'
 import { TransferOnlineTracker, wireBatchToTransfer } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
+import { FsOpsService } from './fs/op-service'
+import { LocalFs } from './fs/local'
+import { homedir } from 'node:os'
 import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
@@ -72,6 +75,28 @@ const transfer = new TransferService({
   // emit 里的 broadcast 是函数声明（会提升），窗口还没建好时它自然只会遍历到空窗口列表。
   emit: () => { broadcastTransfer() },
 })
+/**
+ * 文件操作服务（任务 9）。
+ *
+ * adbPath 同样用 getter：模块顶层构造时自检还没完成，取到的必然是空串。
+ */
+const fsOps = new FsOpsService({
+  clientFor: (serial) => createClient(serial),
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+})
+
+/**
+ * 本地根目录（裁决 5）。
+ *
+ * 缺省是用户主目录 —— 比「用户自己挑一个」更可用（大多数下载/上传都发生在主目录下），
+ * 又比「整台机器」安全得多。用户可以通过本地栏的「选择目录」改成别处，
+ * 一旦改了，所有本地访问（读与写）都被限制在新根内。
+ *
+ * root 是变量而不是常量：选择框改它之后，下一次访问立刻生效，不需要重启。
+ */
+let localRoot = homedir()
+const localFs = new LocalFs({ root: () => localRoot })
+
 /** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */
 const bootAbort = new AbortController()
 
@@ -161,6 +186,26 @@ app.whenReady().then(async () => {
             adbState: () => adbState,
             clientFactory: (serial) => createClient(serial),
             fs: { list: listDirDetailed },
+            ops: fsOps,
+            local: localFs,
+            /*
+             * 挑选本地根目录。
+             *
+             * 与 pickFiles 一样必须挂在有窗口的父级上；没有窗口时返回空串
+             * （渲染层当成「用户没选」，不是错误 —— 取消选择本来就不是错误）。
+             */
+            pickRoot: async () => {
+              const win = BrowserWindow.getAllWindows()[0]
+              if (win === undefined) return ''
+              const picked = await dialog.showOpenDialog(win, {
+                title: '选择本地根目录（此目录之外的文件不会被访问）',
+                defaultPath: localRoot,
+                properties: ['openDirectory', 'createDirectory'],
+              })
+              if (picked.canceled || picked.filePaths.length === 0) return ''
+              localRoot = picked.filePaths[0]
+              return localRoot
+            },
             transfer: transfer.controller,
             // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
             // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。

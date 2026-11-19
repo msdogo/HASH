@@ -3,8 +3,10 @@ import { DeviceManager } from '../electron/devices/manager'
 import { CH, INVOKE_CHANNELS } from '../electron/ipc/channels'
 import {
   registerHandlers,
+  type FileOpsController,
   type HandlerDeps,
   type IpcMainLike,
+  type LocalController,
   type TransferController,
 } from '../electron/ipc/handlers'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
@@ -103,6 +105,53 @@ export function fakeTransfer(): TransferController & { tasks: Map<string, Transf
   }
 }
 
+/**
+ * 假文件操作服务：记录每次调用的入参，返回可预测的逐项结果。
+ *
+ * 用假的而不是真的 FsOpsService：IPC 层的职责只有「校验 / 会话检查 / 错误码收敛 /
+ * 逐项结果原样透传」，真服务的行为已经由 tests/op-service.test.ts 全覆盖。
+ * 混在一起测会让 IPC 用例在服务层改动时大面积假红。
+ */
+export function fakeOps(): FileOpsController & {
+  calls: Array<{ method: string; serial: string; args: unknown[] }>
+} {
+  const calls: Array<{ method: string; serial: string; args: unknown[] }> = []
+  const record = (method: string, serial: string, args: unknown[]): void => { calls.push({ method, serial, args }) }
+  return {
+    calls,
+    mkdir: async (serial, dir, name) => { record('mkdir', serial, [dir, name]); return { ok: true } },
+    rename: async (serial, from, newName) => { record('rename', serial, [from, newName]); return { ok: true } },
+    removeFacts: async (serial, targets) => {
+      record('removeFacts', serial, [targets])
+      return { count: targets.length, names: targets.slice(0, 3), truncated: targets.length > 3, hasNonEmptyDir: false, blocked: [] }
+    },
+    remove: async (serial, targets) => {
+      record('remove', serial, [targets])
+      return { results: targets.map((target) => ({ name: target.split('/').pop() ?? target, ok: true })) }
+    },
+    copy: async (serial, sources, dstDir) => {
+      record('copy', serial, [sources, dstDir])
+      return { results: sources.map((source) => ({ name: source.split('/').pop() ?? source, ok: true })) }
+    },
+    move: async (serial, sources, dstDir) => {
+      record('move', serial, [sources, dstDir])
+      return { results: sources.map((source) => ({ name: source.split('/').pop() ?? source, ok: true })) }
+    },
+  }
+}
+
+/** 假本地目录访问（越界错误码由真实现给，这里只验证 IPC 的透传）。 */
+export function fakeLocal(): LocalController & { calls: Array<string | undefined> } {
+  const calls: Array<string | undefined> = []
+  return {
+    calls,
+    list: async (dir) => {
+      calls.push(dir)
+      return { cwd: dir ?? 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }
+    },
+  }
+}
+
 const LIST_OK: ListResult = {
   entries: [
     {
@@ -152,6 +201,9 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     },
     transfer: fakeTransfer(),
     pickFiles: async () => [],
+    ops: fakeOps(),
+    local: fakeLocal(),
+    pickRoot: async () => '',
     ...over,
   }
   const ipc = fakeIpc()

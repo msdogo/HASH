@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
@@ -13,8 +13,15 @@ import {
 import { errorText, t, tf } from '@shared/i18n'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { FileTable } from '@/components/FileTable'
+import { FileToolbar } from '@/components/FileToolbar'
+import { LocalPanel } from '@/components/LocalPanel'
+import { OpDialogHost } from '@/components/OpDialog'
 import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
+import { useLocalStore } from '@/store/localStore'
+import { useOpStore } from '@/store/opStore'
+import { useTransferStore } from '@/store/transferStore'
+import { joinEntryPath } from '@shared/file-view'
 
 /**
  * 文件页（任务 7）。
@@ -62,6 +69,23 @@ export function FilesPage() {
   const refresh = useFileStore((state) => state.refresh)
   const load = useFileStore((state) => state.load)
   const syncDevices = useFileStore((state) => state.syncDevices)
+
+  /*
+   * 文件操作（任务 9）。
+   *
+   * 注意这里**只拿 action，不订阅 op 状态**：对话框的状态由 OpDialogHost 自己订阅，
+   * 页面订阅它会让每次「busy 翻转」都重渲染整个文件列表（万级条目下是可见的卡顿）。
+   */
+  const openOp = useOpStore((state) => state.open)
+  const prepareDelete = useOpStore((state) => state.prepareDelete)
+  const download = useOpStore((state) => state.download)
+  const localData = useLocalStore((state) => state.data)
+  const enqueueTransfer = useTransferStore((state) => state.enqueue)
+
+  /** 本地面板折叠状态（任务 9：本地双栏可折叠）。 */
+  const [localCollapsed, setLocalCollapsed] = useState(false)
+  /** 下载/上传这类「队列类」操作的提示（走底栏，不走 op 结果条）。 */
+  const [queueNotice, setQueueNotice] = useState<string | null>(null)
 
   // 【I5/I6】把设备表的变化接到分片生命周期上：
   // 新设备建分片；消失的设备 forget（否则每台设备存一整份 entries，内存单调增长）。
@@ -203,6 +227,84 @@ export function FilesPage() {
     [serial, current.cwd, handleJump, refresh],
   )
 
+  /*
+   * 选中项对应的完整路径（文件操作都要绝对路径）。
+   *
+   * 从 store 现取当前 entries：visibleEntries 是「过滤+排序后」的展示数组，
+   * 而 selected 里存的是名字 —— 两者按名字对齐即可，不必再订阅一份 entries。
+   */
+  const selectedTargets = useCallback((): string[] => {
+    if (serial === null) return []
+    const view = useFileStore.getState().views[serial]
+    const names = view?.selected ?? []
+    const base = view?.cwd ?? current.cwd
+    return names.map((name) => joinEntryPath(base, name))
+  }, [serial, current.cwd])
+
+  /**
+   * 下载到本地（裁决 7：任务 8 遗留 I4 的界面入口）。
+   *
+   * 走传输队列（transfer.enqueue）：**跨端**传输必须有进度与取消能力，
+   * 那是队列的职责；而同一设备内的 cp/mv 才允许直接 shell（见 operations.ts）。
+   */
+  const handleDownload = useCallback(async () => {
+    if (serial === null) return
+    const targets = selectedTargets()
+    if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
+    const localDir = localData?.cwd
+    if (localDir === undefined) { setQueueNotice(t('op.needLocalDir')); return }
+    const code = await download(serial, targets, localDir)
+    if (code !== null) { setQueueNotice(errorText(code)); return }
+    setQueueNotice(t('op.downloaded'))
+  }, [serial, selectedTargets, localData, download])
+
+  /** 上传：本地面板选中的文件 → 设备当前目录（同样走队列，与任务 8 的入口一致）。 */
+  const handleUpload = useCallback(async (localPath: string) => {
+    if (serial === null) return
+    const code = await enqueueTransfer({ serial, direction: 'push', src: localPath, dstDir: current.cwd })
+    setQueueNotice(code === null ? null : errorText(code))
+    if (code === null) void refresh(serial)
+  }, [serial, enqueueTransfer, current.cwd, refresh])
+
+  /** 新建文件夹：打开输入框；提交由对话框负责。 */
+  const handleNewFolder = useCallback(() => {
+    openOp({ type: 'openConfirm', kind: 'newFolder', targets: [] })
+  }, [openOp])
+
+  /** 重命名：必须是单选（工具条已按 selectedCount 禁用多项）。 */
+  const handleRename = useCallback(() => {
+    if (serial === null) return
+    const targets = selectedTargets()
+    if (targets.length !== 1) { setQueueNotice(t('op.noSelection')); return }
+    openOp({ type: 'openConfirm', kind: 'rename', targets })
+  }, [serial, selectedTargets, openOp])
+
+  /**
+   * 删除：**必须先取事实再开框**（裁决 1）。
+   *
+   * 取事实失败（例如整批都被拒绝）时不打开确认框 —— 宁可什么都不发生，
+   * 也不弹一个信息不全的确认框让用户盲删。
+   */
+  const handleDelete = useCallback(async () => {
+    if (serial === null) return
+    const targets = selectedTargets()
+    if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
+    const code = await prepareDelete(serial, targets)
+    if (code !== null) setQueueNotice(errorText(code))
+  }, [serial, selectedTargets, prepareDelete])
+
+  const handleCopyTo = useCallback(() => {
+    const targets = selectedTargets()
+    if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
+    openOp({ type: 'openConfirm', kind: 'copy', targets })
+  }, [selectedTargets, openOp])
+
+  const handleMoveTo = useCallback(() => {
+    const targets = selectedTargets()
+    if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
+    openOp({ type: 'openConfirm', kind: 'move', targets })
+  }, [selectedTargets, openOp])
+
   if (serial === null) {
     return <p className="p-8 text-sm text-neutral-500">{t('devices.selectHint')}</p>
   }
@@ -211,7 +313,19 @@ export function FilesPage() {
   const restoreKey = serial + '\u0001' + current.cwd + '\u0001' + current.status
 
   return (
-    <section className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 w-full">
+    <section className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <FileToolbar
+        selectedCount={current.selected.length}
+        ready
+        onCreateFolder={handleNewFolder}
+        onRename={handleRename}
+        onDelete={() => { void handleDelete() }}
+        onCopyTo={handleCopyTo}
+        onMoveTo={handleMoveTo}
+        onDownload={() => { void handleDownload() }}
+        downloadHint={queueNotice}
+      />
       <div className="flex items-center gap-1 border-b border-neutral-800 pr-2">
         <div className="min-w-0 flex-1">
           <Breadcrumb
@@ -300,6 +414,19 @@ export function FilesPage() {
           <span className="text-neutral-400">{tf('files.selected', { count: current.selected.length })}</span>
         )}
       </div>
+
+      {/* 操作对话框与结果提示：绝对定位覆盖在文件页内（不挡住底栏的传输进度） */}
+      <OpDialogHost
+        serial={serial}
+        cwd={current.cwd}
+        onRefresh={() => { void refresh(serial) }}
+      />
     </section>
+    <LocalPanel
+      onUpload={(localPath) => { void handleUpload(localPath) }}
+      collapsed={localCollapsed}
+      onToggleCollapsed={() => { setLocalCollapsed(!localCollapsed) }}
+    />
+    </div>
   )
 }

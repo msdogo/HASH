@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 import type { TransferSnapshot, TransferTask } from './transfer'
+import type { FsOpData, FsRemoveFactsData, LocalListData } from './file-ops'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -71,10 +72,77 @@ export type TransferIdInput = z.infer<typeof TRANSFER_ID_INPUT>
 /** transfer:clear 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」的契约）。 */
 export const TRANSFER_CLEAR_INPUT = z.unknown()
 
+/* ============ 任务 9：文件操作（新建 / 重命名 / 删除 / 复制 / 移动） ============ */
+
+/**
+ * 所有远程写操作的公共外壳。
+ *
+ * 为什么单独抽 serial：每一条写命令都必须打到「用户正在看的那台设备」上，
+ * 而 serial 在四条通道里的语义完全相同 —— 重复写四遍只会漂移。
+ *
+ * 注意**不在这里**校验路径是否绝对 / 是否含 '..'：那是主进程
+ * shared/path-guard 的 assertSafeRemotePath 的职责（错误码更精确，
+ * 且渲染层的列表数据本来就来自主进程，没必要在校验层再猜一次）。
+ */
+const serialBase = { serial: z.string().min(1) }
+
+/** fs:mkdir 入参。 */
+export const FS_MKDIR_INPUT = z.object({
+  ...serialBase,
+  dir: z.string().min(1),
+  name: z.string().min(1),
+})
+export type FsMkdirInput = z.infer<typeof FS_MKDIR_INPUT>
+
+/** fs:rename 入参。 */
+export const FS_RENAME_INPUT = z.object({
+  ...serialBase,
+  from: z.string().min(1),
+  name: z.string().min(1),
+})
+export type FsRenameInput = z.infer<typeof FS_RENAME_INPUT>
+
+/**
+ * 批量操作入参（删除 / 复制 / 移动共用）。
+ *
+ * sources 数组上限 500：一次删几千项既不是用户能确认的量（确认框只列前 3 个），
+ * 也会把单次 IPC 变成一个长事务。超过就该分批/换用法。
+ */
+export const FS_BATCH_INPUT = z.object({
+  ...serialBase,
+  sources: z.array(z.string().min(1)).min(1).max(500),
+  /** 目标目录（复制/移动必填；删除时为 undefined）。 */
+  dstDir: z.string().min(1).optional(),
+})
+export type FsBatchInput = z.infer<typeof FS_BATCH_INPUT>
+
+/**
+ * 删除前的确认事实入参。
+ *
+ * 与 fs:remove 分开是**刻意的**：确认框必须先看到「N 项 / 前 3 个名字 / 是否有非空目录」
+ * 才能问用户，而这份事实只能由主进程去 stat 出来。
+ * 让渲染层自己拼就是「界面猜了一个数字，然后删掉的是另一批东西」。
+ */
+export const FS_REMOVE_FACTS_INPUT = z.object({
+  ...serialBase,
+  targets: z.array(z.string().min(1)).min(1).max(500),
+})
+export type FsRemoveFactsInput = z.infer<typeof FS_REMOVE_FACTS_INPUT>
+
+/** local:list 入参（dir 可省略，省略即根目录）。 */
+export const LOCAL_LIST_INPUT = z.object({
+  dir: z.string().min(1).optional(),
+})
+export type LocalListInput = z.infer<typeof LOCAL_LIST_INPUT>
+
+/** local:pick-root 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
+export const LOCAL_PICK_ROOT_INPUT = z.unknown()
+
 /* ============ 出参类型（从 shared/types 派生，不重复定义） ============ */
 
 export type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 export type { TransferSnapshot, TransferTask } from './transfer'
+export type { FsOpData, FsRemoveFactsData, LocalListData, LocalItem } from './file-ops'
 
 /* ============ 唯一 API 接口（I3：编译期强制的唯一事实源） ============ */
 
@@ -115,6 +183,31 @@ export interface DshApi {
   fs: {
     /** 列举远程目录；入参类型从 FsListInput（zod schema 派生）来。 */
     list(payload: FsListInput): Promise<IpcResult<FsListData>>
+    /* ---- 任务 9：写操作（全部逐项返回，见 shared/file-ops） ---- */
+    /** 新建目录。 */
+    mkdir(payload: FsMkdirInput): Promise<IpcResult<FsOpData>>
+    /** 重命名（同目录改名，不覆盖）。 */
+    rename(payload: FsRenameInput): Promise<IpcResult<FsOpData>>
+    /**
+     * 取删除确认框要显示的事实（数量 / 前 3 个名字 / 是否有非空目录）。
+     * 必须先调它拿到事实，再由界面问用户，最后才调 remove —— 顺序不能反。
+     */
+    removeFacts(payload: FsRemoveFactsInput): Promise<IpcResult<FsRemoveFactsData>>
+    /**
+     * 删除（不可逆）。逐项返回结果：一项失败不影响其余（裁决 4）。
+     * 受保护的根路径会被主进程拒绝（E_PROTECTED_PATH）。
+     */
+    remove(payload: FsRemoveFactsInput): Promise<IpcResult<FsOpData>>
+    /** 复制到目标目录（同设备内 cp，不走 USB / 不进队列）。 */
+    copy(payload: FsBatchInput): Promise<IpcResult<FsOpData>>
+    /** 移动到目标目录（同设备内 mv，原子语义，目标已存在则拒绝）。 */
+    move(payload: FsBatchInput): Promise<IpcResult<FsOpData>>
+  }
+  local: {
+    /** 列举本地目录（限制在用户选定的根目录内，越界返回 E_OUTSIDE_ROOT）。 */
+    list(payload: LocalListInput): Promise<IpcResult<LocalListData>>
+    /** 让用户挑选本地根目录；取消返回空串（不是错误）。 */
+    pickRoot(): Promise<IpcResult<string>>
   }
   transfer: {
     /** 加入传输队列（上传或下载）。 */
@@ -152,7 +245,8 @@ export interface DshApi {
 export const API_SURFACE = {
   app: ['ping'],
   devices: ['list', 'onChanged'],
-  fs: ['list'],
+  fs: ['list', 'mkdir', 'rename', 'removeFacts', 'remove', 'copy', 'move'],
+  local: ['list', 'pickRoot'],
   transfer: ['enqueue', 'cancel', 'retry', 'list', 'clear', 'pickFiles', 'onChanged'],
 } as const
 

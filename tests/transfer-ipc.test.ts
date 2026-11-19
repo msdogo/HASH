@@ -56,6 +56,17 @@ function harness(over: Partial<HandlerDeps> = {}, hasDevice = true): Harness {
     clientFactory: (serial) => ({ serial }) as never,
     fs: { list: async () => ({ entries: [], degraded: false, unparsed: 0, usedFallback: false, exitCode: 0, tzOffsetMinutes: 0 }) },
     pickFiles: async () => ['C:/picked/a.bin'],
+    // 本文件只测传输：文件操作与本地栏给最小空壳，只为满足 HandlerDeps
+    ops: {
+      mkdir: async () => ({ ok: true }),
+      rename: async () => ({ ok: true }),
+      removeFacts: async () => ({ count: 0, names: [], truncated: false, hasNonEmptyDir: false, blocked: [] }),
+      remove: async () => ({ results: [] }),
+      copy: async () => ({ results: [] }),
+      move: async () => ({ results: [] }),
+    },
+    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
+    pickRoot: async () => '',
     transfer: {
       enqueue: (input) => {
         enqueued.push(input)

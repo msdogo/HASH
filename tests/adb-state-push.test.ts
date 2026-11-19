@@ -139,6 +139,17 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
         clientFactory: (serial) => ({ serial, run: async () => ({ code: 0, stdout: '', stderr: '' }) }),
         fs: { list: async () => ({ entries: [], degraded: false, unparsed: 0, usedFallback: false, exitCode: 0, tzOffsetMinutes: 0 }) },
         pickFiles: async () => [],
+        // 文件操作与本地栏同理：空壳只满足 HandlerDeps（各自有专门的测试）
+        ops: {
+          mkdir: async () => ({ ok: true }),
+          rename: async () => ({ ok: true }),
+          removeFacts: async () => ({ count: 0, names: [], truncated: false, hasNonEmptyDir: false, blocked: [] }),
+          remove: async () => ({ results: [] }),
+          copy: async () => ({ results: [] }),
+          move: async () => ({ results: [] }),
+        },
+        local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
+        pickRoot: async () => '',
         // 本文件不测传输：给一个空壳，只为满足 HandlerDeps（传输有专门的 tests/transfer-*.test.ts）
         transfer: {
           enqueue: () => { throw new Error('not used') },
