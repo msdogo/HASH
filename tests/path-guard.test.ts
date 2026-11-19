@@ -270,7 +270,11 @@ describe('第 2 轮复审 C3：存储别名归一（/sdcard 与 /storage/emulate
     expect(canonicalRemotePath('/system/bin')).toBe('/system/bin')
     // 前缀相同但不是别名的兄弟目录不能被改写
     expect(canonicalRemotePath('/sdcardx')).toBe('/sdcardx')
-    expect(canonicalRemotePath('/storage/emulated/1')).toBe('/storage/emulated/1')
+    // 【终审 I-6】/storage/emulated/<N>（N 为数字）现在**必须**归一 —— 修前这里断言的
+    // 正是反例（emulated/1 原样返回），而那条「反例」恰好就是终审发现的真实盲区：
+    // 多用户存储根在三个闸门里全是 false。详见下面 I-6 的专项用例。
+    expect(canonicalRemotePath('/storage/emulated/1')).toBe(CANONICAL_USER_STORAGE)
+    expect(canonicalRemotePath('/storage/emulated/activity')).toBe('/storage/emulated/activity')
   })
 
   it('跨别名写到自身子目录 → 判定为自包含（真机实测会无界递归）', () => {
@@ -285,6 +289,71 @@ describe('第 2 轮复审 C3：存储别名归一（/sdcard 与 /storage/emulate
   it('同一目录的不同别名写法判为相等', () => {
     expect(isRemoteInside('/sdcard/A', '/storage/emulated/0/A')).toBe(true)
     expect(isRemoteInside('/sdcard', '/storage/emulated/0')).toBe(true)
+  })
+})
+
+/*
+ * 【终审 I-6】多用户存储根：/storage/emulated/<N> 必须与 emulated/0 同等对待。
+ *
+ * 修前实况（终审表格，本机只有 UserInfo{0} 所以没造成现实危害）：
+ *   | 路径                                  | isProtectedRemotePath | isProtectedTransferPath | isProtectedTransferDirectory |
+ *   | /storage/emulated/1                   | false                 | false                   | true（=可写）                |
+ *   | /storage/emulated/1/Android/data       | **false**             | **false**               | true                         |
+ * 也就是说只要设备上有工作资料/第二用户，一条 rm -rf 就能清掉该用户全部应用数据。
+ *
+ * 修法：canonicalRemotePath 在精确别名表之后补一层**模式匹配**
+ * （精确名单永远追不上「有用户就有新 N」这一族），归一到 /storage/emulated/0 对应位置。
+ * 下面既锁「受保护的仍然受保护」，也锁「普通目录没被误伤」。
+ */
+describe('终审 I-6：多用户存储根 /storage/emulated/<N> 不得绕过闸门', () => {
+  const MULTI_USER = ['/storage/emulated/1', '/storage/emulated/2', '/storage/emulated/10', '/storage/emulated/999']
+
+  it('canonicalRemotePath 把任意 /storage/emulated/<N> 归一到 CANONICAL_USER_STORAGE', () => {
+    for (const alias of MULTI_USER) {
+      expect(canonicalRemotePath(alias), alias).toBe(CANONICAL_USER_STORAGE)
+      expect(canonicalRemotePath(alias + '/Download'), alias).toBe(CANONICAL_USER_STORAGE + '/Download')
+      expect(canonicalRemotePath(alias + '/Android/data'), alias)
+        .toBe(CANONICAL_USER_STORAGE + '/Android/data')
+    }
+    // 非数字的兄弟目录不能被误伤
+    expect(canonicalRemotePath('/storage/emulated/activity')).toBe('/storage/emulated/activity')
+    expect(canonicalRemotePath('/storage/emulated')).toBe('/storage/emulated')
+  })
+
+  it('/storage/emulated/1/Android/data 受对象级保护（修前是 false）', () => {
+    expect(isProtectedRemotePath('/storage/emulated/1/Android/data')).toBe(true)
+    expect(isProtectedRemotePath('/storage/emulated/1/Android')).toBe(true)
+    expect(isProtectedRemotePath('/storage/emulated/1/Android/obb')).toBe(true)
+    // 各个 N 都一样
+    for (const alias of MULTI_USER) {
+      for (const suffix of ['', '/Android', '/Android/data', '/Android/obb']) {
+        expect(isProtectedRemotePath(alias + suffix), alias + suffix).toBe(true)
+      }
+    }
+  })
+
+  it('/storage/emulated/1/Android/data 受传输通道保护（对象级 + 子树级都 true，修前全 false）', () => {
+    expect(isProtectedTransferPath('/storage/emulated/1/Android/data')).toBe(true)
+    expect(isProtectedTransferPath('/storage/emulated/1')).toBe(true)
+  })
+
+  it('/storage/emulated/1/Download 必须放行（只补保护、不动可用性）', () => {
+    expect(isProtectedRemotePath('/storage/emulated/1/Download')).toBe(false)
+    expect(isProtectedTransferPath('/storage/emulated/1/Download')).toBe(false)
+    expect(isProtectedTransferDirectory('/storage/emulated/1/Download')).toBe(false)
+    // 存储根本身可写（首屏默认目录语义），各 N 一致
+    for (const alias of MULTI_USER) {
+      expect(isProtectedTransferDirectory(alias), alias).toBe(false)
+      expect(isProtectedTransferDirectory(alias + '/DCIM'), alias).toBe(false)
+    }
+  })
+
+  it('多用户路径参与自包含判定（别名归一后与 emulated/0 同源）', () => {
+    // 同一台设备的两个用户目录是**不同**的存储区，不能互相判成自包含
+    expect(isRemoteInside('/storage/emulated/0/A', '/storage/emulated/1/A/inner')).toBe(true)
+    // 注意：归一后 1 与 0 指向同一规范路径，因此跨用户会被保守判为「在里面」——
+    // 这是**安全侧**的保守（宁可拒绝，不可放行无界递归）。
+    expect(isRemoteInside('/storage/emulated/1/A', '/storage/emulated/1/A/inner')).toBe(true)
   })
 })
 

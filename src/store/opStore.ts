@@ -1,9 +1,9 @@
 import { create } from 'zustand'
 import type { OpItemResult } from '@shared/fs-ops'
-import type { FsRemoveFactsData } from '@shared/file-ops'
 import { EMPTY_OP_STATE, opReducer, summarizeWithBlocked, type OpAction, type OpState } from '@shared/op-view'
 import { toErrorCode } from '@shared/errors'
 import { runDownload } from '@shared/download-flow'
+import { makePrepareDelete } from '@shared/delete-flow'
 
 /**
  * 文件操作状态与调用（任务 9）。
@@ -39,6 +39,21 @@ interface OpStoreState extends OpState {
 }
 
 export const useOpStore = create<OpStoreState>((set, get) => {
+  /*
+   * 【终审 I-1】删除确认链路本体在 shared/delete-flow.ts。
+   *
+   * «先取事实，再开框» 这条顺序以前是靠「源码里 removeFacts( 出现在 openConfirm 之前」
+   * 的文本位置断言守的 —— 注释就能满足。抽成注入式纯函数后，
+   * 有测试真跑流程：成功时 openConfirm 恰好一次且拿到主进程给的事实，
+   * 失败/抛异常时零调用。这里只剩一行注入。
+   */
+  const prepareDeleteWith = makePrepareDelete({
+    removeFacts: (input) => window.api.fs.removeFacts(input),
+    openConfirm: (facts, targets) => {
+      get().open({ type: 'openConfirm', kind: 'delete', targets, facts })
+    },
+  })
+
   /** 统一的「跑一个操作」：置 busy → 调 → finish（成功/失败都收敛成逐项汇总）。 */
   const run = async (call: OpCall): Promise<void> => {
     get().open({ type: 'setBusy', busy: true })
@@ -72,25 +87,10 @@ export const useOpStore = create<OpStoreState>((set, get) => {
      *
      * 顺序不能反：**先取事实，再开框**。反过来的话界面会先弹一个「正在计算…」的空白框，
      * 而那正是用户可能顺手点确认的瞬间 —— 裁决 1 要的「列清单再确认」就落空了。
+     * 顺序本身由 shared/delete-flow.ts 的结构保证（事实拿到之前没有第二个出口），
+     * 并由 tests/delete-flow.test.ts 的行为断言压住。
      */
-    prepareDelete: async (serial, targets) => {
-      const result = await window.api.fs.removeFacts({ serial, targets })
-      if (!result.ok) return result.error
-      const facts: FsRemoveFactsData = result.data
-      get().open({
-        type: 'openConfirm',
-        kind: 'delete',
-        targets,
-        facts: {
-          count: facts.count,
-          names: facts.names,
-          truncated: facts.truncated,
-          hasNonEmptyDir: facts.hasNonEmptyDir,
-          blocked: facts.blocked,
-        },
-      })
-      return null
-    },
+    prepareDelete: (serial, targets) => prepareDeleteWith(serial, targets),
 
     remove: async (serial, targets) => {
       await run(async () => window.api.fs.remove({ serial, targets }))

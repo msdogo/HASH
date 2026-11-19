@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { DOT_CLASS, DOT_LABEL_KEY, deviceLabel, hasUnauthorized, serialTail, statusDot, summarize } from '@shared/device-view'
 import { errorText, t, tf } from '@shared/i18n'
+import type { AdbState, DeviceSession } from '@shared/types'
 import { useDeviceStore } from '@/store/deviceStore'
 
 /**
@@ -12,8 +13,28 @@ import { useDeviceStore } from '@/store/deviceStore'
  * 文案一律走 i18n：设备栏要显示「无法使用 adb」时走 errorText(adb.code)，
  * 不得在组件里硬编码中文（tests/ui-contract.test.ts 静态断言守着）。
  */
-export function DeviceRail(props: { onShowOverview?: () => void }) {
-  const { devices, adb, activeSerial, loaded, setActive } = useDeviceStore()
+export interface DeviceRailProps {
+  onShowOverview?: () => void
+  /**
+   * 渲染期注入（与 OverviewPage 的 initial 同一手法，终审 I-4）。
+   *
+   * 为什么需要：zustand 的 useSyncExternalStore 在 SSR 下取 getServerSnapshot
+   * （初始快照），renderToStaticMarkup 里 setState 反映不到渲染结果。于是
+   * 「未授权设备要不要显示「请在手机上允许 USB 调试」」这一条只能靠读源码文本断言
+   * —— 而注释也是源码文本。允许注入后就能真渲染两种设备表，比较输出。
+   *
+   * 生产不传 → 与改前逐字相同（读 store）。
+   */
+  initial?: Partial<{ devices: DeviceSession[]; adb: AdbState | null; activeSerial: string | null; loaded: boolean }>
+}
+
+export function DeviceRail(props: DeviceRailProps) {
+  const store = useDeviceStore()
+  const devices = props.initial?.devices ?? store.devices
+  const adb = props.initial?.adb ?? store.adb
+  const activeSerial = props.initial?.activeSerial ?? store.activeSerial
+  const loaded = props.initial?.loaded ?? store.loaded
+  const setActive = store.setActive
 
   // 空状态与 adb 故障是两种不同的事，提示必须分开给
   const adbBroken = adb !== null && adb.state === 'error'

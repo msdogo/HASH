@@ -313,7 +313,33 @@ const USER_STORAGE_ALIASES: readonly string[] = [
 export const CANONICAL_USER_STORAGE = '/storage/emulated/0'
 
 /**
- * 路径归一（词法 + 别名）。只在比较前用，**不改变实际执行的路径** ——
+ * **多用户**存储根（终审 I-6）：`/storage/emulated/<N>` 里 N 是数字用户 id。
+ *
+ * 为什么必须单列一份「模式表」而不是往 USER_STORAGE_ALIASES 里再加几行：
+ * 那张表是**精确匹配名单**（7 条已知写法逐个列举），而这里是一族**无限多**的路径
+ * （设备上有几个用户就有几个，Android 的工作资料/访客用户都能造出来）。
+ * 精确名单永远追不上它 —— 终审实测：`/storage/emulated/1/Android/data` 在
+ * isProtectedRemotePath / isProtectedTransferPath / isProtectedTransferDirectory
+ * 三个闸门里全是 false（只有 user 0 被归一过），也就是说
+ * **只要设备上有第二用户，一条 rm -rf 就能清掉该用户的全部应用数据**。
+ * 本机只有 `UserInfo{0}`（pm list users 实测）所以没造成现实危害，
+ * 但那只是运气，不是设计。
+ *
+ * 归一语义：`/storage/emulated/<N>/...` 一律映射到 `/storage/emulated/0/...`，
+ * 于是受保护后代（Android / Android/data / Android/obb）对**所有用户**都受保护，
+ * 而普通目录（Download / DCIM）对所有用户都照常可写 —— 只补保护，不动可用性。
+ *
+ * 已知边界（如实记录，不在本轮范围）：`/mnt/user/<N>/(primary|emulated/<M>)`
+ * 这一族同样没被归一（终审 I-6 表里第三行），它属于 /mnt 老别名族，
+ * 本轮只按裁决修 `/storage/emulated/<N>`。
+ */
+const MULTIUSER_STORAGE_PATTERNS: readonly { pattern: RegExp; rest: number }[] = [
+  // /storage/emulated/<N> 以及它下面的任意后代（rest 捕获组 = 后代部分，含前导 /）
+  { pattern: /^\/storage\/emulated\/\d+(\/.*)?$/, rest: 1 },
+]
+
+/**
+ * 路径归一（词法 + 别名 + 多用户模式）。只在比较前用，**不改变实际执行的路径** ——
  * 执行时仍用用户/系统给的原路径，否则会改变用户看到的目录名。
  */
 export function canonicalRemotePath(path: string): string {
@@ -323,6 +349,12 @@ export function canonicalRemotePath(path: string): string {
     if (normalized.startsWith(alias + '/')) {
       return CANONICAL_USER_STORAGE + normalized.slice(alias.length)
     }
+  }
+  // 【终审 I-6】多用户存储根：精确名单之后的模式匹配（两者互补，顺序不影响结果）
+  for (const { pattern, rest } of MULTIUSER_STORAGE_PATTERNS) {
+    const matched = pattern.exec(normalized)
+    if (matched === null) continue
+    return CANONICAL_USER_STORAGE + (matched[rest] ?? '')
   }
   return normalized
 }

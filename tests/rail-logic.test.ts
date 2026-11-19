@@ -42,9 +42,17 @@ describe('I6 设备栏判断收敛到纯函数', () => {
     }
   })
 
-  it('DeviceRail 不再内联 devices.some(...unauthorized...)', () => {
+  /*
+   * 【终审 I-4 / 第 12 次假护栏】这里原本是 expect(rail).toContain('hasUnauthorized') ——
+   * import 行（:2）就满足。终审实测：把 DeviceRail 的 showUnauthorizedHint 换成
+   * `false // hasUnauthorized(devices)` 后全量 1164 passed、tsc exit 0，
+   * 而未授权设备将不再显示「请在手机上允许 USB 调试」（首次连接时唯一的自救提示）。
+   * **已删除该文本断言**，替代品是 tests/component-wiring.test.tsx：
+   * 用 renderToStaticMarkup 渲染真组件，断言「有未授权设备 → 渲染出那句提示；
+   * 全是已授权/设备表为空 → 不渲染」，并带一个对照组证明设备行确实渲染了。
+   */
+  it('DeviceRail 不再内联 devices.some(...unauthorized...)（渲染断言见 component-wiring）', () => {
     const rail = read('src/components/DeviceRail.tsx')
     expect(rail).not.toMatch(/devices\.some\(/)
-    expect(rail).toContain('hasUnauthorized')
   })
 })

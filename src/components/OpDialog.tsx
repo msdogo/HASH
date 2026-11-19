@@ -23,12 +23,25 @@ export interface OpDialogProps {
   serial: string
   cwd: string
   onRefresh: () => void
+  /**
+   * 渲染期注入（终审 I-5，与 OverviewPage 的 initial 同一手法）。
+   *
+   * 为什么需要：确认框里「数量 / 前 3 个名字 / 是否非空」这块事实以前只有
+   * 「源码里有 tf('op.delete.count'」这类文本断言守着 —— 而把调用点整块换成 null
+   * 之后全量 1164 仍全绿（终审实测）。zustand 的 useSyncExternalStore 在 SSR 下取
+   * 初始快照，renderToStaticMarkup 里 setState 反映不到渲染结果，所以必须允许注入。
+   *
+   * 生产不传 → 与改前逐字相同（读 store）。
+   */
+  initial?: Partial<{ dialog: OpDialog | null; lastSummary: OpSummary | null }>
 }
 
 export function OpDialogHost(props: OpDialogProps) {
-  const dialog = useOpStore((state) => state.dialog)
-  const lastSummary = useOpStore((state) => state.lastSummary)
+  const storeDialog = useOpStore((state) => state.dialog)
+  const storeLastSummary = useOpStore((state) => state.lastSummary)
   const dismissSummary = useOpStore((state) => state.dismissSummary)
+  const dialog = props.initial === undefined ? storeDialog : (props.initial.dialog ?? null)
+  const lastSummary = props.initial === undefined ? storeLastSummary : (props.initial.lastSummary ?? null)
 
   if (dialog === null) {
     return lastSummary === null ? null : <OpResultNotice summary={lastSummary} onDismiss={dismissSummary} />

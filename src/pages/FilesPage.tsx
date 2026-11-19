@@ -11,6 +11,7 @@ import {
   visibleEntries,
 } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
+import { makeDownloadHandler } from '@shared/download-flow'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { FileTable } from '@/components/FileTable'
 import { FileToolbar } from '@/components/FileToolbar'
@@ -79,7 +80,6 @@ export function FilesPage() {
   const openOp = useOpStore((state) => state.open)
   const prepareDelete = useOpStore((state) => state.prepareDelete)
   const download = useOpStore((state) => state.download)
-  const localData = useLocalStore((state) => state.data)
   const enqueueTransfer = useTransferStore((state) => state.enqueue)
 
   /** 本地面板折叠状态（任务 9：本地双栏可折叠）。 */
@@ -89,6 +89,13 @@ export function FilesPage() {
 
   // 【I5/I6】把设备表的变化接到分片生命周期上：
   // 新设备建分片；消失的设备 forget（否则每台设备存一整份 entries，内存单调增长）。
+  //
+  // 【终审 I-3 / 第 11 次假护栏】这一行**调用点本身没有门禁**，如实声明（同 N10）：
+  // 修前守它的是 expect(page).toContain('syncDevices(')（import 行就满足），终审实测把
+  // 这条 useEffect 删掉后全量 1164 仍全绿。现在这条文本断言已删除，下游三层都有真实
+  // 行为用例（tests/device-lifecycle.test.ts）：syncDevices 建分片 / manager 30 分钟 gc
+  // 后分片 forget / 超上限时在线设备不被淘汰。但「组件里这行有没有被调用」在
+  // environment: node、无 jsdom 的测试工程里观测不到 —— 与 N10 同类，靠 code review。
   const deviceSerials = useMemo(() => devices.map((device) => device.serial), [devices])
   useEffect(() => { syncDevices(deviceSerials) }, [deviceSerials, syncDevices])
 
@@ -247,16 +254,18 @@ export function FilesPage() {
    * 走传输队列（transfer.enqueue）：**跨端**传输必须有进度与取消能力，
    * 那是队列的职责；而同一设备内的 cp/mv 才允许直接 shell（见 operations.ts）。
    */
-  const handleDownload = useCallback(async () => {
-    if (serial === null) return
-    const targets = selectedTargets()
-    if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
-    const localDir = localData?.cwd
-    if (localDir === undefined) { setQueueNotice(t('op.needLocalDir')); return }
-    const code = await download(serial, targets, localDir)
-    if (code !== null) { setQueueNotice(errorText(code)); return }
-    setQueueNotice(t('op.downloaded'))
-  }, [serial, selectedTargets, localData, download])
+  const handleDownload = useCallback(
+    () =>
+      makeDownloadHandler({
+        serial,
+        run: download,
+        selectedTargets,
+        // localData 只在渲染里用到 cwd；回调里现取，避免把整个 data 塞进依赖
+        localDir: () => (serial === null ? undefined : useLocalStore.getState().data?.cwd),
+        notify: setQueueNotice,
+      })(),
+    [serial, selectedTargets, download],
+  )
 
   /** 上传：本地面板选中的文件 → 设备当前目录（同样走队列，与任务 8 的入口一致）。 */
   const handleUpload = useCallback(async (localPath: string) => {

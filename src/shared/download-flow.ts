@@ -1,6 +1,7 @@
 import type { TransferEnqueueInput } from './api-contract'
 import { toErrorCode } from './errors'
 import { opLabel, type OpItemResult } from './fs-ops'
+import { errorText, t } from './i18n'
 import { summarizeWithBlocked, type OpAction } from './op-view'
 
 /**
@@ -72,4 +73,56 @@ export async function runDownload(
   }
   const failed = results.find((item) => !item.ok)
   return failed === undefined ? null : (failed.code ?? null)
+}
+
+/**
+ * 下载入口所需的依赖（终审 I-2，第 10 次假护栏）。
+ *
+ * 修前「文件页有下载入口」是用 expect(page).toContain('onDownload=') 兜的：
+ * 把 FilesPage 的 onDownload 接到空操作后，按钮照样渲染、照样可点，点击毫无反应，
+ * 而全量 1164 仍然全绿（正是任务 9 裁决 7 明令禁止的「有队列没界面」）。
+ * 源码文本证明不了接线，所以这段判断搬到这里：FilesPage 只注入四样东西，
+ * 测试（tests/download-flow.test.ts + tests/react-wiring.test.tsx）断言真实调用。
+ */
+export interface DownloadHandlerDeps {
+  /** 当前设备；null 表示没有选中设备（什么都不做）。 */
+  serial: string | null
+  /** 真正的下载入口（store 里是 useOpStore.download，内部再走 runDownload）。 */
+  run: (serial: string, sources: string[], localDir: string) => Promise<string | null>
+  /** 选中项 → 设备上的绝对路径（FilesPage 从 store 现取）。 */
+  selectedTargets: () => string[]
+  /** 本地目标目录；undefined 表示本地面板还没选目录。 */
+  localDir: () => string | undefined
+  /** 提示落地（FilesPage 里是 setQueueNotice；文案由 i18n 决定，不在这里拼）。 */
+  notify: (text: string | null) => void
+}
+
+/**
+ * 造一个「下载按钮」的处理器：返回首个失败码或 null。
+ *
+ * 三条分支各自对应一句必须给用户看的话（没选文件 / 没选本地目录 / 已入队），
+ * 且**没有选中项或没有本地目录时绝不调用 run** —— 否则队列里会多出一条
+ * src 为空串的任务，用户看到的是「下载中」然后失败。
+ */
+export function makeDownloadHandler(deps: DownloadHandlerDeps): () => Promise<string | null> {
+  return async () => {
+    if (deps.serial === null) return null
+    const targets = deps.selectedTargets()
+    if (targets.length === 0) {
+      deps.notify(t('op.noSelection'))
+      return null
+    }
+    const localDir = deps.localDir()
+    if (localDir === undefined) {
+      deps.notify(t('op.needLocalDir'))
+      return null
+    }
+    const code = await deps.run(deps.serial, targets, localDir)
+    if (code !== null) {
+      deps.notify(errorText(code))
+      return code
+    }
+    deps.notify(t('op.downloaded'))
+    return null
+  }
 }

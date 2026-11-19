@@ -225,29 +225,40 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(read('src/store/localStore.ts')).toContain('window.api.local.pickRoot(')
   })
 
-  it('裁决 1：删除必须先取事实再开确认框（渲染层不允许盲删）', () => {
-    const opStore = read('src/store/opStore.ts')
-    // prepareDelete 里 removeFacts 必须在 openConfirm 之前
-    const fnStart = opStore.indexOf('prepareDelete: async')
-    const fnBody = opStore.slice(fnStart, fnStart + 900)
-    expect(fnBody.indexOf('removeFacts(')).toBeGreaterThan(-1)
-    expect(fnBody.indexOf('removeFacts(')).toBeLessThan(fnBody.indexOf("type: 'openConfirm'"))
-    // 确认按钮的可用性来自 shared 的 canConfirm（有单测），不在组件里重写
+  /*
+   * 【终审 I-1 / 第 9 次假护栏】这里原本是：
+   *   const fnBody = opStore.slice(fnStart, fnStart + 900)
+   *   expect(fnBody.indexOf('removeFacts(')).toBeLessThan(fnBody.indexOf("type: 'openConfirm'"))
+   * 位置比对的对象是**源码文本**，注释即满足。终审实测：把 opStore 里真实的
+   * window.api.fs.removeFacts(...) 换成「一行诱饵注释 + 常量桩」后 tsc exit 0、
+   * 全量 1164 passed，而确认框会稳定显示「将删除 0 项」—— 裁决 1 的最后一道
+   * 落地保障是空的。**已删除该断言**，替代品都是行为断言：
+   *   - tests/delete-flow.test.ts：注入式 makePrepareDelete，断言「成功时 openConfirm
+   *     恰好一次且拿到主进程给的事实 / 失败与抛异常时零调用 / 入参逐字节透传」；
+   *   - tests/store-wiring.test.ts：换成假 window.api 直接驱动 opStore，断言
+   *     「removeFacts 真的被调用一次、facts 真的是主进程给的、且取事实阶段不调 remove」。
+   * 本文件只保留「哪些判断必须来自 shared（有单测）」这类确实只能静态查的规则。
+   */
+  it('裁决 1：确认按钮的可用性来自 shared 的 canConfirm（不在组件里重写）', () => {
     expect(read('src/components/OpDialog.tsx')).toContain('canConfirm(')
-    expect(opStore).not.toMatch(/facts:\s*\{[^}]*count:\s*\d/)
+    expect(read('src/store/opStore.ts')).not.toMatch(/facts:\s*\{[^}]*count:\s*\d/)
   })
 
-  it('裁决 1：确认框必须显示数量、前 3 个名字与非空提示', () => {
+  /*
+   * 【终审 I-5 / 第 13 次假护栏】这里原本断言 DeleteFacts **函数体内**有 tf('op.delete.count'、
+   * facts.names.map、facts.hasNonEmptyDir 等字样。问题：它证明的是「函数写了」，
+   * 不是「函数被调用」。终审实测：把 OpDialog.tsx 里 <DeleteFacts facts={dialog.facts} />
+   * 整块换成 null（数量 / 前 3 个名字 / 非空提示全消失）后全量 1164 passed、tsc exit 0。
+   * **已删除**，替代品是 tests/component-wiring.test.tsx 的 renderToStaticMarkup 渲染断言：
+   * 真组件渲染出的 HTML 里必须逐个出现「将删除 5 项」「a.txt/dir1/b.txt」「另有 2 项未列出」
+   * 「其中有非空文件夹…」「1 项被安全策略拒绝」，且事实随输入变化（没有就不显示）。
+   */
+  it('裁决 1：确认框的标题与事实判断来自 shared（组件只做取值）', () => {
     const dialog = read('src/components/OpDialog.tsx')
     // 标题经 titleKey() 映射到 i18n key（不是直接 t('op.delete.title')）
     expect(dialog).toContain("return 'op.delete.title'")
     expect(dialog).toContain('t(titleKey(dialog))')
-    expect(dialog).toContain("tf('op.delete.count'")
-    expect(dialog).toContain('facts.names.map')
-    expect(dialog).toContain('facts.hasNonEmptyDir')
-    expect(dialog).toContain("t('op.delete.nonEmpty')")
-    expect(dialog).toContain('facts.blocked')
-    expect(dialog).toContain("t('op.delete.irreversible')")
+    expect(dialog).toContain('isDestructive(')
   })
 
   it('裁决 4：界面显示「N 成功 / M 失败」且失败项可展开看文案', () => {
@@ -308,12 +319,21 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(local).toContain('E_OUTSIDE_ROOT')
   })
 
-  it('裁决 7：文件页有下载入口（不允许「有队列没界面」）', () => {
+  /*
+   * 【终审 I-2 / 第 10 次假护栏】这里原本是 expect(page).toContain('onDownload=') +
+   * toContain('download(')。后者连「函数定义」都能满足（const handleDownload = …）；
+   * 前者只证明这行属性出现过。终审实测：把 FilesPage 的 onDownload 接到 onClick 空操作后
+   * 全量 1164 passed、tsc exit 0，按钮照样渲染照样可点，点击毫无反应 ——
+   * 正是任务 9 裁决 7 明令禁止的「有队列没界面」。
+   * **两条文本断言已删除**，替代品是 tests/download-flow.test.ts 的
+   * makeDownloadHandler 行为断言（真的调 runDownload、带什么 serial/sources/localDir，
+   * 没选中/没选目录时必须不调用并给提示，失败返回错误码）。
+   * 这里只留「按钮与文案确实存在」这一层——它本来就该由渲染测试守，
+   * 但 FileToolbar 的按钮渲染已被 overview-buttons 之外的用例间接覆盖，此处仅存文案 key。
+   */
+  it('裁决 7：下载按钮有 i18n 文案（入口行为见 tests/download-flow.test.ts）', () => {
     const toolbar = read('src/components/FileToolbar.tsx')
     expect(toolbar).toContain("t('op.toolbar.download')")
-    const page = read('src/pages/FilesPage.tsx')
-    expect(page).toContain('onDownload=')
-    expect(page).toContain('download(')
     // i18n 里必须有对应文案（任务 8 曾主动删掉该 key，说「留 key 不留入口是许愿池」）
     expect(read('src/shared/i18n.ts')).toContain("'transfer.download'")
   })
@@ -496,9 +516,18 @@ describe('任务 7 审查轮 1：修复项的静态契约', () => {
     expect(table).not.toMatch(/requestAnimationFrame\(\(\) => \{[\s\S]{0,120}props\.onScrollTop/)
   })
 
-  it('I5/I6：设备表变化接到分片生命周期（forget 有调用方）', () => {
-    const page = read('src/pages/FilesPage.tsx')
-    expect(page).toContain('syncDevices(')
+  /*
+   * 【终审 I-3 / 第 11 次假护栏】这里原本是 expect(page).toContain('syncDevices(') ——
+   * import 行（:71）与 store 定义都能满足。终审实测：删掉 FilesPage 里真实的 useEffect
+   * 调用、只留注释 + void deviceSerials 后全量 1164 passed、tsc exit 0；
+   * 后果是分片永不 forget（每台设备残留整份 entries，内存单调增长，与规格 <400MB 冲突）。
+   * **已删除该断言**，替代品是 tests/device-lifecycle.test.ts：
+   * ① 新设备出现 → 真的得到 view state；② 设备消失超过 30 分钟保留期 → manager gc
+   * 发 removed、分片随之 forget（30 分钟内必须保留）；③ 超过上限时在线设备不被淘汰。
+   * 剩下两条仍保留在这里，因为它们查的是**模型实现内部结构**（tombstone 拦截与去重键），
+   * 已有对应的行为用例压着（file-view.test.ts 的 N3/N5 块）。
+   */
+  it('I5/I6：分片模型的两条内部约束（行为见 file-view.test.ts）', () => {
     const model = read('src/shared/file-view.ts')
     // tombstone 必须真的在 dispatch 路径上拦截
     expect(model).toContain('tombstones.has(serial)')

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runDownload } from '../src/shared/download-flow'
+import { makeDownloadHandler, runDownload } from '../src/shared/download-flow'
 import { EMPTY_OP_STATE, canConfirm, opReducer, type OpAction, type OpState } from '../src/shared/op-view'
 import { E_DEVICE_OFFLINE, E_OUTSIDE_ROOT } from '../src/shared/errors'
+import { errorText, t } from '../src/shared/i18n'
 
 /*
  * 【第 2 轮复审 N1】下载流程的 busy 复位。
@@ -145,5 +146,83 @@ describe('第 2 轮复审 N1：下载结束后 busy 必须复位', () => {
     expect(summary?.ok).toBe(2)
     expect(summary?.total).toBe(3)
     expect(summary?.failures.map((item) => item.code)).toEqual([E_OUTSIDE_ROOT])
+  })
+})
+
+/*
+ * 【终审 I-2 / 第 10 次假护栏】「文件页有下载入口」曾经是纯源码文本断言：
+ *   expect(page).toContain('onDownload=')
+ *   expect(page).toContain('download(')
+ * 后者连函数定义（const handleDownload = …）都能满足。终审实测：把 FilesPage 的
+ * onDownload 接到空操作后，按钮照样渲染、照样可点，点击毫无反应，
+ * 而全量 1164 passed、tsc exit 0 —— 正是任务 9 裁决 7 明令禁止的「有队列没界面」。
+ *
+ * 现在这段判断在 shared/download-flow.ts 的 makeDownloadHandler 里（组件只做注入），
+ * 断言的是**行为**：有没有真的调到下载入口、带的是什么参数、提示说了什么。
+ */
+describe('终审 I-2：下载入口的接线（makeDownloadHandler）', () => {
+  type RunArg = { serial: string; sources: string[]; localDir: string }
+
+  function harness(over: Partial<{
+    serial: string | null
+    targets: string[]
+    /** false 表示本地面板还没选目录（localDir() 返回 undefined）。 */
+    hasLocalDir: boolean
+    result: string | null
+  }> = {}) {
+    const calls: RunArg[] = []
+    const notices: Array<string | null> = []
+    const handler = makeDownloadHandler({
+      serial: over.serial === undefined ? SERIAL : over.serial,
+      run: async (serial, sources, localDir) => {
+        calls.push({ serial, sources, localDir })
+        return over.result ?? null
+      },
+      selectedTargets: () => over.targets ?? ['/sdcard/a.txt', '/sdcard/b.txt'],
+      localDir: () => (over.hasLocalDir === false ? undefined : LOCAL_DIR),
+      notify: (text) => { notices.push(text) },
+    })
+    return { handler, calls, notices }
+  }
+
+  it('调 run 时 serial / sources / localDir 逐字节正确', async () => {
+    const h = harness()
+    const code = await h.handler()
+    expect(code).toBeNull()
+    expect(h.calls).toEqual([
+      { serial: SERIAL, sources: ['/sdcard/a.txt', '/sdcard/b.txt'], localDir: LOCAL_DIR },
+    ])
+    expect(h.notices).toEqual([t('op.downloaded')])
+  })
+
+  it('没有选中项时**不调用** run，并提示先选中', async () => {
+    const h = harness({ targets: [] })
+    await h.handler()
+    expect(h.calls).toEqual([])
+    expect(h.notices).toEqual([t('op.noSelection')])
+  })
+
+  it('本地还没选目录时**不调用** run，并提示选目录', async () => {
+    const h = harness({ hasLocalDir: false })
+    await h.handler()
+    expect(h.calls).toEqual([])
+    expect(h.notices).toEqual([t('op.needLocalDir')])
+  })
+
+  it('没有设备时什么都不做（不调用、不提示）', async () => {
+    const h = harness({ serial: null })
+    await h.handler()
+    expect(h.calls).toEqual([])
+    expect(h.notices).toEqual([])
+  })
+
+  it('失败时把错误码翻成中文提示并返回该码（调用点据此提示）', async () => {
+    const h = harness({ result: E_DEVICE_OFFLINE })
+    const code = await h.handler()
+    expect(code).toBe(E_DEVICE_OFFLINE)
+    expect(h.calls).toHaveLength(1)
+    expect(h.notices).toEqual([errorText(E_DEVICE_OFFLINE)])
+    // 用户看到的必须是文案而不是裸错误码
+    expect(h.notices[0]).not.toBe(E_DEVICE_OFFLINE)
   })
 })
