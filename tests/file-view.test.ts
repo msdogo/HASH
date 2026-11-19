@@ -15,7 +15,6 @@ import {
   isDotEntry,
   isHiddenName,
   isMetaKnown,
-  mapListError,
   isOpenKey,
   joinEntryPath,
   navKeyCommand,
@@ -1217,19 +1216,19 @@ describe('N2：链接轨迹与跳数上限必须真的生效', () => {
   const linkEntry = (name: string, target: string): FileEntry =>
     entry({ name, isLink: true, linkTarget: target, linkTargetResolved: target })
 
-  it('进入链接后轨迹里记录了「从哪来 + 到哪去」', () => {
+  it('进入链接并成功后，轨迹里记录了「从哪来 + 到哪去」', () => {
     const next = reduce(
       createFileView(),
       { type: 'navigate', cwd: '/data/local/tmp/t7a' },
       { type: 'resolve', generation: 1, data: listData({ dir: '/data/local/tmp/t7a', entries: [] }) },
       { type: 'navigate', cwd: '/data/local/tmp/t7b', linkTarget: '/data/local/tmp/t7b' },
+      { type: 'resolve', generation: 2, data: listData({ dir: '/data/local/tmp/t7b', entries: [] }) },
     )
     expect(next.linkTrail).toEqual(['/data/local/tmp/t7a', '/data/local/tmp/t7b'])
     expect(next.linkHops).toBe(1)
   })
 
   it('A→B→A 两跳环被拦（轨迹里已有 A）', () => {
-    // A 里点 linkb 进入 B 后 trail = [A, B]，此时站在 B 上点指回 A 的链接
     expect(
       openTarget(linkEntry('linka', '/data/local/tmp/t7a'), '/data/local/tmp/t7b', [
         '/data/local/tmp/t7a',
@@ -1270,18 +1269,15 @@ describe('N2：链接轨迹与跳数上限必须真的生效', () => {
     expect(openTarget(link, '/x', ['/1', '/2'], MAX_LINK_HOPS)).toEqual({ kind: 'error', code: 'E_LINK_CYCLE' })
   })
 
-  it('reducer 的轨迹有硬上限（不会无限增长吃内存）', () => {
+  it('轨迹有硬上限（不会无限增长吃内存）', () => {
     let view = reduce(
       createFileView(),
       { type: 'navigate', cwd: '/start' },
       { type: 'resolve', generation: 1, data: listData({ dir: '/start', entries: [] }) },
     )
     for (let i = 0; i < 20; i++) {
-      view = reduce(
-        view,
-        { type: 'navigate', cwd: '/hop' + i, linkTarget: '/hop' + i },
-        { type: 'resolve', generation: view.generation + 1, data: listData({ dir: '/hop' + i, entries: [] }) },
-      )
+      view = reduce(view, { type: 'navigate', cwd: '/hop' + i, linkTarget: '/hop' + i })
+      view = reduce(view, { type: 'resolve', generation: view.generation, data: listData({ dir: '/hop' + i, entries: [] }) })
     }
     expect(view.linkTrail.length).toBeLessThanOrEqual(MAX_LINK_HOPS * 2)
   })
@@ -1306,63 +1302,99 @@ describe('N2：链接轨迹与跳数上限必须真的生效', () => {
   })
 })
 
-/* ============ N3（审查轮 2）：LRU 淘汰不得被在飞响应复活 ============ */
+/* ============ M1（审查轮 3）：失败跟随不得污染轨迹 ============ */
 
-describe('N3：淘汰与在线设备保护', () => {
-  it('被淘汰的分片不会被迟到的响应复活', async () => {
-    const h = modelHarness({ maxSerials: 2 })
-    const loadA = h.model.openDir('A', '/sdcard')
-    h.model.ensure('B')
-    h.model.ensure('C')
-    expect(h.model.serials()).not.toContain('A')
-    h.resolveAt(0, { dir: '/sdcard', entries: [entry({ name: 'ghost' })] })
-    await loadA
-    expect(h.views.A).toBeUndefined()
-    expect(h.model.serials()).not.toContain('A')
+describe('M1：跟随失败不累积轨迹，后续合法链接仍能进入', () => {
+  const linkEntry = (name: string, target: string): FileEntry =>
+    entry({ name, isLink: true, linkTarget: target, linkTargetResolved: target })
+
+  /** 进到 /data/local/tmp/t7x 并等它 ready，作为「同一个目录」的基线。 */
+  async function enterBaseline(h: ReturnType<typeof modelHarness>) {
+    const enter = h.model.openDir('S', '/data/local/tmp/t7x')
+    h.resolveAt(0, { dir: '/data/local/tmp/t7x', entries: [] })
+    await enter
+    expect(h.views.S.loadedOnce).toBe(true)
+  }
+
+  /** 在同一目录里连续点 N 次打不开的链接（/adb_keys、断链），每次都以失败告终。 */
+  async function failFollows(h: ReturnType<typeof modelHarness>, times: number) {
+    let index = 1
+    for (let i = 0; i < times; i++) {
+      const bad = h.model.openDir('S', '/data/local/tmp/broken', '/data/local/tmp/broken')
+      h.failAt(index, 'E_NOT_A_DIRECTORY')
+      index += 1
+      await bad
+    }
+  }
+
+  it('连续 MAX_LINK_HOPS 次失败跟随后，轨迹与跳数仍干净', async () => {
+    const h = modelHarness()
+    await enterBaseline(h)
+    await failFollows(h, MAX_LINK_HOPS)
+    expect(h.views.S.linkHops).toBe(0)
+    expect(h.views.S.linkTrail).toEqual([])
+    expect(h.views.S.cwd).toBe('/data/local/tmp/t7x')
   })
 
-  it('views 的键数不超过上限（不会被淘汰/复活来回抖动搞成超集）', () => {
-    const h = modelHarness({ maxSerials: 2 })
-    h.model.ensure('B')
-    h.model.ensure('C')
-    h.model.ensure('A')
-    expect(Object.keys(h.views).length).toBeLessThanOrEqual(2)
-    expect(h.model.serials().length).toBeLessThanOrEqual(2)
+  it('连续 MAX_LINK_HOPS 次失败跟随后，合法链接仍能进入（不被误判为环）', async () => {
+    const h = modelHarness()
+    await enterBaseline(h)
+    await failFollows(h, MAX_LINK_HOPS)
+
+    const real = linkEntry('realdir', '/data/local/tmp/real')
+    const target = openTarget(real, h.views.S.cwd, h.views.S.linkTrail, h.views.S.linkHops)
+    expect(target).toEqual({ kind: 'enter', path: '/data/local/tmp/real', followedLink: true })
+
+    const ok = h.model.openDir('S', '/data/local/tmp/real', '/data/local/tmp/real')
+    h.resolveAt(h.requests.length - 1, { dir: '/data/local/tmp/real', entries: [] })
+    await ok
+    expect(h.views.S.cwd).toBe('/data/local/tmp/real')
+    expect(h.views.S.linkHops).toBe(1)
   })
 
-  it('仍然在线的设备优先不被淘汰', () => {
-    const h = modelHarness({ maxSerials: 2 })
-    h.model.syncDevices(['A', 'B'])
-    h.model.ensure('D')
-    h.model.syncDevices(['A', 'B'])
-    expect(h.views.A).toBeDefined()
-    expect(h.views.B).toBeDefined()
-    expect(h.views.D).toBeUndefined()
+  it('reducer：navigate（跟随）不写轨迹，成功 resolve 后才提交', () => {
+    const base = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/data/local/tmp/t7a' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/data/local/tmp/t7a', entries: [] }) },
+    )
+    const pending = reduce(base, { type: 'navigate', cwd: '/data/local/tmp/t7b', linkTarget: '/data/local/tmp/t7b' })
+    expect(pending.linkTrail).toEqual([])
+    expect(pending.linkHops).toBe(0)
+    expect(pending.pendingLink).toEqual({ from: '/data/local/tmp/t7a', to: '/data/local/tmp/t7b' })
+
+    const done = reduce(pending, { type: 'resolve', generation: pending.generation, data: listData({ dir: '/data/local/tmp/t7b', entries: [] }) })
+    expect(done.linkTrail).toEqual(['/data/local/tmp/t7a', '/data/local/tmp/t7b'])
+    expect(done.linkHops).toBe(1)
+    expect(done.pendingLink).toBeNull()
   })
 
-  it('设备全部在线且超过上限时，宁可不淘汰也不丢在线设备的状态', () => {
-    const h = modelHarness({ maxSerials: 2 })
-    h.model.syncDevices(['A', 'B', 'C'])
-    expect(h.views.A).toBeDefined()
-    expect(h.views.B).toBeDefined()
-    expect(h.views.C).toBeDefined()
-  })
-})
-
-/* ============ N4（审查轮 2）：目标存在但不是目录 ============ */
-
-describe('N4：目标不是目录时给出专门错误码', () => {
-  it('链接指向普通文件：E_NOT_A_DIRECTORY 优先于 E_NOT_FOUND', () => {
-    expect(mapListError('E_NOT_FOUND', 'adb_keys', '/product/etc/security/adb_keys')).toBe('E_NOT_A_DIRECTORY')
-  })
-
-  it('普通目录的真实失败（不是链接）保持原错误码', () => {
-    // 调用点只在「跟随链接」时才会调 mapListError；普通目录直接沿用原码
-    expect(mapListError('E_NO_PERMISSION', 'data', '/data/app')).toBe('E_NO_PERMISSION')
+  it('reducer：失败时丢弃待提交项，轨迹与跳数保持干净', () => {
+    const base = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/data/local/tmp/t7a' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/data/local/tmp/t7a', entries: [] }) },
+    )
+    const pending = reduce(base, { type: 'navigate', cwd: '/data/local/tmp/broken', linkTarget: '/data/local/tmp/broken' })
+    const failed = reduce(pending, { type: 'fail', generation: pending.generation, code: 'E_NOT_A_DIRECTORY' })
+    expect(failed.linkTrail).toEqual([])
+    expect(failed.linkHops).toBe(0)
+    expect(failed.pendingLink).toBeNull()
+    expect(failed.cwd).toBe('/data/local/tmp/t7a')
+    expect(failed.addressError).toBe('E_NOT_A_DIRECTORY')
   })
 
-  it('其他错误码一律原样透传', () => {
-    expect(mapListError('E_TIMEOUT', 'sdcard', '/sdcard')).toBe('E_TIMEOUT')
-    expect(mapListError('E_LINK_CYCLE', 'a', '/b')).toBe('E_LINK_CYCLE')
+  it('多次失败后跳数不会涨到上限（防止把合法链接误判为环）', () => {
+    let view = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/start' },
+      { type: 'resolve', generation: 1, data: listData({ dir: '/start', entries: [] }) },
+    )
+    for (let i = 0; i < MAX_LINK_HOPS * 3; i++) {
+      view = reduce(view, { type: 'navigate', cwd: '/broken' + i, linkTarget: '/broken' + i })
+      view = reduce(view, { type: 'fail', generation: view.generation, code: 'E_NOT_A_DIRECTORY' })
+    }
+    expect(view.linkHops).toBe(0)
+    expect(view.linkTrail).toEqual([])
   })
 })

@@ -102,16 +102,18 @@ export function FilesPage() {
   const summary = useMemo(() => summarizeEntries(entries), [entries])
 
   /*
-   * 链接轨迹与跳数（防环，N2）：从 store 现取，不订阅（只在导航时变，不必触发重渲染）。
+   * 链接轨迹与跳数（防环，N2 / M1c）：**点击时直接从 store 现取**，不缓存、不订阅。
    *
-   * 为什么不放进订阅：它们是导航的中间状态，订阅会让每次跟随链接都多一次整页重渲染；
-   * 而点击处理是事件回调，读 store 的最新值即可。
+   * 修前用了一个 useRef 缓存，依赖是 [serial, current.cwd] —— 而「跟随失败」不改变 cwd，
+   * 于是 ref 与 store 长期分叉：store 里轨迹早就被回滚/丢弃了，ref 还抱着旧值做判环，
+   * 把合法链接误拦成 E_LINK_CYCLE（复审真机复现的就是这个）。
+   * 现在每次点击都读最新状态，从根上消除分叉；不订阅是有意的 ——
+   * 它们不在渲染输出里，订阅只会让每次跟随多一次整页重渲染。
    */
-  const linkStateRef = useRef<{ trail: string[]; hops: number }>({ trail: [], hops: 0 })
-  useEffect(() => {
+  const readLinkState = useCallback(() => {
     const view = serial === null ? undefined : useFileStore.getState().views[serial]
-    linkStateRef.current = { trail: view?.linkTrail ?? [], hops: view?.linkHops ?? 0 }
-  }, [serial, current.cwd])
+    return { trail: view?.linkTrail ?? [], hops: view?.linkHops ?? 0 }
+  }, [serial])
 
   const reportLinkError = useCallback(
     (code: string) => {
@@ -126,7 +128,7 @@ export function FilesPage() {
     (entry: FileEntry) => {
       if (serial === null) return
       // 【I4】链接目录也要能进：目标解析、无法解析、成环三种情况都在 openTarget 里判（有单测）
-      const { trail, hops } = linkStateRef.current
+      const { trail, hops } = readLinkState()
       const target = openTarget(entry, current.cwd, trail, hops)
       if (target.kind === 'enter') {
         // 【N2】跟随链接时把 linkTarget 传下去，reducer 才会真正写轨迹与跳数；
@@ -155,7 +157,7 @@ export function FilesPage() {
       }
       // 普通文件：本任务不做打开（留给任务 9 的下载/预览）
     },
-    [serial, openDir, current.cwd, reportLinkError],
+    [serial, openDir, current.cwd, readLinkState, reportLinkError, dispatch],
   )
 
   const handleSelect = useCallback(

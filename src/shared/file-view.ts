@@ -487,6 +487,19 @@ export interface FileViewState {
   linkTrail: string[]
   /** 连续跟随链接的跳数（防环第二道；导航到普通目录时归零）。 */
   linkHops: number
+  /**
+   * 待提交的链接跟随（M1）。
+   *
+   * 为什么需要「待提交」而不是在 navigate 里直接写轨迹：
+   * 修前 navigate 无条件 append，而 fail 分支不回滚 —— 同一目录**连点 N 次打不开的链接**
+   * （真机 /adb_keys 这类误双击很常见）会把跳数堆到 MAX_LINK_HOPS、轨迹堆到 2N，
+   * 于是紧接着一个**合法**链接被误判成 E_LINK_CYCLE，界面还说「指向了自己或走过的目录」。
+   * 修死代码修出了新的误拦。
+   *
+   * 现在：navigate 只登记 pendingLink，**成功 resolve 时才**把「出发 + 目标」提交进轨迹；
+   * fail 直接丢弃（不需要回滚，因为压根没写进去）。
+   */
+  pendingLink: { from: string; to: string } | null
   /** 是否已经成功加载过至少一次（区分「首次就失败=整页错误」与「有内容时失败=行内提示」）。 */
   loadedOnce: boolean
 }
@@ -502,7 +515,7 @@ export interface FileViewState {
  */
 export type FileViewSlice = Omit<
   FileViewState,
-  'generation' | 'scrollTop' | 'pendingCwd' | 'linkTrail' | 'linkHops'
+  'generation' | 'scrollTop' | 'pendingCwd' | 'linkTrail' | 'linkHops' | 'pendingLink'
 >
 
 /** fs:list 的返回数据（只取视图需要的字段，避免 store 依赖主进程实现细节）。 */
@@ -560,6 +573,7 @@ export function createFileView(): FileViewState {
     scrollTop: 0,
     linkTrail: [],
     linkHops: 0,
+    pendingLink: null,
     loadedOnce: false,
   }
 }
@@ -615,8 +629,8 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
       // 【C1】只登记目标：不清空 entries，不动 cwd / selected / scrollTop。
       // 用户打错一个字母时，当前目录与列表必须原样还在（裁决 6 的「不要整页替换」）。
       //
-      // 【N2】跟随链接时把「出发目录 + 目标」真正写进 linkTrail 并累加跳数；
-      // 导航到普通目录（面包屑、子目录、地址栏）则重置轨迹与跳数。
+      // 【N2 / M1】跟随链接时只登记 pendingLink，**轨迹与跳数等成功才提交**；
+      // 导航到普通目录（面包屑、子目录、地址栏）则立刻重置轨迹与跳数。
       const following = action.linkTarget !== undefined
       return {
         ...state,
@@ -626,8 +640,9 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         addressError: null,
         noticeDismissed: false,
         generation: state.generation + 1,
-        linkTrail: following ? appendLinkTrail(state.linkTrail, state.cwd, target) : [],
-        linkHops: following ? state.linkHops + 1 : 0,
+        pendingLink: following ? { from: normalizePath(state.cwd), to: target } : null,
+        linkTrail: following ? state.linkTrail : [],
+        linkHops: following ? state.linkHops : 0,
       }
     }
     case 'beginLoad':
@@ -664,6 +679,12 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         // 防环又变回死代码（这正是审查轮 2 / N2 报的问题）。
         selected: sameDir ? intersectSelected(state.selected, data.entries) : [],
         scrollTop: sameDir ? state.scrollTop : 0,
+        // 【M1】跟随成功才提交轨迹与跳数（失败路径见 fail 分支：直接丢弃 pendingLink）
+        linkTrail: state.pendingLink === null
+          ? state.linkTrail
+          : appendLinkTrail(state.linkTrail, state.pendingLink.from, state.pendingLink.to),
+        linkHops: state.pendingLink === null ? state.linkHops : state.linkHops + 1,
+        pendingLink: null,
         loadedOnce: true,
       }
     }
@@ -679,6 +700,8 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
           // 失败后不再处于 loading：列表停在原内容上
           status: state.status === 'loading' ? 'ready' : state.status === 'error' ? 'ready' : state.status,
           pendingCwd: null,
+          // 【M1】失败即丢弃待提交的链接跟随：轨迹与跳数一点都不该变
+          pendingLink: null,
           error: wasNavigate ? null : action.code,
           addressError: wasNavigate ? action.code : null,
         }
@@ -687,6 +710,7 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         ...state,
         status: 'error',
         pendingCwd: null,
+        pendingLink: null,
         error: action.code,
         addressError: action.code,
         entries: [],

@@ -1,9 +1,10 @@
-import { describe, it, expect, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { AdbClient } from '../electron/adb/client'
 import { shellQuote } from '../electron/adb/shellsafe'
 import {
   E_NO_PERMISSION,
+  E_NOT_A_DIRECTORY,
   E_NOT_FOUND,
   E_PARSE_DEGRADED,
   clearDeviceTzCache,
@@ -280,11 +281,21 @@ describe('listDir', () => {
     await expect(listDir(client, 'adb', '/nope')).rejects.toThrow(E_NOT_FOUND)
   })
 
-  it('零条目 + Not a directory 也映射为 E_NOT_FOUND', async () => {
+  it('零条目 + Not a directory 映射为 E_NOT_A_DIRECTORY（与「不存在」区分开）', async () => {
+    // 【审查轮 3 / M2】修前与 no such file 合并成 E_NOT_FOUND，导致界面把
+    // 「指向文件的快捷方式」和「断链」都说成「这个路径不存在」。
+    // 内核层面的 stderr 是能区分的：Not a directory vs No such file or directory。
     const client = fakeClient([
       { match: LS_LONG, code: 1, stderr: 'ls: /sdcard/a.txt/: Not a directory\r\n' },
     ])
-    await expect(listDir(client, 'adb', '/sdcard/a.txt')).rejects.toThrow(E_NOT_FOUND)
+    await expect(listDir(client, 'adb', '/sdcard/a.txt')).rejects.toThrow(E_NOT_A_DIRECTORY)
+  })
+
+  it('零条目 + 断链（No such file or directory）仍是 E_NOT_FOUND（目标确实不存在）', async () => {
+    const client = fakeClient([
+      { match: LS_LONG, code: 1, stderr: 'ls: /data/local/tmp/t7x/dangling/: No such file or directory\r\n' },
+    ])
+    await expect(listDir(client, 'adb', '/data/local/tmp/t7x/dangling')).rejects.toThrow(E_NOT_FOUND)
   })
 
   it('把 adbPath 与超时透传给 client.run', async () => {
@@ -599,22 +610,6 @@ const SKIP_REASON = HAS_DEVICE
     ? '没有在线设备：设置 ADB_TEST_SERIAL 或在 adb devices 里接一台状态为 device 的机器'
     : '设备 ' + SERIAL + ' 不在 device 状态（可能是 offline/unauthorized）'
 
-/**
- * 判断设备上某个路径是否存在（用于「设备自适应」断言）。
- * 修前 /acct 是写死的假设 —— DJI 上有、SM-S9360 上没有，于是换机就红。
- */
-async function remoteExists(client: AdbClient, path: string): Promise<boolean> {
-  try {
-    const result = await client.run(['shell', 'ls -ld -- ' + shellQuote(path)], {
-      adbPath: ADB,
-      timeoutMs: 30_000,
-    })
-    return result.code === 0
-  } catch {
-    return false
-  }
-}
-
 const cleanup: string[] = []
 afterEach(async () => {
   clearDeviceTzCache()
@@ -628,12 +623,17 @@ afterEach(async () => {
   }
 })
 
+/*
+ * 【审查轮 3 / M4】跳过原因的打印必须放在**模块顶层**。
+ *
+ * 修前放在 describe 内的 beforeAll：当整个 suite 的用例都被 skipIf 跳过时，
+ * beforeAll 根本不执行 —— 于是无设备时输出里一条跳过信息都没有（实测 0 命中），
+ * 「跳过必须说话」形同虚设。模块顶层在任何情况下都会执行。
+ */
+if (SKIP_REASON !== '') console.warn('[真机集成] 全部跳过：' + SKIP_REASON)
+else console.info('[真机集成] 使用设备 ' + SERIAL)
+
 describe('真机集成（skipIf 无设备）', () => {
-  // 审查轮 2 的验收要求：跳过不许静默 —— 跑测试时必须能一眼看到为什么没跑
-  beforeAll(() => {
-    if (SKIP_REASON !== '') console.warn('[真机集成] 全部跳过：' + SKIP_REASON)
-    else console.info('[真机集成] 使用设备 ' + SERIAL)
-  })
 
   it.skipIf(!HAS_DEVICE)(
     '条目数与 ls -1A 的真实条数一致（解析器不丢条目，也不凭空造条目）',
@@ -677,23 +677,27 @@ describe('真机集成（skipIf 无设备）', () => {
     const entries = await listDir(client, ADB, '/')
 
     /*
-     * 【审查轮 2】设备自适应：修前写死 /acct（DJI 上有、SM-S9360 上没有），换机就红。
+     * 【审查轮 2】设备自适应：不猜某个具体名字（修前写死 /acct，SM-S9360 上没有）。
+     * 【审查轮 3 / M3】但「找不到就跳过」是个假护栏 —— 注入 metaKnown 变异后它照样绿。
      *
-     * 现在不猜某个具体名字，而是**按设备实际情况取样本**：
-     * 在根目录里找「mtime 恰为 0」的条目 —— 这正是任务 5 裁决 1 要覆盖的场景
-     * （1970-01-01 08:00 在 +08:00 下换算就是 0，与「解析不出」同值）。
-     * 找不到就不硬造断言，直接 skip 并打印原因。
+     * 现在改成**自己造样本**：在 /data/local/tmp 下建一个 mtime 精确为 epoch 的文件
+     * （`touch -d @0`，真机 toybox 支持），再用解析器读它，
+     * 断言 mtime === 0 且 metaKnown === true。设备上没有现成样本也无所谓 ——
+     * 这条断言在任何 Android 上都必须能红/能绿，而不是靠运气碰上 /acct。
      */
-    const epochEntries = entries.filter((e) => e.mtime === 0 && e.metaKnown !== false)
-    if (epochEntries.length === 0) {
-      console.warn('[真机] 跳过「mtime=0 条目」断言：' + SERIAL + ' 的根目录里没有这类条目')
-    } else {
-      for (const sample of epochEntries.slice(0, 3)) {
-        expect(sample.metaKnown, sample.name).toBe(true)
-      }
-    }
-    // 至少有一条 epoch 级条目与符号链接；两者都没有说明设备形态完全超出预期，值得警觉
-    expect(epochEntries.length + entries.length).toBeGreaterThan(0)
+    const epochDir = '/data/local/tmp/t7-epoch'
+    const epochFile = epochDir + '/epoch.bin'
+    cleanup.push(epochDir)
+    await client.run(['shell', 'mkdir -p ' + shellQuote(epochDir) + ' && echo hi > ' + shellQuote(epochFile) + ' && touch -d @0 ' + shellQuote(epochFile)], {
+      adbPath: ADB,
+      timeoutMs: 30_000,
+    })
+    const listed = await listDir(client, ADB, epochDir)
+    const epochEntry = listed.find((e) => e.name === 'epoch.bin')
+    expect(epochEntry, '真机上应能列出刚创建的 epoch.bin').toBeDefined()
+    // 1970-01-01 08:00 (+08:00) == epoch：数值为 0，但这是【真实】元数据，metaKnown 必须为 true
+    expect(epochEntry?.mtime).toBe(0)
+    expect(epochEntry?.metaKnown).toBe(true)
 
     const sdcardLink = entries.find((e) => e.name === 'sdcard')
     // sdcard 是现代 Android 的标配，若缺失也不该红 —— 但要让它可见

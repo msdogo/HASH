@@ -25,8 +25,16 @@ import {
 
 export { E_INVALID_PATH }
 
-/** 目录不存在或不是目录（且一个条目都没拿到）。 */
+/** 目录不存在（且一个条目都没拿到）。 */
 export const E_NOT_FOUND = 'E_NOT_FOUND'
+/**
+ * 路径存在，但不是目录（且一个条目都没拿到）。
+ *
+ * 【审查轮 3 / M2】修前与 E_NOT_FOUND 合并 —— 内核的 stderr 明明能区分
+ * （"Not a directory" vs "No such file or directory"），合并后界面就无法区分
+ * 「指向文件的快捷方式」与「断链」，只能一律猜「是文件」，文案必然说错。
+ */
+export const E_NOT_A_DIRECTORY = 'E_NOT_A_DIRECTORY'
 /** 整个目录读不了（零条目 + 权限拒绝）。 */
 export const E_NO_PERMISSION = 'E_NO_PERMISSION'
 /** 连降级都凑不出任何条目：目录内容完全无法解读。 */
@@ -194,7 +202,10 @@ export function lsOperand(dir: string): string {
 
 function classifyError(stderr: string): string {
   if (/permission denied/i.test(stderr)) return E_NO_PERMISSION
-  if (/no such file or directory|not a directory/i.test(stderr)) return E_NOT_FOUND
+  // 顺序有讲究：「Not a directory」里不含 "no such file"，但两者经常同时出现于
+  // 各种 toybox 版本的复合消息里，所以先判更具体的那个。
+  if (/not a directory/i.test(stderr)) return E_NOT_A_DIRECTORY
+  if (/no such file or directory/i.test(stderr)) return E_NOT_FOUND
   return E_LIST_FAILED
 }
 
