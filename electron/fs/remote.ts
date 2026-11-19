@@ -81,7 +81,17 @@ export function parseTzOffset(text: string): number | undefined {
 export interface ShellRunner {
   /** 设备 serial（AdbClient 有）。时区缓存按 serial 分桶，避免多设备串味。 */
   readonly serial?: string
-  run(args: string[], opts: { adbPath: string; timeoutMs?: number }): Promise<RunResult>
+  run(
+    args: string[],
+    opts: {
+      adbPath: string
+      timeoutMs?: number
+      /** 流式 stdout 回调（批量执行命令在收流时就攒预算，见复审 I3）。 */
+      onStdout?: (chunk: string) => void
+      /** stdout 的流式上限（字节）；超出即中止命令并以 E_STDOUT_LIMIT reject。 */
+      maxStdoutBytes?: number
+    },
+  ): Promise<RunResult>
 }
 
 export interface ListResult {

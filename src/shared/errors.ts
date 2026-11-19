@@ -113,6 +113,15 @@ export const E_CROSS_DEVICE = 'E_CROSS_DEVICE'
 export const E_BATCH_PARAM = 'E_BATCH_PARAM'
 
 /**
+ * 批量执行命令的**命令内容**不合法（任务 10 / 复审 Minor 4）。
+ *
+ * 与 E_BATCH_PARAM（没选设备 / 没选文件 / 目录为空）分开，也与 E_INVALID_PATH
+ * 分开：换行不是「路径不合法」，它是「一条命令会变成多条」。
+ * 用一个路径错误码描述命令问题，用户会去检查目录。
+ */
+export const E_BAD_COMMAND = 'E_BAD_COMMAND'
+
+/**
  * 操作只完成了一部分（多文件移动/递归删除中途失败）。
  *
  * 与 E_OP_FAILED 分开：后者承诺「什么都没发生」，而部分完成时那句承诺是假话。
@@ -159,6 +168,7 @@ export const ERROR_CODES = [
   E_OP_PARTIAL,
   // 任务 10：批量动作的整批参数错（用户能自己修好，与 E_BAD_ARGS 分开）
   E_BATCH_PARAM,
+  E_BAD_COMMAND,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

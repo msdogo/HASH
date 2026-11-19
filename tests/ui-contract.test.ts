@@ -324,6 +324,7 @@ describe('任务 10：批量操作与总览页契约（静态断言）', () => {
     'src/pages/OverviewPage.tsx',
     'src/store/batchStore.ts',
     'src/shared/batch.ts',
+    'src/shared/batch-flow.ts',
   ]
 
   it('新增源码不 import node 内置模块、不直接 import electron、无 as any', () => {
@@ -346,34 +347,21 @@ describe('任务 10：批量操作与总览页契约（静态断言）', () => {
     }
   })
 
-  it('渲染层只经 window.api.batch 调用批量动作（不绕过 preload）', () => {
-    const store = read('src/store/batchStore.ts')
-    for (const call of [
-      'window.api.batch.screenshot(',
-      'window.api.batch.install(',
-      'window.api.batch.push(',
-      'window.api.batch.shell(',
-    ]) {
-      expect(store, call).toContain(call)
-    }
-  })
-
-  it('电量/存储没有数据时显示占位符（不伪造 0%）', () => {
-    const page = read('src/pages/OverviewPage.tsx')
-    // 判断全部来自 shared 的纯函数（有单测），组件不自己算
-    expect(page).toContain('batteryPercent(')
-    expect(page).toContain('storageView(')
-    expect(page).toContain("t('batch.unknown')")
-    // 绝不把 undefined 当 0 用
-    expect(page).not.toMatch(/device\.battery\s*\?\?\s*0/)
-  })
-
-  it('运行中禁用四个按钮（避免重复提交），且结果行数据来自 shared/store', () => {
-    const page = read('src/pages/OverviewPage.tsx')
-    expect(page).toContain('disabled={disabled}')
-    expect(page).toContain('running')
-    expect(page).toContain('resultRows(')
-  })
+  /*
+   * 【复审 C1】这里原本有三条 toContain(源码文本) 的断言，全部删除。
+   *
+   * 它们检查的是源码里有没有某个字样，而注释也是源码文本 —— 审查实测：
+   * 把 batchStore 里真正的 window.api.batch.shell(...) 调用换成常量 + 一行含该字样的
+   * 注释，全套 1063 个用例仍然全绿（V2）；同理「电量伪造 0%」（V3）与
+   * 「结果矩阵不再走 resultRows」（V5）也都能骗过。
+   *
+   * 替代品都是**行为断言**，不再依赖任何源码文本：
+   *   - 四个动作真的调用到哪个 window.api 方法 → tests/batch-store.test.ts（假 window.api）
+   *   - 电量/存储占位、按钮可点性 → tests/batch-view.test.ts 的 batteryPercent /
+   *     storageView / canSubmit（纯函数，输入输出可断言）
+   *   - 结果矩阵行 → tests/batch-store.test.ts 的 resultRows
+   * 本文件只保留「只能静态查」的两类规则（node-free / 无 as any / 无硬编码中文）。
+   */
 })
 
 describe('任务 8：传输底栏契约（静态断言）', () => {

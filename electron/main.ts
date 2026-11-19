@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { shutdownChildren } from './adb/children'
 import { E_UNKNOWN } from '../src/shared/errors'
+import { t } from '../src/shared/i18n'
 import { listDirDetailed } from './fs/remote'
 import { AdbTracking, createAdbProbe, createClient } from './app/sessions'
 import { createBootSequence } from './app/boot'
@@ -167,7 +168,7 @@ const batchService = new BatchService({
     const win = BrowserWindow.getAllWindows()[0]
     if (win === undefined) return ''
     const picked = await dialog.showOpenDialog(win, {
-      title: '选择批量截图的保存目录',
+      title: t('batch.pickDirTitle'),
       defaultPath: localRoot,
       properties: ['openDirectory', 'createDirectory'],
     })
@@ -178,8 +179,8 @@ const batchService = new BatchService({
     const win = BrowserWindow.getAllWindows()[0]
     if (win === undefined) return ''
     const picked = await dialog.showOpenDialog(win, {
-      title: '选择要安装的 APK',
-      filters: [{ name: 'Android 安装包', extensions: ['apk'] }],
+      title: t('batch.pickApkTitle'),
+      filters: [{ name: t('batch.apkFilter'), extensions: ['apk'] }],
       properties: ['openFile'],
     })
     if (picked.canceled || picked.filePaths.length === 0) return ''
@@ -409,6 +410,11 @@ app.on('before-quit', () => {
   // 传输必须是「先取消再杀进程」：dispose 会 abort 每个在跑任务的 signal，
   // 进而由 AdbClient 走 killTree 终结整棵进程树（裁决 3）。
   transfer.dispose()
+  // 复审 I1：批量截图的临时文件清理登记也要在退出时兑现，
+  // 否则排队中的 transfer 任务永远不进终态（dispose 不 emit），设备上会留 png。
+  batchService.dispose()
+  // dispose 已经把未结算的清理执行掉了，把表清空避免残留闭包
+  batchCleanup.clear()
   shutdownChildren()
   tracking?.flushChanges()
   tracking?.stop()

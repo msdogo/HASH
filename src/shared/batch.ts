@@ -52,7 +52,7 @@ export type BatchActionKind = 'screenshot' | 'install' | 'push' | 'shell'
  * 少一个字段就是编译错误，不会出现「截图时忘了传 serials」这种运行时错误。
  */
 export type BatchRequest =
-  | { action: 'screenshot'; serials: string[] }
+  | { action: 'screenshot'; serials: string[]; dstDir: string }
   | { action: 'install'; serials: string[]; apkPath: string }
   | { action: 'push'; serials: string[]; files: string[]; dstDir: string }
   | { action: 'shell'; serials: string[]; command: string }
@@ -168,13 +168,120 @@ export function batchDetailKey(
   }
 }
 
-/** 批量动作 → i18n key（界面按钮文案）。 */
-export function batchActionLabelKey(action: BatchActionKind): string {
-  switch (action) {
-    case 'screenshot': return 'batch.screenshot'
-    case 'install': return 'batch.install'
-    case 'push': return 'batch.push'
-    case 'shell': return 'batch.shell'
-    default: return 'batch.actions'
+/* ============ 提交闸门（C1：从组件里抽出来的可测纯函数） ============ */
+
+/** 决定「能不能点某个批量按钮」的全部输入。 */
+export interface SubmitState {
+  /** 有批量动作正在跑（简报：运行中禁用，避免重复提交）。 */
+  running: boolean
+  /** 已勾选且仍存在的设备数。 */
+  pickedCount: number
+  action: BatchActionKind
+  /** 批量推送已选中的本地文件数。 */
+  fileCount?: number
+  /** 批量推送的目标目录（用户输入的原始串）。 */
+  dstDir?: string
+  /** 批量执行命令的内容。 */
+  command?: string
+}
+
+/**
+ * 该动作的按钮现在能不能点。
+ *
+ * 为什么做成纯函数（复审 C1）：这条规则原先只在 OverviewPage 的 JSX 里以
+ * disabled={...} 的属性形式存在，而静态断言只能匹配源码文本 —— 把它改写成
+ * 三目表达式或默认参数，断言照样绿。抽到 shared 之后就能用真实输入测出
+ * 「运行中不可点」「没勾设备不可点」「推送没选文件不可点」「空命令不可点」。
+ */
+export function canSubmit(state: SubmitState): boolean {
+  if (state.running) return false
+  if (state.pickedCount <= 0) return false
+  switch (state.action) {
+    case 'push':
+      // 没选文件 / 没写目标目录时点下去只会得到一条「参数不合法」
+      return (state.fileCount ?? 0) > 0 && (state.dstDir ?? '').trim() !== ''
+    case 'shell':
+      return (state.command ?? '').trim() !== ''
+    default:
+      return true
   }
+}
+
+/* ============ 执行命令的输出预算（I3：流式截断，不让内存线性增长） ============ */
+
+/** 单台命令的 stdout 上限（R8）。 */
+export const SHELL_STDOUT_LIMIT_BYTES = 8 * 1024
+/** 结果矩阵里 detail 的上限（R8：只放前 512 字节摘要）。 */
+export const DETAIL_LIMIT_BYTES = 512
+
+/** 一个按字节计预算的 stdout 收集器。 */
+export interface StdoutBudget {
+  /** 喂一个 chunk；返回 true 表示已经超出上限（调用方应中止命令）。 */
+  push(chunk: string): boolean
+  /** 已收集的文本（永不超过上限，且不切出半个码点）。 */
+  text(): string
+  /** 是否发生过截断。 */
+  overflowed(): boolean
+}
+
+/**
+ * 造一个 stdout 预算收集器。
+ *
+ * 【复审 I3】修前是把整条命令的输出全收进 run.stdout（AdbClient 内部
+ * stdout += text），跑完才 truncateUtf8 —— 截断只作用于 IPC 载荷，
+ * 主进程内存在命令运行期间仍随输出线性增长（审查实测一条命令 27.4 MB / 堆 +25.1 MB）。
+ *
+ * 现在改由本收集器在**收流的过程中**就封顶，并在超限时让调用方 abort 命令：
+ * 缓冲占用恒定 <= 上限 + 一个 chunk，与命令输出总量无关。
+ *
+ * 用码点边界切：切成孤立代理对会变成 U+FFFD，而「截断」不该制造乱码。
+ */
+export function createStdoutBudget(maxBytes: number = SHELL_STDOUT_LIMIT_BYTES): StdoutBudget {
+  let kept = ''
+  let bytes = 0
+  let overflow = false
+  return {
+    push(chunk) {
+      if (overflow) return true
+      for (const ch of chunk) {
+        const code = ch.codePointAt(0) ?? 0
+        const size = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+        if (bytes + size > maxBytes) {
+          overflow = true
+          return true
+        }
+        bytes += size
+        kept += ch
+      }
+      return false
+    },
+    text() { return kept },
+    overflowed() { return overflow },
+  }
+}
+
+/* ============ 危险命令判定（规格 §9.6） ============ */
+
+/**
+ * 规格 §9.6 点名要二次确认的三类危险命令。
+ *
+ * 只认「这些词作为命令里的一个独立词」的形态：
+ *   - kill-server 会中断用户其它调试工具（本应用自己也在用 adb，杀了会全线报错）；
+ *   - reboot 会让勾选的所有设备同时重启；
+ *   - root / unroot 会改变设备的安全状态。
+ *
+ * 判据刻意宽松到「词出现在命令任意位置」：用户可能写成 su -c reboot、
+ * sh -c "reboot"、rm -rf /system && reboot。误报的代价是多一次确认；
+ * 漏报的代价是同时重启一片设备 —— 取前者。
+ */
+const DANGEROUS_WORDS: readonly string[] = ['kill-server', 'reboot', 'root']
+
+export function isDangerousCommand(command: string): boolean {
+  const lower = command.toLowerCase()
+  for (const word of DANGEROUS_WORDS) {
+    // 前后不能紧邻字母数字或连字符，避免 rooted / reboot-x 之类误判
+    const re = new RegExp('(^|[^a-z0-9_-])' + word + '($|[^a-z0-9_-])')
+    if (re.test(lower)) return true
+  }
+  return false
 }

@@ -153,11 +153,17 @@ const batchSerials = z.array(z.string().min(1)).min(1).max(16)
 /**
  * batch:screenshot 入参。
  *
- * **没有目标目录字段**：目录由主进程弹系统选择框问用户。
- * 让渲染层传目录就等于让渲染层决定往磁盘哪个位置写文件，
- * 而它连绝对路径都拿不到（<input type=file> 在 Electron 里不可用）。
+ * 【复审 I5】dstDir 由 batch:pick-directory 的选择框提供（界面拿不到本地绝对路径，
+ * <input type=file> 在 Electron 里不可用）。主进程仍会用本地访问闸门
+ * （checkLocalAccess）再校验一次 —— 闸门不信任渲染层给的任何路径。
+ *
+ * 为什么目录不能为空：空串在这里没有「用默认目录」的合理含义，
+ * 默认目录（用户主目录）对一个批量截图动作来说太容易误写。
  */
-export const BATCH_SCREENSHOT_INPUT = z.object({ serials: batchSerials })
+export const BATCH_SCREENSHOT_INPUT = z.object({
+  serials: batchSerials,
+  dstDir: z.string().min(1),
+})
 export type BatchScreenshotInput = z.infer<typeof BATCH_SCREENSHOT_INPUT>
 
 /**
@@ -320,37 +326,13 @@ export interface DshApi {
   }
 }
 
-/* ============ API 面清单（运行期反射用；类型层的等价性由 DshApi 保证） ============ */
-
-/**
- * 每个命名空间下的方法名。
- *
- * 注意：这里只是给「运行期静态检查 / 文档」用的便利清单，
- * **真正的守卫是 DshApi 接口 + satisfies**（tests/api-contract-binding.test.ts 会断言这一点）。
- * 若两者不一致，tests 里对 DshApi 键集合的类型断言会编译失败。
+/*
+ * 【复审 I4】这里原本还有一个 API_SURFACE 清单（DshApi 键集合的字面量副本）
+ * 与 apiMethodNames / apiGroupNames 辅助函数。全部删除，理由：
+ *   1. 全仓**零消费者**（tests/ 里也零命中），是纯死代码；
+ *   2. 它的注释声称「preload 与 api.d.ts 都据此派生，测试做双向比对」，
+ *      但那个比对测试在上一轮就删了 —— 注释在撒谎，比没有更危险；
+ *   3. DshApi 的守卫已经由三层编译期机制保证：
+ *      buildApi 的返回类型标注 + 对象字面量的 satisfies + tests/api-contract-binding
+ *      的 never 断言（任一方向不同步都编译失败）。
  */
-export const API_SURFACE = {
-  app: ['ping'],
-  devices: ['list', 'onChanged'],
-  fs: ['list', 'mkdir', 'rename', 'removeFacts', 'remove', 'copy', 'move'],
-  local: ['list', 'pickRoot'],
-  transfer: ['enqueue', 'cancel', 'retry', 'list', 'clear', 'pickFiles', 'onChanged'],
-  // 任务 10：批量操作 + 两个选择框（目录 / apk）
-  batch: ['screenshot', 'install', 'push', 'shell', 'pickDirectory', 'pickApk'],
-} as const
-
-export type ApiSurface = typeof API_SURFACE
-
-/** 拍平后的方法名列表（'app.ping', 'devices.list', ...）。 */
-export function apiMethodNames(): string[] {
-  const out: string[] = []
-  for (const [group, methods] of Object.entries(API_SURFACE)) {
-    for (const method of methods) out.push(group + '.' + method)
-  }
-  return out
-}
-
-/** 命名空间名列表。 */
-export function apiGroupNames(): string[] {
-  return Object.keys(API_SURFACE)
-}

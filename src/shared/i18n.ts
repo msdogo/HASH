@@ -158,6 +158,10 @@ const messages: Record<string, string> = {
   'batch.shell': '执行命令',
   'batch.pickFiles': '选择要推送的文件',
   'batch.pickApk': '选择 APK',
+  'batch.pickDirTitle': '选择批量截图的保存目录',
+  'batch.pickApkTitle': '选择要安装的 APK',
+  'batch.apkFilter': 'Android 安装包',
+  'batch.confirmDangerousBody': '将在勾选的 {count} 台设备上执行：{command}\n\n影响清单：{devices}\n\n这类命令（kill-server / reboot / root）会中断调试或重启设备，确定执行吗？',
   'batch.dstDir': '目标目录',
   'batch.dstDirPlaceholder': '设备上的目标目录，如 /sdcard/Download',
   'batch.shellPlaceholder': '要在每台设备上执行的命令，如 echo ok',
@@ -240,6 +244,7 @@ const errorTexts: Record<ErrorCode, string> = {
   E_OUTSIDE_ROOT: '这个位置在本地选定的目录之外，已被拒绝访问。请先在左侧切换到允许的目录',
   // ---- 任务 10：批量动作的整批参数错（用户能自己修好）----
   E_BATCH_PARAM: '批量操作没有执行：参数不合法，没有任何设备收到命令。请检查是否选了设备、选了文件、填了目标目录或命令',
+  E_BAD_COMMAND: '这条命令不能执行：命令里不能包含换行符，否则一条命令会变成多条。请写成单行',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */

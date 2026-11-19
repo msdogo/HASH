@@ -42,7 +42,7 @@ function fakeBatch(result: BatchRunData = { results: [] }): BatchController & {
   const record = (method: string, args: unknown[]): void => { calls.push({ method, args }) }
   return {
     calls,
-    screenshot: async (input) => { record('screenshot', [input]); return result },
+    screenshot: async (input, dstDir) => { record('screenshot', [input, dstDir]); return result },
     install: async (input, apkPath) => { record('install', [input, apkPath]); return result },
     push: async (input) => { record('push', [input]); return result },
     shell: async (input, command) => { record('shell', [input, command]); return result },
@@ -172,7 +172,7 @@ describe('错误码收敛', () => {
   it('adb 未定位到 → E_ADB_NOT_FOUND 且不调用服务', async () => {
     const h = harness({ adbPath: '' })
     for (const channel of [CH.BATCH_SCREENSHOT, CH.BATCH_SHELL]) {
-      const payload = channel === CH.BATCH_SHELL ? { serials: ['S1'], command: 'ls' } : { serials: ['S1'] }
+      const payload = channel === CH.BATCH_SHELL ? { serials: ['S1'], command: 'ls' } : { serials: ['S1'], dstDir: 'C:/shots' }
       expect(await h.invoke(channel, payload)).toEqual({ ok: false, error: E_ADB_NOT_FOUND })
     }
     expect(h.calls()).toEqual([])
@@ -188,10 +188,12 @@ describe('错误码收敛', () => {
 })
 
 describe('四个动作的透传', () => {
-  it('screenshot：把 serials 原样交给服务', async () => {
+  it('screenshot：serials 与 dstDir 都交给服务（I5：目录来自选择框）', async () => {
     const h = harness()
-    await h.invoke(CH.BATCH_SCREENSHOT, { serials: ['S1', 'S2'] })
-    expect(h.calls()).toEqual([{ method: 'screenshot', args: [{ serials: ['S1', 'S2'] }] }])
+    await h.invoke(CH.BATCH_SCREENSHOT, { serials: ['S1', 'S2'], dstDir: 'C:/shots' })
+    expect(h.calls()).toEqual([
+      { method: 'screenshot', args: [{ serials: ['S1', 'S2'] }, 'C:/shots'] },
+    ])
   })
 
   it('install：apkPath 原样透传（路径校验在服务层）', async () => {

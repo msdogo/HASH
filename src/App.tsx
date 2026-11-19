@@ -66,7 +66,14 @@ export function App() {
         <DeviceRail onShowOverview={() => { setPage('overview') }} />
         {/* 文件页自己管理滚动（虚拟列表需要真正的滚动容器），所以这里不加 padding / overflow */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* 切到总览页时隐藏文件页（不是卸载：卸载会丢掉每台设备的滚动位置与选中项） */}
+          {/*
+           * 两页互斥渲染：切走时另一页**会被卸载**。
+           *
+           * 修前这里的注释写着「不是卸载」，与代码相反（复审 Minor 2）。
+           * 实际行为是卸载 —— 也就是切到总览页再切回来，文件页会重新挂载。
+           * 这不影响正确性（滚动位置与选中项存在 fileStore 里，不在组件 state），
+           * 但注释必须说实话。
+           */}
           {page === 'files' ? <FilesPage /> : <OverviewPage />}
         </main>
       </div>

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   activeTaskCount,
-  batchActionLabelKey,
   batchDetailKey,
   batteryPercent,
+  canSubmit,
+  createStdoutBudget,
+  isDangerousCommand,
   storageView,
   summarizeBatch,
   truncateUtf8,
@@ -189,11 +191,112 @@ describe('batchDetailKey：主进程只给数据，文案在这里拼', () => {
   })
 })
 
-describe('batchActionLabelKey', () => {
-  it('四个动作各自映射到 i18n key', () => {
-    expect(batchActionLabelKey('screenshot')).toBe('batch.screenshot')
-    expect(batchActionLabelKey('install')).toBe('batch.install')
-    expect(batchActionLabelKey('push')).toBe('batch.push')
-    expect(batchActionLabelKey('shell')).toBe('batch.shell')
+describe('canSubmit：按钮能不能点（C1 的替代——行为断言，不是源码文本）', () => {
+  it('运行中一律不可点（防重复提交）', () => {
+    for (const action of ['screenshot', 'install', 'push', 'shell'] as const) {
+      expect(canSubmit({ running: true, pickedCount: 3, action, fileCount: 1, dstDir: '/sdcard', command: 'ls' }))
+        .toBe(false)
+    }
+  })
+
+  it('没勾设备一律不可点', () => {
+    for (const action of ['screenshot', 'install', 'push', 'shell'] as const) {
+      expect(canSubmit({ running: false, pickedCount: 0, action, fileCount: 1, dstDir: '/sdcard', command: 'ls' }))
+        .toBe(false)
+    }
+  })
+
+  it('截图 / 安装只要有设备就能点', () => {
+    expect(canSubmit({ running: false, pickedCount: 1, action: 'screenshot' })).toBe(true)
+    expect(canSubmit({ running: false, pickedCount: 1, action: 'install' })).toBe(true)
+  })
+
+  it('推送需要同时有文件与非空目标目录', () => {
+    const base = { running: false, pickedCount: 1, action: 'push' as const }
+    expect(canSubmit({ ...base, fileCount: 0, dstDir: '/sdcard' })).toBe(false)
+    expect(canSubmit({ ...base, fileCount: 1, dstDir: '   ' })).toBe(false)
+    expect(canSubmit({ ...base, fileCount: 1 })).toBe(false)
+    expect(canSubmit({ ...base, fileCount: 1, dstDir: '/sdcard/Download' })).toBe(true)
+  })
+
+  it('执行命令需要非空命令（纯空白不算）', () => {
+    const base = { running: false, pickedCount: 1, action: 'shell' as const }
+    expect(canSubmit({ ...base, command: '' })).toBe(false)
+    expect(canSubmit({ ...base, command: '   ' })).toBe(false)
+    expect(canSubmit({ ...base })).toBe(false)
+    expect(canSubmit({ ...base, command: 'echo ok' })).toBe(true)
+  })
+})
+
+describe('createStdoutBudget：流式封顶（I3）', () => {
+  it('未超限时原样保留，不标截断', () => {
+    const budget = createStdoutBudget(10)
+    expect(budget.push('abc')).toBe(false)
+    expect(budget.text()).toBe('abc')
+    expect(budget.overflowed()).toBe(false)
+  })
+
+  it('超限时立即返回 true（调用方据此 abort），且缓冲不超过上限', () => {
+    const budget = createStdoutBudget(5)
+    expect(budget.push('abcdef')).toBe(true)
+    expect(budget.text()).toBe('abcde')
+    expect(budget.overflowed()).toBe(true)
+  })
+
+  it('超限后再喂 chunk 直接返回 true，且不再增长（内存恒定）', () => {
+    const budget = createStdoutBudget(3)
+    budget.push('abcd')
+    const before = budget.text()
+    for (let i = 0; i < 100; i++) expect(budget.push('x'.repeat(1024))).toBe(true)
+    expect(budget.text()).toBe(before)
+  })
+
+  it('汉字按 3 字节计，且不切出半个码点', () => {
+    const budget = createStdoutBudget(5)
+    // 5 字节只放得下 1 个汉字（3 字节），第二个会跨过上限
+    expect(budget.push('汉汉')).toBe(true)
+    expect(budget.text()).toBe('汉')
+    expect(budget.text()).not.toContain('�')
+  })
+
+  it('大数据流的内存表现：喂 10 MB 也不线性增长（缓冲恒 <= 上限）', () => {
+    const budget = createStdoutBudget(8 * 1024)
+    const chunk = 'x'.repeat(64 * 1024)
+    let chunks = 0
+    for (let i = 0; i < 160; i++) {
+      chunks += 1
+      if (budget.push(chunk)) break
+    }
+    // 10 MB 的输入在第 1 个 64 KB chunk 里就该封顶
+    expect(chunks).toBe(1)
+    expect(budget.text().length).toBe(8 * 1024)
+    expect(budget.overflowed()).toBe(true)
+  })
+})
+
+describe('isDangerousCommand：规格 §9.6 的二次确认判据', () => {
+  it('kill-server / reboot / root 都算危险', () => {
+    expect(isDangerousCommand('adb kill-server')).toBe(true)
+    expect(isDangerousCommand('reboot')).toBe(true)
+    expect(isDangerousCommand('su -c reboot')).toBe(true)
+    expect(isDangerousCommand('root')).toBe(true)
+    expect(isDangerousCommand('sh -c "reboot -p"')).toBe(true)
+  })
+
+  it('大小写不敏感（REBOOT 同样是危险命令）', () => {
+    expect(isDangerousCommand('REBOOT')).toBe(true)
+    expect(isDangerousCommand('Kill-Server')).toBe(true)
+  })
+
+  it('普通命令不算危险（避免每次都弹确认）', () => {
+    expect(isDangerousCommand('echo ok')).toBe(false)
+    expect(isDangerousCommand('ls -l /sdcard')).toBe(false)
+    expect(isDangerousCommand('cat /sdcard/a.txt')).toBe(false)
+    expect(isDangerousCommand('pm list packages')).toBe(false)
+  })
+
+  it('不误伤包含这些子串的普通词（rooted / rebootX / reroot）', () => {
+    expect(isDangerousCommand('echo rooted')).toBe(false)
+    expect(isDangerousCommand('cat rebootlog.txt')).toBe(false)
   })
 })

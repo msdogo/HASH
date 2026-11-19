@@ -6,6 +6,13 @@ export const E_TIMEOUT = 'E_TIMEOUT'
 export const E_ABORTED = 'E_ABORTED'
 /** 应用正在退出，子进程闸门已关闭：命令没有执行。 */
 export const E_SHUTDOWN = 'E_SHUTDOWN'
+/**
+ * stdout 超过调用方给的流式上限（maxStdoutBytes）。
+ *
+ * 与 E_ABORTED 分开：命令是被**我们**主动中止的，不是用户取消的，
+ * 而调用方要把已经收到的部分输出当作「被截断的结果」呈现，不是一个失败。
+ */
+export const E_STDOUT_LIMIT = 'E_STDOUT_LIMIT'
 
 /** adb 命令的完整执行结果。code 为 null 表示进程被信号终止（例如超时/中断后 kill）。 */
 export interface RunResult {
@@ -21,6 +28,17 @@ export interface RunOptions {
   signal?: AbortSignal
   /** 流式 stdout 回调（每收到一个 chunk 调一次）。 */
   onStdout?: (chunk: string) => void
+  /**
+   * stdout 的**流式**上限（字节）。超出后立刻终结进程树并以 E_STDOUT_LIMIT reject。
+   *
+   * 【复审 I3】修前只有调用方拿到完整 stdout 之后才截断（batch shell 就是这么做的），
+   * 于是主进程内存在命令运行期间随输出线性增长：审查实测一条
+   * \`head -c 20000000 /dev/zero | base64\` 让 heapUsed 涨 25.1 MB（stdout 27.4 MB）。
+   * 截断必须发生在**收流的过程中**，否则它只保护了 IPC 载荷，保护不了进程内存。
+   *
+   * 缺省不限制（既有调用方的行为完全不变）；批量执行命令传 SHELL_STDOUT_LIMIT_BYTES。
+   */
+  maxStdoutBytes?: number
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000
@@ -143,9 +161,40 @@ export class AdbClient {
       child.stdout?.setEncoding('utf8')
       child.stderr?.setEncoding('utf8')
 
+      /*
+       * 【复审 I3】流式封顶：边收边量字节，超限立刻杀进程树并 reject。
+       *
+       * 这里**不再把超限之后的 chunk 追加进 stdout**（否则内存又会涨回去），
+       * 并且把已收到的部分挂在错误对象上，让调用方可以把它当成截断结果展示。
+       */
+      let stdoutBytes = 0
       child.stdout?.on('data', (text: string) => {
-        stdout += text
+        // 已经废止（settled）之后到达的 chunk 一律丢弃：否则内存又会随输出涨回去
+        if (settled) return
         opts.onStdout?.(text)
+        const limit = opts.maxStdoutBytes
+        /*
+         * 有上限时：先把本 chunk 截到剩余预算内再累积，然后**立即**中止。
+         *
+         * 复用 abortOrTimeout（而不是自己 killTree + finish）：它保证
+         * 「先封口 settled → 再杀进程树 → 杀完才 reject」，于是迟到的 close
+         * 不会把这次中止误判成正常结束（那正是取消路径踩过的坑）。
+         * 调用方需要的那部分输出由 onStdout 侧自行收集（见 batch/service）。
+         */
+        if (limit === undefined) {
+          stdout += text
+          return
+        }
+        const size = Buffer.byteLength(text, 'utf8')
+        const room = limit - stdoutBytes
+        if (size > room) {
+          if (room > 0) stdout += Buffer.from(text, 'utf8').subarray(0, room).toString('utf8')
+          stdoutBytes = limit
+          abortOrTimeout(E_STDOUT_LIMIT)
+          return
+        }
+        stdoutBytes += size
+        stdout += text
       })
       child.stderr?.on('data', (text: string) => { stderr += text })
 

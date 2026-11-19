@@ -6,6 +6,7 @@ import {
   activeTaskCount,
   batchDetailKey,
   batteryPercent,
+  isDangerousCommand,
   storageView,
   summarizeBatch,
 } from '@shared/batch'
@@ -60,10 +61,19 @@ export function OverviewPage() {
     )
   }, [])
 
-  const allPicked = devices.length > 0 && picked.length === devices.length
+  /*
+   * 全选态（复审 Minor 3）。
+   *
+   * 修前用 picked.length === devices.length 判断，而 picked 里可能残留**已拔掉设备**的
+   * serial —— 那时长度相等但勾选内容并不等于当前设备表，全选框显示的状态是错的，
+   * 点一下也只会把 visible 的设备再选一遍（用户看到「全选」却点不出全选）。
+   * 现在判据是「每台当前设备都在已勾选集合里」，并且只算可见的那些 tick。
+   */
+  const visibleSerials = devices.filter((device) => device.status === 'device').map((device) => device.serial)
+  const allPicked = visibleSerials.length > 0 && visibleSerials.every((serial) => picked.includes(serial))
   const toggleAll = useCallback(() => {
-    setPicked((current) => (current.length === devices.length ? [] : devices.map((device) => device.serial)))
-  }, [devices])
+    setPicked((current) => (current.length === visibleSerials.length ? [] : visibleSerials))
+  }, [visibleSerials])
 
   // 已勾选但已消失的设备不该继续参与批量（用户看不到它，结果里却冒出一行）
   const serials = useMemo(() => {
@@ -73,8 +83,17 @@ export function OverviewPage() {
 
   const disabled = running || serials.length === 0
 
-  const handleScreenshot = useCallback(() => {
-    void run({ action: 'screenshot', serials })
+  /**
+   * 批量截图（复审 I5：batch:pick-directory 在这里有了真实消费者）。
+   *
+   * 先让用户选目录，再跑。取消（空串）就什么都不做 —— 与「批量安装」的
+   * 取消语义一致：用户按 Esc 不是错误，不该弹错误码，也不该清掉上一次的结果。
+   */
+  const handleScreenshot = useCallback(async () => {
+    const picked_ = await window.api.batch.pickDirectory()
+    if (!picked_.ok) return
+    if (picked_.data === '') return
+    void run({ action: 'screenshot', serials, dstDir: picked_.data })
   }, [run, serials])
 
   const handleInstall = useCallback(async () => {
@@ -96,10 +115,31 @@ export function OverviewPage() {
     void run({ action: 'push', serials, files, dstDir: dstDir.trim() })
   }, [run, serials, files, dstDir])
 
+  /**
+   * 批量执行命令（规格 §9.6：危险命令必须二次确认，并列出影响设备清单）。
+   *
+   * 哪些算危险由 shared 的 isDangerousCommand 判定（有单测）：kill-server / reboot / root。
+   * 确认框里必须能看到「会在哪些设备上执行」—— 用户勾了 5 台却以为只跑 1 台，
+   * 一条 reboot 就会同时重启 5 台。
+   */
   const handleShell = useCallback(() => {
     if (command.trim() === '') return
+    if (isDangerousCommand(command)) {
+      const names = serials
+        .map((serial) => devices.find((device) => device.serial === serial))
+        .map((device) => (device === undefined ? '' : deviceLabel(device)))
+        .filter((label) => label !== '')
+      const ok = window.confirm(
+        tf('batch.confirmDangerousBody', {
+          count: serials.length,
+          command,
+          devices: names.join('、'),
+        }),
+      )
+      if (!ok) return
+    }
     void run({ action: 'shell', serials, command })
-  }, [run, serials, command])
+  }, [run, serials, command, devices])
 
   const rows = resultRows(results)
   const summary = summarizeBatch(results ?? [])
@@ -110,7 +150,7 @@ export function OverviewPage() {
         <h2 className="mr-2 text-sm font-semibold text-neutral-200">{t('batch.title')}</h2>
         <button
           type="button"
-          onClick={handleScreenshot}
+          onClick={() => { void handleScreenshot() }}
           disabled={disabled}
           className="flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
         >
@@ -230,8 +270,9 @@ export function OverviewPage() {
               {t('batch.result.dismiss')}
             </button>
           </div>
-          {rows.map((row) => (
-            <div key={row.serial} className="flex items-center gap-2 py-0.5 text-xs">
+          {/* R4 明确允许同一 serial 重复出现 → key 必须带下标，否则 React 会复用错行 */}
+          {rows.map((row, index) => (
+            <div key={row.serial + '#' + index} className="flex items-center gap-2 py-0.5 text-xs">
               <span className={row.ok ? 'text-emerald-400' : 'text-red-400'}>
                 {row.ok ? '✔' : '✖'}
               </span>

@@ -57,6 +57,9 @@ describe('共享错误码', () => {
       // 而「没选设备 / 没选文件 / 命令为空」是用户自己能修好的事，
       // 让用户去重启应用是错误的引导。
       'E_BATCH_PARAM',
+      // 复审 Minor 4：命令内容不合法（换行会让一条命令变成多条）。
+      // 与 E_BATCH_PARAM（没选设备/文件）和 E_INVALID_PATH（路径语义）都不同。
+      'E_BAD_COMMAND',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

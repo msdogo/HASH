@@ -1,16 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { BatchService } from '../electron/batch/service'
-import type { BatchServiceDeps } from '../electron/batch/service'
+import {
+  BatchService,
+  SHOT_FALLBACK_DIR,
+  SHOT_PREFIX,
+  SHOT_TEMP_DIR,
+  type BatchServiceDeps,
+} from '../electron/batch/service'
+import { E_STDOUT_LIMIT } from '../electron/adb/client'
 import { DeviceManager } from '../electron/devices/manager'
 import type { TransferTask } from '../src/shared/transfer'
 import type { EnqueueIntent } from '../electron/transfer/service'
 import type { RunResult } from '../electron/adb/client'
 import type { ShellRunner } from '../electron/fs/remote'
-import { E_BATCH_PARAM, E_DEVICE_OFFLINE, E_NO_PERMISSION, E_PROTECTED_PATH } from '../src/shared/errors'
+import {
+  E_BAD_COMMAND,
+  E_BATCH_PARAM,
+  E_DEVICE_OFFLINE,
+  E_NO_PERMISSION,
+  E_PROTECTED_PATH,
+} from '../src/shared/errors'
 
 /*
  * 批量服务的行为测试（任务 10）。
@@ -18,11 +30,12 @@ import { E_BATCH_PARAM, E_DEVICE_OFFLINE, E_NO_PERMISSION, E_PROTECTED_PATH } fr
  * 全部断言落在**行为**上：命令 argv 逐字节比对、结果矩阵逐项比对、传输入队的意图。
  * 没有一条匹配源码文本 —— 本项目已经出过 6 次「正则护栏注入缺陷仍全绿」。
  *
- * 假 client 是**有状态**的：它记录每次 run 的完整 argv 与超时，
+ * 假 client 是**有状态**的：它记录每次 run 的完整 argv 与超时，并且会像
+ * AdbClient 一样把 stdout 通过 onStdout 流式吐出（这样流式封顶那条也能测）。
  * 于是「离线设备零命令」可以写成 expect(dev.commands).toEqual([]) 这种硬断言。
  */
 
-/** 记录 argv 与超时的假设备客户端。 */
+/** 记录 argv 与超时的假设备客户端，并模拟 AdbClient 的流式行为。 */
 class FakeDevice implements ShellRunner {
   readonly serial: string
   readonly commands: string[][] = []
@@ -34,11 +47,33 @@ class FakeDevice implements ShellRunner {
     this.serial = serial
   }
 
-  async run(args: string[], opts: { adbPath: string; timeoutMs?: number }): Promise<RunResult> {
-    // 复制一份：调用方后续若复用数组，历史记录不会被改掉
+  async run(
+    args: string[],
+    opts: { adbPath: string; timeoutMs?: number; onStdout?: (chunk: string) => void; maxStdoutBytes?: number },
+  ): Promise<RunResult> {
     this.commands.push([...args])
     this.timeouts.push(opts.timeoutMs)
-    return this.reply(args)
+    const result = this.reply(args)
+    /*
+     * 模拟 AdbClient 的**流式**行为（复审 I3）：分块吐给 onStdout，
+     * 并在带 maxStdoutBytes 时像真 client 一样超限就 reject(E_STDOUT_LIMIT)。
+     * 假 client 不分块的话，「主进程不在收流时累积」这条根本测不出来。
+     */
+    if (opts.onStdout !== undefined) {
+      const chunkSize = 1024
+      let bytes = 0
+      for (let i = 0; i < result.stdout.length; i += chunkSize) {
+        const chunk = result.stdout.slice(i, i + chunkSize)
+        opts.onStdout(chunk)
+        bytes += Buffer.byteLength(chunk, 'utf8')
+        if (opts.maxStdoutBytes !== undefined && bytes > opts.maxStdoutBytes) {
+          throw new Error(E_STDOUT_LIMIT)
+        }
+      }
+    } else if (opts.maxStdoutBytes !== undefined) {
+      throw new Error(E_STDOUT_LIMIT)
+    }
+    return result
   }
 }
 
@@ -78,11 +113,11 @@ interface Harness {
   devs: Map<string, FakeDevice>
   transfer: ReturnType<typeof fakeTransfer>
   dir: string
+  /** 已登记但未结算的清理回调（模拟 main.ts 的表）。 */
+  settled: Map<string, () => void>
 }
 
-/**
- * 每个用例一个临时根目录：本地访问闸门要求路径落在根内且真实存在。
- */
+/** 每个用例一个临时根目录（本地访问闸门要求路径落在根内且真实存在）。 */
 let roots: string[] = []
 function tempDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'adbfm-batch-root-'))
@@ -90,7 +125,10 @@ function tempDir(): string {
   return dir
 }
 
-function harness(over: Partial<BatchServiceDeps> = {}): Harness {
+function harness(
+  over: Partial<BatchServiceDeps> = {},
+  options: { settleMode?: 'now' | 'manual' } = {},
+): Harness {
   const devices = new DeviceManager()
   devices.applySnapshot([
     { serial: 'ONLINE-1', status: 'device', model: 'Pixel 7' },
@@ -101,6 +139,7 @@ function harness(over: Partial<BatchServiceDeps> = {}): Harness {
   const devs = new Map<string, FakeDevice>()
   const transfer = fakeTransfer()
   const dir = tempDir()
+  const settled = new Map<string, () => void>()
   const deps: BatchServiceDeps = {
     devices,
     clientFor: (serial) => {
@@ -114,14 +153,17 @@ function harness(over: Partial<BatchServiceDeps> = {}): Harness {
     now: () => 1_700_000_000_000,
     pickDirectory: async () => dir,
     pickApk: async () => '',
-    onTaskSettled: (_taskId, callback) => { callback() },
+    onTaskSettled: (taskId, callback) => {
+      settled.set(taskId, callback)
+      if (options.settleMode !== 'manual') callback()
+    },
     ...over,
   }
-  return { service: new BatchService(deps), devices, devs, transfer, dir }
+  return { service: new BatchService(deps), devices, devs, transfer, dir, settled }
 }
 
-beforeEach(() => { roots = [] })
-afterEach(() => {
+beforeAll(() => { /* 无全局准备 */ })
+afterAll(() => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true })
   roots = []
 })
@@ -145,7 +187,7 @@ describe('R5：离线 / 未授权设备零命令', () => {
     const root = tempDir()
     const apk = path.join(root, 'app.apk')
     writeFileSync(apk, 'not-really-an-apk-but-non-empty')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.install({ serials: ['OFFLINE-1'] }, apk)
     expect(h.devs.get('OFFLINE-1')?.commands ?? []).toEqual([])
     expect(data.results).toEqual([{ serial: 'OFFLINE-1', ok: false, code: E_DEVICE_OFFLINE }])
@@ -153,8 +195,8 @@ describe('R5：离线 / 未授权设备零命令', () => {
 
   it('批量截图：离线设备零命令，且不会入队任何传输', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
-    const data = await h.service.screenshot({ serials: ['OFFLINE-1'] })
+    const h = harness({ localRoot: () => root })
+    const data = await h.service.screenshot({ serials: ['OFFLINE-1'] }, root)
     expect(h.devs.get('OFFLINE-1')?.commands ?? []).toEqual([])
     expect(h.transfer.enqueued).toEqual([])
     expect(data.results).toEqual([{ serial: 'OFFLINE-1', ok: false, code: E_DEVICE_OFFLINE }])
@@ -164,14 +206,14 @@ describe('R5：离线 / 未授权设备零命令', () => {
     const root = tempDir()
     const file = path.join(root, 'a.txt')
     writeFileSync(file, 'x')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.push({ serials: ['OFFLINE-1'], files: [file], dstDir: '/sdcard/Download' })
     expect(h.transfer.enqueued).toEqual([])
     expect(data.results).toEqual([{ serial: 'OFFLINE-1', ok: false, code: E_DEVICE_OFFLINE }])
   })
 })
 
-describe('batch:shell（R8：输出截断，命令逐字节）', () => {
+describe('batch:shell（R8 / I3：流式封顶，命令逐字节）', () => {
   it('命令 argv 逐字节等于 [shell, <command>]，超时 30s', async () => {
     const h = harness()
     const dev = new FakeDevice('ONLINE-1')
@@ -183,7 +225,21 @@ describe('batch:shell（R8：输出截断，命令逐字节）', () => {
     expect(data.results).toEqual([{ serial: 'ONLINE-1', ok: true, detail: 'ok\n', truncated: false }])
   })
 
-  it('stdout 超过 8 KB 时截断并标 truncated（detail 再截到 512 字节）', async () => {
+  it('命令把 maxStdoutBytes 交给 client（I3：截断必须发生在收流过程中）', async () => {
+    const h = harness()
+    const dev = new FakeDevice('ONLINE-1')
+    const limits: Array<number | undefined> = []
+    const original = dev.run.bind(dev)
+    dev.run = async (args, opts) => {
+      limits.push(opts.maxStdoutBytes)
+      return original(args, opts)
+    }
+    h.devs.set('ONLINE-1', dev)
+    await h.service.shell({ serials: ['ONLINE-1'] }, 'cat /dev/zero')
+    expect(limits).toEqual([8 * 1024])
+  })
+
+  it('stdout 超过 8 KB → 中止命令，但**这项仍然成功**且标 truncated（截断不是失败）', async () => {
     const h = harness()
     const dev = new FakeDevice('ONLINE-1')
     dev.reply = () => ({ code: 0, stdout: 'a'.repeat(20_000), stderr: '' })
@@ -192,17 +248,19 @@ describe('batch:shell（R8：输出截断，命令逐字节）', () => {
     const item = data.results[0]
     expect(item.ok).toBe(true)
     expect(item.truncated).toBe(true)
+    // detail 是 512 字节摘要（R8 的第二层上限）
     expect(item.detail).toBe('a'.repeat(512))
   })
 
-  it('截断按 UTF-8 字节数、不切出半个汉字（3 字节字符）', async () => {
+  it('流式预算只保留前 8 KB（内存不随输出增长），且不切出半个汉字', async () => {
     const h = harness()
     const dev = new FakeDevice('ONLINE-1')
+    // 300 个汉字 = 900 字节，没超 8 KB 上限 → 不该截断；
+    // 但 detail 会截到 512 字节 = 170 个汉字
     dev.reply = () => ({ code: 0, stdout: '汉'.repeat(300), stderr: '' })
     h.devs.set('ONLINE-1', dev)
     const data = await h.service.shell({ serials: ['ONLINE-1'] }, 'echo 汉')
     const item = data.results[0]
-    expect(item.truncated).toBe(true)
     expect(item.detail).toBe('汉'.repeat(170))
     expect(item.detail ?? '').not.toContain('\uFFFD')
   })
@@ -223,11 +281,11 @@ describe('batch:shell（R8：输出截断，命令逐字节）', () => {
     expect(data.results.map((item) => item.code)).toEqual([E_BATCH_PARAM, E_BATCH_PARAM])
   })
 
-  it('命令含换行 → 整批失败且零命令（否则一条命令会变成多条）', async () => {
+  it('命令含换行 → 整批 E_BAD_COMMAND 且零命令（Minor 4：换行不是「路径不合法」）', async () => {
     const h = harness()
     const data = await h.service.shell({ serials: ['ONLINE-1'] }, 'echo a\nrm -rf /sdcard')
     expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
-    expect(data.results[0].code).toBe('E_INVALID_PATH')
+    expect(data.results[0].code).toBe(E_BAD_COMMAND)
   })
 
   it('一台失败不影响同批另一台（失败隔离）', async () => {
@@ -249,7 +307,7 @@ describe('batch:shell（R8：输出截断，命令逐字节）', () => {
 describe('batch:install（R7：apk 先校验一次，整批失败）', () => {
   it('apk 不存在 → 整批失败且零命令', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.install({ serials: ['ONLINE-1', 'ONLINE-2'] }, path.join(root, 'nope.apk'))
     expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
     expect(h.devs.get('ONLINE-2')?.commands ?? []).toEqual([])
@@ -261,7 +319,7 @@ describe('batch:install（R7：apk 先校验一次，整批失败）', () => {
     const root = tempDir()
     const apk = path.join(root, 'empty.apk')
     writeFileSync(apk, '')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.install({ serials: ['ONLINE-1'] }, apk)
     expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
     expect(data.results[0].code).toBe(E_BATCH_PARAM)
@@ -271,7 +329,7 @@ describe('batch:install（R7：apk 先校验一次，整批失败）', () => {
     const root = tempDir()
     const apk = path.join(root, 'app.apk')
     writeFileSync(apk, 'PK-fake-apk-bytes')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
     dev.reply = () => ({ code: 0, stdout: 'Success\n', stderr: '' })
     h.devs.set('ONLINE-1', dev)
@@ -288,7 +346,7 @@ describe('batch:install（R7：apk 先校验一次，整批失败）', () => {
     const root = tempDir()
     const apk = path.join(root, 'app.apk')
     writeFileSync(apk, 'bytes')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
     dev.reply = () => ({ code: 0, stdout: 'Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]\n', stderr: '' })
     h.devs.set('ONLINE-1', dev)
@@ -304,7 +362,7 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
     const b = path.join(root, 'b.txt')
     writeFileSync(a, 'a')
     writeFileSync(b, 'b')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.push({ serials: ['ONLINE-1', 'ONLINE-2'], files: [a, b], dstDir: '/sdcard/Download' })
     expect(h.transfer.enqueued.map((item) => [item.serial, path.basename(item.src), item.direction]))
       .toEqual([
@@ -326,7 +384,7 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
     const root = tempDir()
     const file = path.join(root, 'a.txt')
     writeFileSync(file, 'a')
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.push({ serials: ['ONLINE-1'], files: [file], dstDir: '/data/local/tmp' })
     expect(h.transfer.enqueued).toEqual([])
     expect(data.results[0].code).toBe(E_PROTECTED_PATH)
@@ -334,7 +392,7 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
 
   it('本地文件不存在 → 整批失败且零入队（R7：一次校验，不让 N 台各报一次）', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const data = await h.service.push({ serials: ['ONLINE-1', 'ONLINE-2'], files: [path.join(root, 'nope.txt')], dstDir: '/sdcard/Download' })
     expect(h.transfer.enqueued).toEqual([])
     expect(data.results.map((item) => item.code)).toEqual(['E_NOT_FOUND', 'E_NOT_FOUND'])
@@ -346,7 +404,6 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
     writeFileSync(file, 'a')
     const h = harness({
       localRoot: () => root,
-      pickDirectory: async () => root,
       transfer: fakeTransfer((input) => (input.serial === 'ONLINE-2' ? 'E_SYNC_FAILED' : undefined)),
     })
     const data = await h.service.push({ serials: ['ONLINE-1', 'ONLINE-2'], files: [file], dstDir: '/sdcard/Download' })
@@ -356,38 +413,82 @@ describe('batch:push（R2：只入队，自己不管并发）', () => {
   })
 })
 
-describe('batch:screenshot（R1：临时文件 + 传输队列 + 无条件清理）', () => {
-  it('先 screencap 到设备临时目录，再 pull 入队，最后 rm -f 临时文件', async () => {
+describe('batch:screenshot（R1 / I2：隐藏临时目录 + 传输队列 + 无条件清理）', () => {
+  it('I2：落点是隐藏目录 /sdcard/.adbfm，先 mkdir -p 再截图', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
     h.devs.set('ONLINE-1', dev)
-    const data = await h.service.screenshot({ serials: ['ONLINE-1'] })
+    await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
 
-    const remote = '/sdcard/Download/adbfm-shot-1700000000000-ONLINE-1.png'
-    expect(dev.commands).toEqual([
-      ['shell', "screencap -p '" + remote + "'"],
-      ['shell', "rm -f '" + remote + "'"],
-    ])
-    expect(dev.timeouts).toEqual([30_000, 30_000])
-    expect(h.transfer.enqueued).toEqual([
-      // dstDir 传用户原样选的目录（判定用 realpath，执行/传参用原串）
-      { serial: 'ONLINE-1', direction: 'pull', src: remote, dstDir: root },
-    ])
-    expect(data.results).toEqual([{ serial: 'ONLINE-1', ok: true, detail: 'task-1' }])
+    expect(SHOT_TEMP_DIR).toBe('/sdcard/.adbfm')
+    // 顺序：建目录 → 清扫陈旧残留 → 截图（→ 终态后 rm）
+    expect(dev.commands[0]).toEqual(['shell', "mkdir -p '/sdcard/.adbfm'"])
+    expect(dev.commands[1][1]).toBe("rm -f '/sdcard/.adbfm'/adbfm-shot-*.png")
+    const shot = dev.commands.find((args) => args[1].startsWith('screencap -p '))
+    expect(shot).toBeDefined()
+    // 临时文件确实落在隐藏目录里
+    expect(shot?.[1]).toContain("'/sdcard/.adbfm/" + SHOT_PREFIX)
+    expect(h.transfer.enqueued[0].src.startsWith('/sdcard/.adbfm/' + SHOT_PREFIX)).toBe(true)
   })
 
-  it('screencap 失败时仍然清理临时文件（finally 里发 rm），结果带设备侧归类', async () => {
+  it('I2：隐藏目录建不出来时回退 /sdcard/Download（宁可可见也不能让功能不可用）', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
+    const h = harness({ localRoot: () => root })
+    const dev = new FakeDevice('ONLINE-1')
+    dev.reply = (args) => (args[1].startsWith('mkdir')
+      ? { code: 1, stdout: '', stderr: 'mkdir: Permission denied' }
+      : { code: 0, stdout: '', stderr: '' })
+    h.devs.set('ONLINE-1', dev)
+    await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+
+    expect(SHOT_FALLBACK_DIR).toBe('/sdcard/Download')
+    const shot = dev.commands.find((args) => args[1].startsWith('screencap'))
+    expect(shot?.[1]).toContain("'" + SHOT_FALLBACK_DIR + '/' + SHOT_PREFIX)
+  })
+
+  it('I1：截图前先清扫陈旧残留（进程被强杀时唯一的清理出口）', async () => {
+    const root = tempDir()
+    const h = harness({ localRoot: () => root })
+    const dev = new FakeDevice('ONLINE-1')
+    h.devs.set('ONLINE-1', dev)
+    await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+
+    // 通配符不能被引号包住（否则 rm 删的是字面量文件名）
+    const sweep = dev.commands.find((args) => args[1].startsWith('rm -f '))
+    expect(sweep?.[1]).toBe("rm -f '/sdcard/.adbfm'/adbfm-shot-*.png")
+  })
+
+  it('先 screencap 到临时文件，再 pull 入队，最后 rm -f 清理', async () => {
+    const root = tempDir()
+    const h = harness({ localRoot: () => root })
+    const dev = new FakeDevice('ONLINE-1')
+    h.devs.set('ONLINE-1', dev)
+    const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+
+    const shot = dev.commands.find((args) => args[1].startsWith('screencap'))
+    const remote = "/sdcard/.adbfm/" + SHOT_PREFIX + '1700000000000-ONLINE-1.png'
+    expect(shot).toEqual(['shell', "screencap -p '" + remote + "'"])
+    expect(h.transfer.enqueued).toEqual([
+      { serial: 'ONLINE-1', direction: 'pull', src: remote, dstDir: root },
+    ])
+    // 任务结算后应发出 rm
+    expect(dev.commands.some((args) => args[1] === "rm -f '" + remote + "'")).toBe(true)
+    expect(data.results).toEqual([{ serial: 'ONLINE-1', ok: true, detail: 'task-1' }])
+    // 全部结算完，登记表清空
+    expect(h.service.pendingCleanups).toBe(0)
+  })
+
+  it('screencap 失败时仍然清理临时文件，结果带设备侧归类', async () => {
+    const root = tempDir()
+    const h = harness({ localRoot: () => root })
     const dev = new FakeDevice('ONLINE-1')
     dev.reply = (args) => (args[1].startsWith('screencap')
       ? { code: 1, stdout: '', stderr: 'permission denied' }
       : { code: 0, stdout: '', stderr: '' })
     h.devs.set('ONLINE-1', dev)
-    const data = await h.service.screenshot({ serials: ['ONLINE-1'] })
-    expect(dev.commands).toHaveLength(2)
-    expect(dev.commands[1][1].startsWith('rm -f ')).toBe(true)
+    const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+    expect(dev.commands.some((args) => args[1].startsWith("rm -f '"))).toBe(true)
     expect(h.transfer.enqueued).toEqual([])
     expect(data.results[0]).toMatchObject({ ok: false, code: E_NO_PERMISSION })
   })
@@ -396,42 +497,71 @@ describe('batch:screenshot（R1：临时文件 + 传输队列 + 无条件清理�
     const root = tempDir()
     const h = harness({
       localRoot: () => root,
-      pickDirectory: async () => root,
       transfer: fakeTransfer(() => 'E_SYNC_FAILED'),
     })
     const dev = new FakeDevice('ONLINE-1')
     h.devs.set('ONLINE-1', dev)
-    const data = await h.service.screenshot({ serials: ['ONLINE-1'] })
-    expect(dev.commands).toHaveLength(2)
+    const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+    expect(dev.commands.some((args) => args[1].startsWith("rm -f '"))).toBe(true)
     expect(data.results[0]).toMatchObject({ ok: false, code: 'E_SYNC_FAILED' })
   })
 
-  it('用户取消目录选择 → 空结果、零命令、零入队（取消不是错误）', async () => {
+  it('I1：任务一直不结算时，dispose() 会把未结算的清理全部执行掉（退出不留残留）', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => '' })
-    const data = await h.service.screenshot({ serials: ['ONLINE-1'] })
-    expect(data.results).toEqual([])
-    expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
-    expect(h.transfer.enqueued).toEqual([])
+    const h = harness({ localRoot: () => root }, { settleMode: 'manual' })
+    const dev = new FakeDevice('ONLINE-1')
+    h.devs.set('ONLINE-1', dev)
+    await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+
+    // 任务还没结算：登录表里有 1 条（审查复现的 LEFTOVER_AFTER_QUIT 场景）
+    expect(h.service.pendingCleanups).toBe(1)
+    const before = dev.commands.filter((args) => args[1].startsWith("rm -f '")).length
+
+    h.service.dispose()
+
+    // dispose 之后必须真的发出 rm，且登记表清空
+    expect(h.service.pendingCleanups).toBe(0)
+    const after = dev.commands.filter((args) => args[1].startsWith("rm -f '")).length
+    expect(after).toBe(before + 1)
+  })
+
+  it('I1：dispose 之后迟到的结算回调不会重复删（幂等）', async () => {
+    const root = tempDir()
+    const h = harness({ localRoot: () => root }, { settleMode: 'manual' })
+    const dev = new FakeDevice('ONLINE-1')
+    h.devs.set('ONLINE-1', dev)
+    await h.service.screenshot({ serials: ['ONLINE-1'] }, root)
+
+    h.service.dispose()
+    const removed = dev.commands.filter((args) => args[1].startsWith("rm -f '")).length
+    // 终态事件迟到：已经结算过一次，不许再删一次
+    for (const callback of h.settled.values()) callback()
+    const after = dev.commands.filter((args) => args[1].startsWith("rm -f '")).length
+    expect(after).toBe(removed)
   })
 
   it('目标目录不在本地根内 → 整批失败且零命令', async () => {
     const root = tempDir()
     const outside = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => outside })
-    const data = await h.service.screenshot({ serials: ['ONLINE-1'] })
+    const h = harness({ localRoot: () => root })
+    const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, outside)
     expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
     expect(data.results[0].code).toBe('E_OUTSIDE_ROOT')
   })
 
+  it('目标目录为空串 → E_BATCH_PARAM 且零命令（R7）', async () => {
+    const h = harness()
+    const data = await h.service.screenshot({ serials: ['ONLINE-1'] }, '   ')
+    expect(h.devs.get('ONLINE-1')?.commands ?? []).toEqual([])
+    expect(data.results[0].code).toBe(E_BATCH_PARAM)
+  })
+
   it('每台设备的临时文件名互不相同（同一时间戳下也按 serial 区分）', async () => {
     const root = tempDir()
-    const h = harness({ localRoot: () => root, pickDirectory: async () => root })
-    const dev1 = new FakeDevice('ONLINE-1')
-    const dev2 = new FakeDevice('ONLINE-2')
-    h.devs.set('ONLINE-1', dev1)
-    h.devs.set('ONLINE-2', dev2)
-    await h.service.screenshot({ serials: ['ONLINE-1', 'ONLINE-2'] })
+    const h = harness({ localRoot: () => root })
+    h.devs.set('ONLINE-1', new FakeDevice('ONLINE-1'))
+    h.devs.set('ONLINE-2', new FakeDevice('ONLINE-2'))
+    await h.service.screenshot({ serials: ['ONLINE-1', 'ONLINE-2'] }, root)
     const src1 = h.transfer.enqueued[0].src
     const src2 = h.transfer.enqueued[1].src
     expect(src1).not.toBe(src2)

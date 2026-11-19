@@ -150,7 +150,7 @@ export interface LocalController {
  * 只有批量动作会消费（截图目录 / apk 路径），拆成独立服务只是多一层转发。
  */
 export interface BatchController {
-  screenshot(input: { serials: readonly string[] }): Promise<BatchRunData>
+  screenshot(input: { serials: readonly string[] }, dstDir: string): Promise<BatchRunData>
   install(input: { serials: readonly string[] }, apkPath: string): Promise<BatchRunData>
   push(input: { serials: readonly string[]; files: readonly string[]; dstDir: string }): Promise<BatchRunData>
   shell(input: { serials: readonly string[] }, command: string): Promise<BatchRunData>
@@ -455,10 +455,13 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
   }
 
   handle(CH.BATCH_SCREENSHOT, async (_event, payload): Promise<IpcResult<BatchRunData>> => {
-    const parsed = batchPreflight<{ serials: string[] }>(payload, BATCH_SCREENSHOT_INPUT)
+    const parsed = batchPreflight<{ serials: string[]; dstDir: string }>(payload, BATCH_SCREENSHOT_INPUT)
     if (!parsed.ok) return fail(parsed.error)
     try {
-      return { ok: true, data: await deps.batch.screenshot({ serials: parsed.data.serials }) }
+      return {
+        ok: true,
+        data: await deps.batch.screenshot({ serials: parsed.data.serials }, parsed.data.dstDir),
+      }
     } catch (err) {
       return fail(toErrorCode(err))
     }
