@@ -16,6 +16,7 @@
   ],
   "asar": true,
   "beforePack": "scripts/before-pack.cjs",
+  "afterPack": "scripts/after-pack.cjs",
   "win": {
     "target": [
       "nsis",

@@ -67,11 +67,18 @@ function probeVersion(exePath) {
 
 /**
  * 断言内置 adb 可用。失败时抛出带完整指引的 Error（供钩子与 CLI 共用）。
- * @param {{ root?: string }} [options]
+ *
+ * `root` 注入给单测用（复审判定 Minor-4：构建关键路径必须有自动化测试）；
+ * `probe` 注入让「跑不起来」与「能跑」两种分支**不必依赖任何真实二进制**就能测 ——
+ * 否则测试要么得在临时目录造一个 .exe（Windows 上是不可移植的黑魔法），
+ * 要么得拷 8 MB 的真 adb，两种都不该进单测。
+ *
+ * @param {{ root?: string, probe?: (exePath: string) => { ok: boolean, version?: string, detail?: string } }} [options]
  * @returns {{ ok: true, path: string, version: string }}
  */
 export function assertPlatformTools(options = {}) {
   const root = options.root ?? ROOT
+  const probe = options.probe ?? probeVersion
   const dir = path.join(root, 'resources', 'platform-tools')
   const exePath = path.join(dir, EXE)
 
@@ -90,7 +97,7 @@ export function assertPlatformTools(options = {}) {
     throw new Error(failMessage('无法读取 ' + exePath + '：' + String(err)))
   }
 
-  const probed = probeVersion(exePath)
+  const probed = probe(exePath)
   if (probed.ok !== true) {
     throw new Error(failMessage('adb.exe 存在但跑不起来（' + probed.detail + '）'))
   }
