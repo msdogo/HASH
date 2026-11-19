@@ -11,7 +11,7 @@ import { DeviceManager } from './devices/manager'
 import { applyCsp } from './csp'
 import { CH } from './ipc/channels'
 import { registerHandlers } from './ipc/handlers'
-import { applyOnlineDiff, diffOnlineSerials } from './app/transfer-wiring'
+import { TransferOnlineTracker, wireBatchToTransfer } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
 import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
@@ -50,6 +50,14 @@ const devices = new DeviceManager()
 
 /** 跟踪器要等自检拿到 adb 路径才能起，此时为 undefined。 */
 let tracking: AdbTracking | undefined
+
+/**
+ * 设备上下线 → 传输队列的判定器（审查 I1）。
+ *
+ * 必须活得比单次推送久：它要记住「上一次这台设备能不能传」，
+ * 否则无法区分「元数据变化」与「真的掉线/恢复」，会在每轮轮询都白 pump 队列。
+ */
+const onlineTracker = new TransferOnlineTracker()
 
 /**
  * 传输服务（任务 8）。
@@ -206,21 +214,20 @@ app.whenReady().then(async () => {
           adbState: () => adbState,
         })
         /*
-         * 【审查 I1】设备上下线必须接到传输队列上。
+         * 【审查 I1，第 2 轮重写】设备上下线接到传输队列 —— 直接消费事件批次。
          *
-         * 修前这里只 broadcast 给渲染层，transfer.setDeviceOnline 全仓没有生产调用方：
-         * 设备拔掉后在跑的任务会挂到 6 小时超时，排队任务也不会暂停，
-         * 「离线，等待重连」的界面状态永远不会出现 —— 裁决 4 只是纸面满足。
+         * 第 1 轮的写法是错的：在回调里取两次 devices.list() 再自 diff。
+         * 由于 DeviceManager 是「先改状态再 emit」、事件还要过 50ms 合并窗，
+         * 回调执行时两次 list() 读到的是同一份已改完的表 → diff 恒为空 → 恒空转
+         * （复审探针实证 setDeviceOnline 调用次数为 0）。
          *
-         * 用「上一次推送的设备表」与「本次推送后的设备表」做差分：
-         * 只有真正发生状态翻转的设备才会触发暂停/恢复，避免设备表全量重发时抖动。
+         * 现在 batch.changed / batch.removed 才是真实的状态变化来源，
+         * TransferOnlineTracker 负责记住上一次结论并区分「元数据变化」与「真翻转」。
          */
         tracking.onDevicesChanged((batch) => {
-          const before = devices.list()
-          // 先让 DeviceManager 落库，再取一次最新表——差分要的是「变化后」的状态
+          // 先推渲染层（设备栏要立刻更新），再做传输暂停/恢复
           broadcast(batch)
-          const after = devices.list()
-          applyOnlineDiff(diffOnlineSerials(before, after), transfer)
+          wireBatchToTransfer(onlineTracker, batch, transfer)
           // 设备状态变化可能让排队任务可以继续，也可能改动了进度提示
           broadcastTransfer()
         })

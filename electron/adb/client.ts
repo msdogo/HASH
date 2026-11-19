@@ -78,6 +78,19 @@ export class AdbClient {
       let stdout = ''
       let stderr = ''
       let settled = false
+      /**
+       * 【审查 I1（第 2 轮）】超时定时器。
+       *
+       * 修前这里有两个变量共用一个名字的问题（一次改动留下了两段 setTimeout 赋值），
+       * 后一段把前一段覆盖掉 → 前一个定时器永远不会被 clearTimeout、也从未 unref，
+       * 于是**每条 adb 命令泄漏一个定时器**（复审实测 HANDLES 单调增长）。
+       * 现在只有一个变量、一个赋值点，且统一在 finish 单一出口清掉。
+       *
+       * 关于 unref：这个定时器的语义就是「等超时」，它**必须**让事件循环保持存活，
+       * 否则一条长时间运行的 adb 命令会在定时器到期前被进程退出打断。
+       * 真正的退出安全由 before-quit 的 shutdownChildren 负责（那里会 kill 全部子进程，
+       * child 的 close 会立刻走 finish 把定时器清掉），所以这里刻意不 unref。
+       */
       let timer: ReturnType<typeof setTimeout> | undefined
 
       // 单一出口：所有 settle 路径（close / error / 超时 / 预取消）必须经过这里，
@@ -148,12 +161,8 @@ export class AdbClient {
         return
       }
 
+      // 唯一的定时器赋值点。超时统一走 abortOrTimeout（先封口、再杀进程树、等杀完才 reject）。
       timer = setTimeout(() => { abortOrTimeout(E_TIMEOUT) }, timeoutMs)
-
-      timer = setTimeout(() => {
-        void killTree(child)
-        finish(() => { reject(new Error(E_TIMEOUT)) })
-      }, timeoutMs)
     })
   }
 }

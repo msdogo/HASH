@@ -1,64 +1,144 @@
-import { describe, it, expect } from 'vitest'
-import { diffOnlineSerials } from '../electron/app/transfer-wiring'
-import type { DeviceSession } from '../src/shared/types'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { DeviceManager } from '../electron/devices/manager'
+import { DeviceChangeTracker } from '../electron/app/device-changed'
+import {
+  TransferOnlineTracker,
+  isTransmittable,
+  wireBatchToTransfer,
+} from '../electron/app/transfer-wiring'
+import type { AdbState } from '../src/shared/types'
 
 /*
- * 审查 I1：`setDeviceOnline` 全仓没有生产调用方，裁决 4「掉线设备暂停」只是纸面满足。
+ * 审查 I1（第 2 轮）：接线必须**行为级**验证，纯函数 + 静态断言都守不住「空转」。
  *
- * 设备拔掉后，在跑的任务会一直挂到 6 小时超时才失败；排队任务也不会被暂停，
- * 进度条上「设备离线，等待重连」永远不会出现。
+ * 第 1 轮的接线是：
+ *   const before = devices.list(); ...; const after = devices.list()
+ *   applyOnlineDiff(diffOnlineSerials(before, after), transfer)
+ * 它通过了 7 条纯函数用例，也通过了静态 grep 断言（main.ts 里确实有那两行），
+ * 但**真实接线永远空转**：DeviceManager 先改状态再 emit，事件还要过 50ms 合并窗，
+ * 回调执行时两次 list() 读到的是同一份已改完的表。
  *
- * 这里把「前后快照比对」抽成纯函数，便于单测；main.ts 只负责把它接到 tracker 事件上。
+ * 所以这里刻意搭**完整链路**：
+ *   DeviceManager.applySnapshot → changed 事件 → DeviceChangeTracker 去重合并
+ *   → onPush 批次 → wireBatchToTransfer → setDeviceOnline(serial, online)
+ * 并断言 setDeviceOnline 的真实调用参数。
  */
 
-function device(serial: string, status: DeviceSession['status']): DeviceSession {
-  return { serial, status, transport: 'usb', lastSeenAt: 0 }
+const ADB_OK: AdbState = { state: 'ok', path: 'C:/adb.exe', version: '1.0.41', source: 'path' }
+
+interface Recorder {
+  calls: Array<{ serial: string; online: boolean }>
 }
 
-describe('设备上下线差分', () => {
-  it('设备从在线变为掉线 → 报告为 offline', () => {
-    const before = [device('A', 'device')]
-    const after = [device('A', 'offline')]
-    expect(diffOnlineSerials(before, after)).toEqual({ wentOffline: ['A'], cameOnline: [] })
+function recorder(): { calls: Array<{ serial: string; online: boolean }>; setDeviceOnline: (serial: string, online: boolean) => void } {
+  const calls: Array<{ serial: string; online: boolean }> = []
+  return { calls, setDeviceOnline: (serial, online) => { calls.push({ serial, online }) } }
+}
+
+/** 搭一套真实的 设备表 → 跟踪器 → 接线 的链路。 */
+function createChain() {
+  const mgr = new DeviceManager()
+  const tracker = new DeviceChangeTracker(mgr, () => {}, () => ADB_OK, 0)
+  const onlineTracker = new TransferOnlineTracker()
+  const target = recorder()
+  const batches: Array<{ changed: string[]; removed: string[] }> = []
+  tracker.onPush((batch) => {
+    batches.push({ changed: batch.changed.map((d) => d.serial), removed: batch.removed })
+    wireBatchToTransfer(onlineTracker, batch, target)
+  })
+  return { mgr, tracker, onlineTracker, target, batches }
+}
+
+describe('I1 行为级：设备状态变化真的会驱动 setDeviceOnline', () => {
+  it('设备掉线 → 以 online=false 调用 setDeviceOnline（第 1 轮这里是空转）', () => {
+    const chain = createChain()
+    // 先上线
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+    chain.tracker.flush()
+    // 再掉线
+    chain.mgr.applySnapshot([])
+    chain.tracker.flush()
+
+    // 必须有一次 online=false 的调用 —— 这正是第 1 轮永远不发生的
+    expect(chain.target.calls).toContainEqual({ serial: 'A', online: false })
   })
 
-  it('设备从掉线恢复在线 → 报告为 online', () => {
-    const before = [device('A', 'offline')]
-    const after = [device('A', 'device')]
-    expect(diffOnlineSerials(before, after)).toEqual({ wentOffline: [], cameOnline: ['A'] })
+  it('设备恢复在线 → 以 online=true 调用', () => {
+    const chain = createChain()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+    chain.tracker.flush()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'offline' }])
+    chain.tracker.flush()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+    chain.tracker.flush()
+
+    expect(chain.target.calls).toContainEqual({ serial: 'A', online: false })
+    expect(chain.target.calls).toContainEqual({ serial: 'A', online: true })
   })
 
-  it('设备整台消失（拔线）也算掉线 —— 否则在跑任务会挂到超时', () => {
-    const before = [device('A', 'device'), device('B', 'device')]
-    const after = [device('B', 'device')]
-    expect(diffOnlineSerials(before, after)).toEqual({ wentOffline: ['A'], cameOnline: [] })
-  })
-
-  it('设备新出现算上线', () => {
-    expect(diffOnlineSerials([], [device('A', 'device')]))
-      .toEqual({ wentOffline: [], cameOnline: ['A'] })
-  })
-
-  it('一直在线 / 一直离线都不产生事件（避免抖动）', () => {
-    expect(diffOnlineSerials([device('A', 'device')], [device('A', 'device')]))
-      .toEqual({ wentOffline: [], cameOnline: [] })
-    expect(diffOnlineSerials([device('A', 'offline')], [device('A', 'offline')]))
-      .toEqual({ wentOffline: [], cameOnline: [] })
-  })
-
-  it('unauthorized / recovery / unknown 都按「不可传输」处理', () => {
-    // 这些状态下 adb push 一样不能用，必须暂停队列
-    for (const status of ['unauthorized', 'recovery', 'unknown'] as const) {
-      expect(diffOnlineSerials([device('A', 'device')], [device('A', status)]).wentOffline)
-        .toEqual(['A'])
-      expect(diffOnlineSerials([device('A', status)], [device('A', 'device')]).cameOnline)
-        .toEqual(['A'])
+  it('三次翻转 → 每次都识别（复审探针里的三次翻转场景）', () => {
+    const chain = createChain()
+    const steps: Array<{ status: 'device' | 'offline' | 'unauthorized' }> = [
+      { status: 'device' },
+      { status: 'offline' },
+      { status: 'device' },
+      { status: 'unauthorized' },
+    ]
+    for (const step of steps) {
+      chain.mgr.applySnapshot([{ serial: 'A', status: step.status }])
+      chain.tracker.flush()
     }
+    expect(chain.target.calls).toEqual([
+      { serial: 'A', online: true },   // 首次接入 device
+      { serial: 'A', online: false },  // offline
+      { serial: 'A', online: true },   // 恢复
+      { serial: 'A', online: false },  // unauthorized 也不能传
+    ])
   })
 
-  it('同一次快照里既掉线又上线，两类都报', () => {
-    const before = [device('A', 'device'), device('B', 'offline')]
-    const after = [device('A', 'offline'), device('B', 'device')]
-    expect(diffOnlineSerials(before, after)).toEqual({ wentOffline: ['A'], cameOnline: ['B'] })
+  it('设备整台从会话表移除（gc）→ 也按掉线处理', () => {
+    const chain = createChain()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+    chain.tracker.flush()
+    // 模拟 gc 移除（retain 过期）
+    chain.mgr.markLost('A', Date.now())
+    chain.tracker.flush()
+    chain.mgr.gc(Date.now() + 31 * 60 * 1000)
+    chain.tracker.flush()
+
+    expect(chain.target.calls).toContainEqual({ serial: 'A', online: false })
+  })
+
+  it('状态没变的重复快照不重复调用（避免多次白 pump）', () => {
+    const chain = createChain()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+    chain.tracker.flush()
+    const afterFirst = chain.target.calls.length
+    // 同一状态再推三轮
+    for (let i = 0; i < 3; i++) {
+      chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }])
+      chain.tracker.flush()
+    }
+    expect(chain.target.calls.length).toBe(afterFirst)
+  })
+
+  it('多设备各自独立：A 掉线不影响 B', () => {
+    const chain = createChain()
+    chain.mgr.applySnapshot([{ serial: 'A', status: 'device' }, { serial: 'B', status: 'device' }])
+    chain.tracker.flush()
+    chain.target.calls.length = 0
+    chain.mgr.applySnapshot([{ serial: 'B', status: 'device' }])
+    chain.tracker.flush()
+
+    expect(chain.target.calls).toEqual([{ serial: 'A', online: false }])
+  })
+})
+
+describe('isTransmittable', () => {
+  it('只有 device 可传输', () => {
+    expect(isTransmittable('device')).toBe(true)
+    for (const status of ['offline', 'unauthorized', 'recovery', 'unknown'] as const) {
+      expect(isTransmittable(status)).toBe(false)
+    }
   })
 })

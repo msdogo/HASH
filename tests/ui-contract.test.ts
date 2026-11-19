@@ -204,14 +204,17 @@ describe('任务 8：传输底栏契约（静态断言）', () => {
     expect(source).not.toMatch(/doneBytes\s*\/\s*totalBytes/)
   })
 
-  it('I1：main.ts 真的把设备上下线接到了传输队列（不是只有定义没有调用方）', () => {
+  it('I1：main.ts 用事件批次驱动掉线暂停（不得自己 diff 两次 list()）', () => {
     const main = read('electron/main.ts')
-    // 修前 transfer.setDeviceOnline 全仓没有生产调用方，裁决 4 只是纸面满足。
-    // 这条断言守的是「接线还在」——纯逻辑测试守不住它（它们自己手动调 setDeviceOnline）。
-    expect(main).toContain('diffOnlineSerials(')
-    expect(main).toContain('applyOnlineDiff(')
+    // 第 2 轮审查：第 1 轮的「两次 devices.list() 自 diff」是空转
+    // （manager 先改状态再 emit，回调里两次 list() 读到同一份表）。
+    // 这条静态断言守的是「不再走那条死路」，行为级链路由 transfer-wiring.test.ts 守。
+    expect(main).toContain('wireBatchToTransfer(')
+    expect(main).toContain('TransferOnlineTracker')
     // 必须在设备变化回调里做，而不是启动时做一次
-    expect(main).toMatch(/onDevicesChanged\([\s\S]{0,600}applyOnlineDiff\(/)
+    expect(main).toMatch(/onDevicesChanged\([\s\S]{0,700}wireBatchToTransfer\(/)
+    // 反例：不允许退回「取两次快照再自 diff」
+    expect(main).not.toContain('diffOnlineSerials(')
   })
 
   it('transferStore 所有请求经 window.api（不绕过 preload），且不自己轮询', () => {

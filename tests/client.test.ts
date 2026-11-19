@@ -151,10 +151,13 @@ describe('AdbClient', () => {
        *       代价是 settle 时间多了 taskkill 的实际耗时（并行负载下约 1s）。
        *
        * 这条断言真正要守的性质没变：**绝不等子进程自然退出**。
-       * 夹具挂起 5 秒（ping -n 6），所以只要 settle 明显早于 5 秒就成立。
-       * 留 4.5s 上限：既远小于夹具的 5s，又给 taskkill 在重负载下留足余量。
+       * 夹具挂起 5 秒（ping -n 6），所以 settle 明显早于 5 秒就成立。
+       *
+       * 阈值收到 2000ms（第 2 轮审查裁定）：复审实测正常 settle 约 400ms，
+       * 2000ms 有约 4.7 倍余量，既不会在负载下假红，又保住了对
+       * 「1~4 秒级回归」的灵敏度（4500ms 会把这类回归整个漏掉）。
        */
-      expect(Date.now() - startedAt).toBeLessThan(4500)
+      expect(Date.now() - startedAt).toBeLessThan(2000)
       // finish 是唯一出口：超时路径必须完成清理，无需等 close
       expect(adbChildCount()).toBe(0)
       /*
