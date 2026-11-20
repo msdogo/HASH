@@ -110,11 +110,11 @@ export function buildApi(deps: PreloadDeps): DshApi {
         deps.invoke(CH.FS_MOVE, payload) as Promise<IpcResult<FsOpData>>,
     },
     local: {
-      /** 列举本地目录（限制在用户选定的根目录内）。 */
+      /** 列举本地目录（任意合法绝对路径；R2-1 之后没有根目录限制）。 */
       list: (payload: LocalListInput): Promise<IpcResult<LocalListData>> =>
         deps.invoke(CH.LOCAL_LIST, payload) as Promise<IpcResult<LocalListData>>,
       /**
-       * 挑选本地根目录；取消返回空串。
+       * 挑选本地栏的起始浏览目录（不是访问边界）；取消返回空串。
        *
        * 【问题 1 修复】必须显式传一个载荷（这里用 null）。
        * 修前写的是 deps.invoke(CH.LOCAL_PICK_ROOT)，ipcRenderer.invoke 不带第二参时

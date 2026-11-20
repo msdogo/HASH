@@ -183,8 +183,10 @@ const batchSerials = z.array(z.string().min(1)).min(1).max(16)
  * batch:screenshot 入参。
  *
  * 【复审 I5】dstDir 由 batch:pick-directory 的选择框提供（界面拿不到本地绝对路径，
- * <input type=file> 在 Electron 里不可用）。主进程仍会用本地访问闸门
- * （checkLocalAccess）再校验一次 —— 闸门不信任渲染层给的任何路径。
+ * <input type=file> 在 Electron 里不可用）。主进程仍会用 resolveLocalPath
+ * 再校验一次（语法 + 真实路径）—— 不信任渲染层给的任何路径。
+ *
+ * R2-1：本地根目录沙箱已移除，dstDir 可以是任意合法绝对路径。
  *
  * 为什么目录不能为空：空串在这里没有「用默认目录」的合理含义，
  * 默认目录（用户主目录）对一个批量截图动作来说太容易误写。
@@ -301,9 +303,9 @@ export interface DshApi {
     move(payload: FsBatchInput): Promise<IpcResult<FsOpData>>
   }
   local: {
-    /** 列举本地目录（限制在用户选定的根目录内，越界返回 E_OUTSIDE_ROOT）。 */
+    /** 列举本地目录（任意合法绝对路径；不存在的返回 E_NOT_FOUND）。 */
     list(payload: LocalListInput): Promise<IpcResult<LocalListData>>
-    /** 让用户挑选本地根目录；取消返回空串（不是错误）。 */
+    /** 让用户挑选本地栏的起始浏览目录（不是访问边界）；取消返回空串（不是错误）。 */
     pickRoot(): Promise<IpcResult<string>>
   }
   transfer: {

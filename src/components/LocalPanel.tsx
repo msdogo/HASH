@@ -1,18 +1,17 @@
 import { useEffect, useState } from 'react'
 import { ArrowUp, Folder, FileText, Link2, RefreshCw, FolderOpen } from 'lucide-react'
 import { errorText, t, tf } from '@shared/i18n'
-import { E_OUTSIDE_ROOT } from '@shared/errors'
 import { selectedLocalPath, useLocalStore } from '@/store/localStore'
 
 /**
- * 本地双栏（任务 9 裁决 5）。
+ * 本地双栏（任务 9 裁决 5；R2-1 移除本地根沙箱）。
  *
  * 三条硬约束：
  * 1. **所有本地访问都经 window.api.local**：渲染层没有 node 能力，
- *    越界判定（含符号链接逃逸）在主进程做，组件不做任何路径拼接或猜测；
- * 2. **显示当前范围**：用户必须能看见「我只能在这里面动」，
- *    否则越界被拒时他会以为是 bug；
- * 3. 符号链接按「非目录」显示：点进去会换到链接指向的位置，而那里可能在范围外。
+ *    路径校验（语法 + 真实路径解析）在主进程做，组件不做任何路径拼接或猜测；
+ * 2. **显示起始浏览目录**：用户要知道本地栏当前打开的是哪个目录。这不是「范围」——
+ *    本地根沙箱已由用户裁决移除，本地栏可以进任何目录；
+ * 3. 符号链接按「非目录」显示：点进去会换到链接指向的位置，界面按链接本身显示更诚实。
  *
  * 宽度可折叠可调：本地栏在窄屏上会挤掉文件列表，所以给一个折叠开关。
  */
@@ -36,7 +35,7 @@ export function LocalPanel(props: LocalPanelProps) {
   const [width, setWidth] = useState(300)
   const [notice, setNotice] = useState<string | null>(null)
 
-  // 首次挂载加载根目录（缺省 = 主进程给的用户主目录）
+  // 首次挂载加载起始浏览目录（缺省 = 主进程给的用户主目录）
   useEffect(() => { void load() }, [load])
 
   if (props.collapsed) {
@@ -102,14 +101,14 @@ export function LocalPanel(props: LocalPanelProps) {
         </button>
       </div>
 
-      {/* 当前限制范围：用户必须看得见 */}
-      <div className="truncate border-b border-neutral-800/60 px-2 py-1 text-[10px] text-neutral-600" title={data?.root ?? ''}>
-        {data === null ? '' : tf('local.root', { root: data.root })}
+      {/* 起始浏览目录：让用户知道本地栏当前打开的是哪里（R2-1 之后它不再是「范围」） */}
+      <div className="truncate border-b border-neutral-800/60 px-2 py-1 text-[10px] text-neutral-600" title={data?.startDir ?? ''}>
+        {data === null ? '' : tf('local.startDir', { dir: data.startDir })}
       </div>
 
       {error !== null && (
         <div className="border-b border-red-900/50 bg-red-950/30 px-2 py-1 text-[11px] leading-snug text-red-300">
-          {error === E_OUTSIDE_ROOT ? t('local.restricted') : errorText(error)}
+          {errorText(error)}
         </div>
       )}
 

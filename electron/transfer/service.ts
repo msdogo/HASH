@@ -15,7 +15,7 @@ import {
   isProtectedTransferPath,
   remoteJoin,
 } from '../../src/shared/path-guard'
-import { checkLocalAccess } from '../fs/local'
+import { resolveLocalPath } from '../fs/local'
 import { TransferManager, type TransferEvent } from './manager'
 import { TransferRunner, type RunContext, type TransferRun } from './runner'
 
@@ -111,14 +111,6 @@ export interface TransferServiceDeps {
   adbPath: () => string
   /** 按 serial 造 AdbClient。 */
   clientFor: (serial: string) => AdbClient
-  /**
-   * 当前本地根目录 getter（裁决 5 / 审查 C1）。
-   *
-   * **必须注入**：本地写入限制在用户选定的根目录内，而根目录会被用户在
-   * 本地栏里改（不改的话就是家目录）。用 getter 而不是字符串，理由同 adbPath：
-   * 构造时可能还没确定，改成常量会把旧值固化。
-   */
-  localRoot: () => string
   /** 事件出口（main.ts 里转成 webContents.send）。 */
   emit: (event: TransferEvent) => void
   /** 单设备 / 全局并发。 */
@@ -151,7 +143,7 @@ export class TransferService {
    * 而渲染层只知道「用户选了哪个本地文件、当前在哪个目录」。
    * 让它俩用同一个签名，必然有一方要假装自己知道对方的事。
    *
-   * enqueue 现在是 **async**：本地根目录判定要 realpath（拦符号链接逃逸），
+   * enqueue 现在是 **async**：本地路径解析要 realpath（把符号链接展开成真实位置），
    * 那是 IO，同步签名做不到。IPC handler 本来就是 async，代价为零。
    */
   readonly controller: {
@@ -212,25 +204,25 @@ export class TransferService {
   /**
    * 渲染层入队。
    *
-   * push: src 是本地文件（必须存在、是普通文件、**在本地根目录内**），dstDir 是设备上的目录。
-   * pull: src 是设备上的文件（**过统一远程闸门**），dstDir 是本地目录（**在根目录内**）。
+   * push: src 是本地文件（必须存在、是普通文件、任意位置均可），dstDir 是设备上的目录。
+   * pull: src 是设备上的文件（**过统一远程闸门**），dstDir 是本地已存在的目录（任意位置）。
    *
-   * 四道闸门（修前一道都没有，除了「文件存不存在」）：
-   *   1. push 的本地 src → checkLocalAccess（C1：读也限制在根内）；
+   * 四道闸门：
+   *   1. push 的本地 src → resolveLocalPath（R2-1：只校验语法并把路径归一成真实路径；
+   *      **不再**限制在某个根目录内 —— 本地根沙箱已由用户裁决移除）；
    *   2. push 的远程 dst → assertSafeRemotePath + 受保护判定（C2）；
    *   3. pull 的远程 src → 同上（C2：修前零校验）；
-   *   4. pull 的本地 dst → checkLocalAccess（C1：写必须留在根内）。
+   *   4. pull 的本地 dst → resolveLocalPath（同上，任意位置可写）。
    *
    * 目标名一律过 assertPlainName：名字是点或点点时 path.join 会直接上跳一级，
    * 复审实测 pull 的 src 以点点结尾时目标真的跳到了 dstDir 的父目录。
    */
   async enqueue(input: EnqueueIntent): Promise<TransferTask> {
     const name = assertPlainName(fileNameOf(input.src))
-    const root = this.deps.localRoot()
 
     if (input.direction === 'push') {
-      // 1) 本地源：必须在根内（读权限同样受限，否则能把任意本地文件推到设备上）
-      const localAccess = await checkLocalAccess(root, input.src)
+      // 1) 本地源：语法合法 + 真实路径（R2-1：不再限制根目录范围）
+      const localAccess = await resolveLocalPath(input.src)
       if (!localAccess.ok) throw new Error(localAccess.code)
       let info
       try {
@@ -255,8 +247,8 @@ export class TransferService {
     // 3) 远程源：严格闸门（修前原样塞给 adb pull）
     const remoteSrc = assertRemoteSource(input.src)
 
-    // 4) 本地目标目录：必须在根内（C1 的核心 —— 写不能出根）
-    const localAccess = await checkLocalAccess(root, input.dstDir)
+    // 4) 本地目标目录：语法合法 + 真实路径（R2-1：不再限制根目录范围）
+    const localAccess = await resolveLocalPath(input.dstDir)
     if (!localAccess.ok) throw new Error(localAccess.code)
     /*
      * 目标目录必须**已经存在**且是目录。
@@ -266,7 +258,7 @@ export class TransferService {
      * 而失败发生在执行阶段、错误码是笼统的 E_SYNC_FAILED —— 用户看到的是
      * 「传输没有完成」而不是「这个目录不存在」。入队时就拒能让错误落在正确的位置。
      * 需要新建目录的场景由用户在本地栏先建目录（这是显式操作，不是隐藏副作用）。
-     * 越界判定与这条正交：checkLocalAccess 已经把「根外 / .. 逃逸 / 链接逃逸」拦掉了。
+     * 与「路径合法性」正交：resolveLocalPath 负责语法与真实路径，存在性由下面这条负责。
      */
     let dirInfo
     try {
@@ -285,12 +277,12 @@ export class TransferService {
      * 目标路径用 path.resolve 而不是裸 path.join。
      *
      * path.join(dir, name) 在 name 是点点时会静默上跳一级（复审实测的漏洞形态）；
-     * 这里名字已经过 assertPlainName，但**多一道 resolve + 再判包含**的成本近乎为零，
-     * 而它保证「最终落盘位置」本身也在根内 —— 判定用的路径与执行用的必须是同一个。
+     * 这里名字已经过 assertPlainName，但**多一道 resolve 的成本近乎为零**，
+     * 而它保证「最终落盘位置」本身也是合法路径 —— 判定用的路径与执行用的必须是同一个。
      */
     const dst = path.resolve(localAccess.path, name)
     if (dst === localAccess.path) throw new Error(E_INVALID_PATH)
-    const dstAccess = await checkLocalAccess(root, dst)
+    const dstAccess = await resolveLocalPath(dst)
     if (!dstAccess.ok) throw new Error(dstAccess.code)
 
     // pull 的总量由远程 stat 异步补（resolveTotalBytes 的 resolveTotal 钩子）

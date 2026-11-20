@@ -142,14 +142,14 @@ export function fakeOps(): FileOpsController & {
   }
 }
 
-/** 假本地目录访问（越界错误码由真实现给，这里只验证 IPC 的透传）。 */
+/** 假本地目录访问（错误码由真实现给，这里只验证 IPC 的透传）。 */
 export function fakeLocal(): LocalController & { calls: Array<string | undefined> } {
   const calls: Array<string | undefined> = []
   return {
     calls,
     list: async (dir) => {
       calls.push(dir)
-      return { cwd: dir ?? 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }
+      return { cwd: dir ?? 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }
     },
   }
 }

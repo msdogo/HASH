@@ -68,7 +68,7 @@ function harness(over: Partial<HandlerDeps> = {}, options: { hasDevice?: boolean
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
+    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
     batch: fakeBatch(),
     transfer: {
@@ -184,7 +184,7 @@ describe('transfer:begin-drag-out 的前置检查', () => {
           copy: async () => ({ results: [] }),
           move: async () => ({ results: [] }),
         },
-        local: { list: async () => ({ cwd: 'C:/', parent: null, items: [], root: 'C:/' }) },
+        local: { list: async () => ({ cwd: 'C:/', parent: null, items: [], startDir: 'C:/' }) },
         pickRoot: async () => '',
         batch: fakeBatch(),
         transfer: {

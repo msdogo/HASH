@@ -159,9 +159,10 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
 
   beforeAll(() => {
     /*
-     * 用 realpath 的**长名**作为本地根：Windows 的 temp 会给 8.3 短名
-     * （C:\Users\ADMINI~1\...），而传输服务用 realpath 结果拼目标路径，
-     * 再与原样传入的根比较 —— 短名根 vs 长名目标会被判成根外（E_OUTSIDE_ROOT）。
+     * 用 realpath 的**长名**作为工作目录：Windows 的 temp 会给 8.3 短名
+     * （C:\Users\ADMINI~1\...），而传输服务用 realpath 结果拼目标路径。
+     * R2-1 之后不再有根目录判定，但两边的路径形态仍需一致 ——
+     * 下面的断言拿 dstDir 原串与 realpath 后的落盘路径比对。
      */
     root = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-batch-real-')))
     devices = new DeviceManager()
@@ -174,7 +175,6 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
     transfer = new TransferService({
       adbPath: () => ADB,
       clientFor: (serial) => new AdbClient(serial),
-      localRoot: () => root,
       emit: () => { /* 本文件不需要推送 */ },
     })
 
@@ -191,7 +191,6 @@ describe.skipIf(skip)('真机批量动作（任务 10 / 规格 §9.3 的四个�
         }
       },
       transfer: transfer.controller,
-      localRoot: () => root,
       adbPath: () => ADB,
       pickDirectory: async () => root,
       pickApk: async () => '',

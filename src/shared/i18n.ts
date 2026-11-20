@@ -141,12 +141,15 @@ const messages: Record<string, string> = {
 
   // ---- 本地栏（任务 9 / 裁决 5）----
   'local.title': '本地',
-  'local.root': '范围：{root}',
+  /*
+   * R2-1：本地根目录沙箱已移除，所以这两条文案不再有「范围/之外」的语义。
+   * 用户现在可以从任何位置读写本地文件，这里只说明「打开本地栏时先看哪」。
+   */
+  'local.startDir': '起始目录：{dir}',
   'local.pickRoot': '更换目录',
   'local.up': '上一级',
   'local.empty': '这个文件夹是空的',
   'local.loading': '正在读取本地目录…',
-  'local.restricted': '这个位置在本地选定目录之外，无法访问',
   'local.selectHint': '点击文件夹进入，选中文件后可上传',
   'local.refresh': '刷新',
 
@@ -248,7 +251,6 @@ const errorTexts: Record<ErrorCode, string> = {
   E_CROSS_DEVICE: '源和目标不在设备的同一个存储区，直接移动可能只搬走一部分。请改用「复制到目标」，确认无误后再删除源',
   E_READ_ONLY: '这个位置是只读的，当前权限无法写入。请换一个目录（例如 /sdcard/Download）',
   E_NO_SPACE: '设备存储空间不足，操作已中止。请先清理一些文件再试',
-  E_OUTSIDE_ROOT: '这个位置在本地选定的目录之外，已被拒绝访问。请先在左侧切换到允许的目录',
   // ---- 任务 10：批量动作的整批参数错（用户能自己修好）----
   E_BATCH_PARAM: '批量操作没有执行：参数不合法，没有任何设备收到命令。请检查是否选了设备、选了文件、填了目标目录或命令',
   E_BAD_COMMAND: '这条命令不能执行：命令里不能包含换行符，否则一条命令会变成多条。请写成单行',

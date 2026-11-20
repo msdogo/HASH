@@ -77,13 +77,6 @@ export const E_READ_ONLY = 'E_READ_ONLY'
 /** 设备存储空间不足。 */
 export const E_NO_SPACE = 'E_NO_SPACE'
 /**
- * 本地路径落在用户选定的根目录之外（含符号链接逃逸，裁决 5）。
- *
- * 与 E_PATH_UNSAFE 分开：这条是**本地**盘的越界，文案要引导用户去改根目录设置，
- * 而 E_PATH_UNSAFE 是设备侧的目录穿越，两者该做的事不一样。
- */
-export const E_OUTSIDE_ROOT = 'E_OUTSIDE_ROOT'
-/**
  * 目标落在源自身之内（复制/移动目录到它自己的子目录）。
  *
  * 这是唯一能**一条操作就把设备写满**的输入：`cp -a A A/inner` 会无界递归
@@ -162,7 +155,6 @@ export const ERROR_CODES = [
   E_OP_FAILED,
   E_READ_ONLY,
   E_NO_SPACE,
-  E_OUTSIDE_ROOT,
   E_INTO_SELF,
   E_CROSS_DEVICE,
   E_OP_PARTIAL,

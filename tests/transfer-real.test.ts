@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { TransferRunner } from '../electron/transfer/runner'
@@ -8,7 +8,9 @@ import { createTransferRunner } from '../electron/transfer/runner'
 import { AdbClient } from '../electron/adb/client'
 import { TransferService } from '../electron/transfer/service'
 import { E_PROTECTED_PATH } from '../src/shared/errors'
+import { isInsideRoot } from '../src/shared/path-guard'
 import { acquireDeviceLock, deviceSkipMessage, resolveSerial } from './device-lock'
+import { makeOutsideHomeDir, realHome } from './outside-home'
 
 /*
  * 裁决 9：真机集成用例（1 条 push + 1 条 pull，文件名含中文与空格）。
@@ -37,6 +39,22 @@ if (skip) {
 
 /** 设备侧临时目录（用例结束清理）。 */
 const REMOTE_DIR = '/sdcard/Download/adb-fm-itest'
+
+/*
+ * R2-1 的「根外」样本目录（主目录之外，见 tests/outside-home.ts 的理由）。
+ *
+ * 这里只**探测**一次可用性就立刻删掉，目录本身在用例内部现造现清：
+ * 本文件整组可能被 skip（没有设备 / 撞锁），若在模块顶层造目录就会留下垃圾。
+ */
+const OUTSIDE_HOME_AVAILABLE = (() => {
+  const probe = makeOutsideHomeDir()
+  if (probe === null) return false
+  try { rmSync(probe, { recursive: true, force: true }) } catch { /* 忽略清理失败 */ }
+  return true
+})()
+if (!OUTSIDE_HOME_AVAILABLE) {
+  console.log('[transfer-real] 跳过 R2-1 根外用例：本机找不到主目录之外的可写目录')
+}
 
 describe.skipIf(skip)('真机传输（裁决 9）', () => {
   let dir = ''
@@ -245,7 +263,6 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
     const svc = new TransferService({
       adbPath: () => ADB,
       clientFor: (serial) => new AdbClient(serial),
-      localRoot: () => dir,
       emit: () => {},
     })
     const name = '上传到存储根 测试.txt'
@@ -277,7 +294,6 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
     const svc = new TransferService({
       adbPath: () => ADB,
       clientFor: (serial) => new AdbClient(serial),
-      localRoot: () => dir,
       emit: () => {},
     })
     const localFile = path.join(dir, 'root-upload.txt')
@@ -289,4 +305,66 @@ describe.skipIf(skip)('真机传输（裁决 9）', () => {
     expect(shell('test -e /root-upload.txt && echo yes || echo no').trim()).toBe('no')
     svc.dispose()
   }, 120_000)
+
+  /*
+   * 【R2-1】真机验证「本地根目录沙箱已移除」这件事本身：
+   *
+   * 用户的真实工况就是从资源管理器把**任意位置**的文件拖进设备
+   * （文件在 D:\资料、U 盘、下载目录……不一定在主目录下）。
+   * 修前这些位置一律 E_OUTSIDE_ROOT，拖入直接失败。
+   *
+   * 这条用例真的跑一次 push（本地源在主目录之外）+ 一次 pull
+   * （本地目标在主目录之外），并在设备侧/本地侧各自核对内容。
+   * 目录在主目录之外这件事由用例自己断言 —— 前提不成立就直接红，
+   * 而不是悄悄变成一条「在主目录里传文件」的空转用例。
+   */
+  it.skipIf(!OUTSIDE_HOME_AVAILABLE)('R2-1：本地源与目标都在主目录之外 → push/pull 各成功一次', async () => {
+    const created = makeOutsideHomeDir()
+    expect(created, '本机找不到主目录之外的可写目录').not.toBeNull()
+    const outside = realpathSync.native(created as string)
+    const name = 'R2-1 根外 上传 测试.txt'
+    // 目标名来自本地文件名（fileNameOf），所以设备侧路径就是 REMOTE_DIR + name
+    const remote = REMOTE_DIR + '/' + name
+    const svc = new TransferService({
+      adbPath: () => ADB,
+      clientFor: (serial) => new AdbClient(serial),
+      emit: () => {},
+    })
+
+    const waitTerminal = async (id: string) => {
+      const deadline = Date.now() + 60_000
+      let task = svc.controller.get(id)
+      while (task !== undefined && task.status !== 'done' && task.status !== 'failed' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100))
+        task = svc.controller.get(id)
+      }
+      return task
+    }
+
+    try {
+      // 前提：这个目录真的在主目录之外（否则整条用例测的不是 R2-1）
+      expect(isInsideRoot(realHome(), outside)).toBe(false)
+
+      // 1) push：本地源在主目录之外
+      const localFile = path.join(outside, name)
+      writeFileSync(localFile, 'R2-1-OUTSIDE-HOME')
+      const push = await svc.controller.enqueue({ serial: SERIAL as string, direction: 'push', src: localFile, dstDir: REMOTE_DIR })
+      expect(push.dst).toBe(remote)
+      const pushed = await waitTerminal(push.id)
+      expect(pushed?.status).toBe('done')
+      // 设备侧复核内容（push 报成功不等于内容对）
+      expect(shell('cat ' + JSON.stringify(remote)).trim()).toBe('R2-1-OUTSIDE-HOME')
+
+      // 2) pull：本地目标在主目录之外
+      const pull = await svc.controller.enqueue({ serial: SERIAL as string, direction: 'pull', src: remote, dstDir: outside })
+      expect(pull.dst).toBe(path.join(outside, name))
+      const pulled = await waitTerminal(pull.id)
+      expect(pulled?.status).toBe('done')
+      expect(readFileSync(path.join(outside, name), 'utf8')).toBe('R2-1-OUTSIDE-HOME')
+    } finally {
+      try { shell('rm -f -- ' + JSON.stringify(remote)) } catch { /* 不存在是常态 */ }
+      try { rmSync(outside, { recursive: true, force: true }) } catch { /* 忽略清理失败 */ }
+      svc.dispose()
+    }
+  }, 180_000)
 })

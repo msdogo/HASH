@@ -74,31 +74,24 @@ const onlineTracker = new TransferOnlineTracker()
  * 不会把「还没定位到 adb」这个瞬时状态固化成空路径。
  */
 /**
- * 本地根目录（裁决 5）。
+ * 本地栏的**起始浏览目录**（缺省用户主目录）。
  *
- * 缺省是用户主目录 —— 比「用户自己挑一个」更可用（大多数下载/上传都发生在主目录下），
- * 又比「整台机器」安全得多。用户可以通过本地栏的「选择目录」改成别处，
- * 一旦改了，所有本地访问（读与写）都被限制在新根内。
+ * R2-1：它**不是访问边界**。本地根目录沙箱已由用户裁决移除 ——
+ * 任何合法绝对路径都能列、能读、能作为传输目标（拖入/拖出/截图/安装）。
+ * 这个变量现在只决定两件事：本地栏第一次打开时看哪个目录，
+ * 以及选择框的 defaultPath。
  *
- * root 是变量而不是常量：选择框改它之后，下一次访问立刻生效，不需要重启。
+ * 是变量而不是常量：用户在选择框里改它之后，下一次访问立刻生效，不需要重启。
  *
  * 注意它必须在 TransferService / LocalFs 之前声明：两个服务都通过 getter 读它，
  * 声明放在后面虽然运行时没问题（getter 是延迟求值），但读代码的人会以为
- * 「构造时 localRoot 还是 undefined」—— 声明顺序即事实顺序。
+ * 「构造时它还是 undefined」—— 声明顺序即事实顺序。
  */
-let localRoot = homedir()
+let startDir = homedir()
 
 const transfer = new TransferService({
   adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
   clientFor: (serial) => createClient(serial),
-  /*
-   * 【审查 C1】本地根目录必须注入传输服务。
-   *
-   * 修前 TransferService 根本没有这个依赖，于是传输成了唯一不过根目录闸门的
-   * 本地写入口：pull 可以落到用户选定的根之外，且默认覆盖 —— 被注入的 dstDir
-   * 能让 pull 静默覆盖任意位置的既有文件。getter 形式是为了跟随本地栏的「更换目录」。
-   */
-  localRoot: () => localRoot,
   // emit 里的 broadcast 是函数声明（会提升），窗口还没建好时它自然只会遍历到空窗口列表。
   emit: (event: TransferEvent) => {
     settleBatchTask(event)
@@ -115,7 +108,7 @@ const fsOps = new FsOpsService({
   adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
 })
 
-const localFs = new LocalFs({ root: () => localRoot })
+const localFs = new LocalFs({ startDir: () => startDir })
 
 /**
  * 批量截图待清理的临时文件（任务 10 / R1）。
@@ -153,24 +146,23 @@ function settleBatchTask(event: TransferEvent): void {
  * 批量动作服务（任务 10）。
  *
  * 与 fsOps / transfer 一样在模块顶层构造：IPC handler 必须尽早注册，而 handler 依赖它。
- * adbPath 与 localRoot 都传 getter —— 构造时机早于 adb 自检完成，取当前值才是对的。
+ * adbPath 传 getter —— 构造时机早于 adb 自检完成，取当前值才是对的。
  */
 const batchService = new BatchService({
   devices,
   clientFor: (serial) => createClient(serial),
   transfer: transfer.controller,
-  localRoot: () => localRoot,
   adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
   /*
    * 两个选择框。取消一律返回空串（不是错误）—— 与 pickFiles / pickRoot 同一约定。
-   * 批量截图的目录选择框默认落在当前本地根目录：那里本来就是这个应用唯一允许读写的位置。
+   * 批量截图的目录选择框默认落在本地栏的起始浏览目录（用户可以在这里改成任意位置）。
    */
   pickDirectory: async () => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win === undefined) return ''
     const picked = await dialog.showOpenDialog(win, {
       title: t('batch.pickDirTitle'),
-      defaultPath: localRoot,
+      defaultPath: startDir,
       properties: ['openDirectory', 'createDirectory'],
     })
     if (picked.canceled || picked.filePaths.length === 0) return ''
@@ -216,13 +208,6 @@ const batchService = new BatchService({
  */
 const dragService = new DragOutService({
   tempRoot: () => app.getPath('temp'),
-  /*
-   * 与 TransferService 注入的是**同一个** localRoot getter。
-   * 拖拽落点必须落在本地根之内：pull 的本地目标要过 checkLocalAccess，
-   * 而用户可以改根 —— 那之后系统临时目录就落在根外，硬用它会让拖出稳定失败。
-   * 详见 DragOutService.tempDir 的注释。
-   */
-  localRoot: () => localRoot,
   enqueue: (input) => transfer.controller.enqueue(input),
   getTask: (id) => transfer.controller.get(id),
   emitProgress: (payload) => { broadcastDragProgress(payload) },
@@ -362,7 +347,11 @@ app.whenReady().then(async () => {
             ops: fsOps,
             local: localFs,
             /*
-             * 挑选本地根目录。
+             * 挑选本地栏的起始浏览目录。
+             *
+             * R2-1 之后这**不再是**「划定可访问范围」：本地根目录沙箱已由用户裁决移除，
+             * 任何位置的文件都能上传、拖入、作为下载目标。这个选择框只决定
+             * 「本地栏打开时先看哪里」，所以标题与注释都不再声称有边界。
              *
              * 与 pickFiles 一样必须挂在有窗口的父级上；没有窗口时返回空串
              * （渲染层当成「用户没选」，不是错误 —— 取消选择本来就不是错误）。
@@ -371,13 +360,13 @@ app.whenReady().then(async () => {
               const win = BrowserWindow.getAllWindows()[0]
               if (win === undefined) return ''
               const picked = await dialog.showOpenDialog(win, {
-                title: '选择本地根目录（此目录之外的文件不会被访问）',
-                defaultPath: localRoot,
+                title: '选择本地栏的起始目录',
+                defaultPath: startDir,
                 properties: ['openDirectory', 'createDirectory'],
               })
               if (picked.canceled || picked.filePaths.length === 0) return ''
-              localRoot = picked.filePaths[0]
-              return localRoot
+              startDir = picked.filePaths[0]
+              return startDir
             },
             transfer: transfer.controller,
             batch: batchService,

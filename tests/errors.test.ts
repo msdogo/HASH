@@ -46,7 +46,7 @@ describe('共享错误码', () => {
       'E_OP_FAILED',
       'E_READ_ONLY',
       'E_NO_SPACE',
-      'E_OUTSIDE_ROOT',
+      // R2-1：E_OUTSIDE_ROOT 随本地根沙箱一起移除（本地访问不再有根目录限制）
       // 审查轮 1（任务 9）：三条复审 Critical/Important 各自的专属错误码。
       // 每一条都对应一种「无法用既有码说清」的语义，所以必须分开：
       'E_INTO_SELF',    // C3：复制/移动到自己里面（否则用户看到的是笼统失败）

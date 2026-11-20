@@ -52,6 +52,11 @@ export interface LocalListData {
   /** 上一级；已在根目录时为 null。 */
   parent: string | null
   items: LocalItem[]
-  /** 当前限制的根目录（界面显示「本地范围：…」）。 */
-  root: string
+  /**
+   * 起始浏览目录（界面显示「起始目录：…」）。
+   *
+   * R2-1 之后它**只是打开本地栏时先看哪里**，不再是访问边界 ——
+   * 字段名从 root 改成 startDir 就是为了不给读代码的人错误暗示。
+   */
+  startDir: string
 }

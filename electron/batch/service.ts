@@ -26,7 +26,7 @@ import { checkRemotePath, isProtectedTransferDirectory } from '../../src/shared/
 import { E_STDOUT_LIMIT } from '../adb/client'
 import { shellQuote } from '../adb/shellsafe'
 import type { ShellRunner } from '../fs/remote'
-import { checkLocalAccess } from '../fs/local'
+import { resolveLocalPath } from '../fs/local'
 import type { EnqueueIntent } from '../transfer/service'
 import type { TransferTask } from '../../src/shared/transfer'
 import { runBatch } from './runner'
@@ -128,8 +128,6 @@ export interface BatchServiceDeps {
    * 取消/重试/快照都是界面的活（R2）。
    */
   transfer: { enqueue(input: EnqueueIntent): Promise<TransferTask> }
-  /** 当前本地根目录（用户选定的那个；本地访问闸门要用）。 */
-  localRoot: () => string
   /** 当前 adb 路径；空串表示还没定位到。 */
   adbPath: () => string
   /** 时钟注入（截图临时文件名用；测试可固定）。 */
@@ -319,8 +317,8 @@ export class BatchService {
    */
   async screenshot(input: BatchSerialsInput, dstDir: string): Promise<BatchRunData> {
     if (dstDir.trim() === '') return failAll(input.serials, E_BATCH_PARAM)
-    // R7：目标目录先校验一次（越界 / 不存在 → 整批失败，不让 N 台各报一次）
-    const dirAccess = await checkLocalAccess(this.deps.localRoot(), dstDir)
+    // R7：目标目录先校验一次（非法路径 / 不存在 → 整批失败，不让 N 台各报一次）
+    const dirAccess = await resolveLocalPath(dstDir)
     if (!dirAccess.ok) return failAll(input.serials, dirAccess.code)
     let isDir = false
     try {
@@ -359,8 +357,9 @@ export class BatchService {
          * R1：走传输队列拉回来（二进制绝不经过 stdout）。
          *
          * dstDir 传**用户原样给的目录**，不传 realpath 后的路径：
-         * 队列自己会用同一个根再做一次闸门判定，两次判定的基准必须一致
-         * （Windows 8.3 短名与长名混用会把「同一个目录」判成根外，实测 E_OUTSIDE_ROOT）。
+         * 队列自己会再做一次路径解析，两次判定都用同一个输入才不会有
+         * 「短名 vs 长名」这类形态差异（R2-1 之后不再有根目录判定，
+         * 但这条约定仍然让两层的路径来源保持一致）。
          */
         const task = await this.deps.transfer.enqueue({
           serial,
@@ -481,7 +480,7 @@ export class BatchService {
    */
   async install(input: BatchSerialsInput, apkPath: string): Promise<BatchRunData> {
     if (apkPath === '') return failAll(input.serials, E_BATCH_PARAM)
-    const access = await checkLocalAccess(this.deps.localRoot(), apkPath)
+    const access = await resolveLocalPath(apkPath)
     if (!access.ok) return failAll(input.serials, access.code)
     let size = 0
     try {
@@ -536,13 +535,13 @@ export class BatchService {
     /*
      * R7：每个本地文件先校验一次（不存在 → 整批失败）。
      *
-     * 校验用 checkLocalAccess 的 realpath 结果（唯一能看穿符号链接的判定），
-     * 但入队时传**用户给的原串**：队列会用同一个根再判一次，
-     * 若两边写法不同（Windows 8.3 短名 vs 长名），同一个目录会被判成根外。
+     * 校验用 resolveLocalPath 的 realpath 结果（符号链接会展开到真实位置），
+     * 但入队时传**用户给的原串**：队列会再解析一次，
+     * 若两边写法不同（Windows 8.3 短名 vs 长名），同一个文件会得到两种形态。
      */
     const sources: string[] = []
     for (const file of input.files) {
-      const access = await checkLocalAccess(this.deps.localRoot(), file)
+      const access = await resolveLocalPath(file)
       if (!access.ok) return failAll(input.serials, access.code)
       try {
         if (!statSync(access.path).isFile()) return failAll(input.serials, E_NOT_A_DIRECTORY)

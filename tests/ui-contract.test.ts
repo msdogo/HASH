@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
+import { ERROR_CODES } from '../src/shared/errors'
+import { t } from '../src/shared/i18n'
 
 /*
  * 裁决 8：本任务不为 React 组件写单元测试（测试工程 import 不了 src/ 下非 shared 的目录，
@@ -293,8 +295,13 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(dialog).toContain('errorText(')
   })
 
-  it('裁决 5：本地面板显示当前限制范围（用户必须看得见）', () => {
-    expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.root'")
+  /*
+   * 【R2-1】本地根沙箱移除后，这一行不再是「当前限制范围」，而是「起始浏览目录」。
+   * 断言随之换成新 key（i18n 里必须真有这条文案，否则 tf 会原样返回 key）。
+   */
+  it('R2-1：本地面板显示起始浏览目录（不再是「范围」）', () => {
+    expect(t('local.startDir')).toContain('{dir}')
+    expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.startDir'")
   })
 
   it('裁决 1：主进程写操作必须过统一路径闸门与受保护判定', () => {
@@ -337,11 +344,21 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
      */
   })
 
-  it('裁决 5：本地访问必须在主进程做 realpath 判定（词法检查防不住符号链接）', () => {
-    const local = read('electron/fs/local.ts')
-    expect(local).toContain('realpath')
-    expect(local).toContain('isInsideRoot')
-    expect(local).toContain('E_OUTSIDE_ROOT')
+  /*
+   * 【R2-1】这里原来是三条源码文本断言（realpath / isInsideRoot / E_OUTSIDE_ROOT）。
+   * 本地根沙箱被用户裁决移除后 isInsideRoot 与 E_OUTSIDE_ROOT 都不存在了，
+   * 而「有没有真的做 realpath」本来就该由**行为**断言守
+   * （tests/local.test.ts：「经由符号链接的写入路径被解析成链接指向的真实位置」）。
+   * 源码文本断言在本项目已经出过 14 次「注入缺陷仍全绿」，因此不再保留。
+   *
+   * 仍然保留一条可执行的事实：沙箱的错误码彻底下线了（表里没有它，渲染层也就
+   * 不可能再收到一个指向「目录之外」的提示）—— 这是可以被变异验证的：
+   * 把 E_OUTSIDE_ROOT 加回 ERROR_CODES，这一条立刻红。
+   */
+  it('R2-1：本地根沙箱的错误码已从错误码表下线', () => {
+    expect(ERROR_CODES).not.toContain('E_OUTSIDE_ROOT')
+    expect(t('local.root')).toBe('local.root')
+    expect(t('local.restricted')).toBe('local.restricted')
   })
 
   /*

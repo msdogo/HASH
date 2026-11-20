@@ -79,7 +79,7 @@ function harness(options: { adbPath?: string; hasDevices?: boolean; over?: Parti
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
+    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
     transfer: {
       enqueue: async () => { throw new Error('not used') },

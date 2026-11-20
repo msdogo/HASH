@@ -44,7 +44,7 @@ if (skip) {
 const REMOTE_DIR = '/sdcard/Download/adb-fm-drag-itest'
 
 describe.skipIf(skip)('真机拖出（简报 C）：下载到临时目录后内容一致', () => {
-  let localRoot = ''
+  let dragDir = ''
   let service: DragOutService
   let transfer: TransferService
   let remoteName = ''
@@ -61,25 +61,21 @@ describe.skipIf(skip)('真机拖出（简报 C）：下载到临时目录后内�
 
   beforeAll(() => {
     /*
-     * 本地根目录：pull 的落点必须过 checkLocalAccess，所以临时目录要作为根注入。
+     * 拖拽落点目录（R2-1 之后它只是本用例自己的临时目录，不再是「本地根」）。
      *
      * 必须用 realpathSync.native：Windows 的 mkdtempSync 会给出 8.3 短名
-     * （C:\Users\ADMINI~1\...），而 checkLocalAccess 在判定真实路径时用长名
+     * （C:\Users\ADMINI~1\...），而 resolveLocalPath 解析真实路径时用长名
      * （C:\Users\Administrator\...）。node 的 JS 版 realpath 不会展开 8.3 短名，
-     * 只有 native 版会 —— 第一版用了 JS 版，于是落点被判 E_OUTSIDE_ROOT。
-     * 生产里 homedir() 与用户在选择框里挑的目录本来就是规范长名。
+     * 只有 native 版会 —— 两边形态不一致会让「落点是否在拖拽目录里」的比对失败。
      */
-    localRoot = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-drag-real-')))
+    dragDir = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-drag-real-')))
     transfer = new TransferService({
       adbPath: () => ADB,
       clientFor: (serial) => new AdbClient(serial),
-      localRoot: () => localRoot,
       emit: () => undefined,
     })
     service = new DragOutService({
-      // 拖拽的临时目录落在本地根之内：这样入队校验与实际写入用同一个根
-      tempRoot: () => localRoot,
-    localRoot: () => localRoot,
+      tempRoot: () => dragDir,
       enqueue: (input) => transfer.controller.enqueue(input),
       getTask: (id) => transfer.controller.get(id),
       emitProgress: () => undefined,
@@ -95,7 +91,7 @@ describe.skipIf(skip)('真机拖出（简报 C）：下载到临时目录后内�
     remoteName = '拖拽 校验.bin'
     const payload = Buffer.alloc(64 * 1024)
     for (let i = 0; i < payload.length; i++) payload[i] = i % 251
-    const localTemp = path.join(localRoot, 'seed.bin')
+    const localTemp = path.join(dragDir, 'seed.bin')
     writeFileSync(localTemp, payload)
     execFileSync(ADB, ['-s', SERIAL as string, 'push', localTemp, REMOTE_DIR + '/' + remoteName], {
       encoding: 'utf8', windowsHide: true, timeout: 120_000,
@@ -104,7 +100,7 @@ describe.skipIf(skip)('真机拖出（简报 C）：下载到临时目录后内�
 
   afterAll(() => {
     try { shell('rm -rf ' + REMOTE_DIR) } catch { /* 忽略清理失败 */ }
-    if (localRoot !== '') rmSync(localRoot, { recursive: true, force: true })
+    if (dragDir !== '') rmSync(dragDir, { recursive: true, force: true })
     // 释放设备锁（最后一个动作：确保设备侧清理已经跑完）
     lockRelease?.()
   })

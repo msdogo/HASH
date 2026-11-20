@@ -12,7 +12,7 @@ import {
 } from '../src/shared/errors'
 import type { TransferTask } from '../src/shared/transfer'
 import { isInsideRoot } from '../src/shared/path-guard'
-import { checkLocalAccess } from '../electron/fs/local'
+import { TransferService } from '../electron/transfer/service'
 
 /*
  * 拖出（设备 → 资源管理器）的**行为**测试。
@@ -112,10 +112,8 @@ function harness(): Harness {
   let onTick: (queue: FakeQueue, tick: number) => void = () => undefined
 
   const service = new DragOutService({
-    // 临时根与本地根都指向同一个 mkdtemp 目录：drag 子目录必然落在本地根之内，
-    // 这正是生产里「TEMP 在主目录下」的同构形态
+    // 临时根：拖拽落点就是 <TEMP>/adbfm-drag（与生产同构）
     tempRoot: () => dir,
-    localRoot: () => dir,
     enqueue: queue.enqueue,
     getTask: queue.getTask,
     emitProgress: (payload) => {
@@ -287,7 +285,6 @@ describe('拖出：失败路径（startDrag 必须零调用）', () => {
     const failures: Array<{ total: number; done: number; error: string }> = []
     const service = new DragOutService({
       tempRoot: () => dir,
-    localRoot: () => dir,
       enqueue: async () => { throw new Error(E_SYNC_FAILED) },
       getTask: () => undefined,
       emitProgress: () => undefined,
@@ -371,7 +368,6 @@ describe('临时目录清理（硬性要求：连续两次拖拽，第一次的�
     try {
       const service = new DragOutService({
         tempRoot: () => dir,
-    localRoot: () => dir,
         enqueue: async () => { throw new Error('unused') },
         getTask: () => undefined,
         emitProgress: () => undefined,
@@ -419,12 +415,17 @@ describe('拖出：调用次数（不重复拖、不多入队）', () => {
   })
 })
 
-describe('临时目录的落点（必须落在本地根之内，否则 pull 会被 E_OUTSIDE_ROOT 拒）', () => {
+/*
+ * 【R2-1】本地根目录沙箱已移除。这一段原先断言「落点必须在本地根之内，
+ * 否则 pull 会被 E_OUTSIDE_ROOT 拒」，于是失败时会把落点退回 <根>/adbfm-drag。
+ * 沙箱移除后那个退回逻辑连同它的理由一起消失：系统临时目录在哪都能作为
+ * pull 的目标，落点恒为 <系统临时目录>/adbfm-drag。断言改为**现在就是如此**。
+ */
+describe('临时目录的落点（R2-1 之后恒为系统临时目录，不再受本地根限制）', () => {
   /** 造一个只有 tempDir() 关心的最小服务。 */
-  function serviceWith(tempRoot: string, localRoot: string): DragOutService {
+  function serviceWith(tempRoot: string): DragOutService {
     return new DragOutService({
       tempRoot: () => tempRoot,
-      localRoot: () => localRoot,
       enqueue: async () => { throw new Error('unused') },
       getTask: () => undefined,
       emitProgress: () => undefined,
@@ -433,48 +434,57 @@ describe('临时目录的落点（必须落在本地根之内，否则 pull 会�
     })
   }
 
-  it('系统临时目录在本地根之内 → 用它（默认情形：TEMP 在主目录下）', () => {
-    const root = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-root-'))
+  it('落点是 <系统临时目录>/adbfm-drag（规范形式，8.3 短名会被展开）', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-root-'))
     try {
-      const tempDir = path.join(root, 'Temp')
-      mkdirSync(tempDir, { recursive: true })
-      const service = serviceWith(tempDir, root)
+      const service = serviceWith(tempDir)
       expect(service.tempDir()).toBe(path.join(realpathSyncNative(tempDir), DRAG_TEMP_DIR_NAME))
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(tempDir, { recursive: true, force: true })
     }
   })
 
-  it('用户把根改到别处（临时目录在根外）→ 退回到 <根>/adbfm-drag，而不是硬用系统临时目录', () => {
+  it('本地栏的起始目录与系统临时目录无关时，落点仍然在系统临时目录里（不再退回）', () => {
     const tempRoot = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-system-'))
-    const localRoot = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-user-'))
+    const otherDir = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-user-'))
     try {
-      const service = serviceWith(tempRoot, localRoot)
-      const picked = service.tempDir()
-      // 落点必须在本地根之内 —— 这正是 pull 的 checkLocalAccess 会检查的那件事
-      expect(isInsideRoot(realpathSyncNative(localRoot), picked)).toBe(true)
-      expect(picked).toBe(path.join(realpathSyncNative(localRoot), DRAG_TEMP_DIR_NAME))
-      // 而且没有用系统临时目录（否则真机上 pull 会报 E_OUTSIDE_ROOT）
-      expect(isInsideRoot(realpathSyncNative(tempRoot), picked)).toBe(false)
+      const picked = serviceWith(tempRoot).tempDir()
+      expect(picked).toBe(path.join(realpathSyncNative(tempRoot), DRAG_TEMP_DIR_NAME))
+      /*
+       * 反向自证：旧实现的「退回 <本地根>/adbfm-drag」在同样输入下会给出
+       * 另一个位置。若谁把那段逻辑加回来，这一条立刻红。
+       */
+      expect(picked).not.toBe(path.join(realpathSyncNative(otherDir), DRAG_TEMP_DIR_NAME))
+      expect(isInsideRoot(realpathSyncNative(otherDir), picked)).toBe(false)
     } finally {
       rmSync(tempRoot, { recursive: true, force: true })
-      rmSync(localRoot, { recursive: true, force: true })
+      rmSync(otherDir, { recursive: true, force: true })
     }
   })
 
-  it('落点必须能通过 TransferService 的本地访问闸门（行为级：不是字符串比较）', async () => {
+  it('落点能作为 TransferService 的 pull 目标目录（行为级：真的入队一次）', async () => {
     const tempRoot = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-system-'))
-    const localRoot = mkdtempSync(path.join(tmpdir(), 'adbfm-drag-user-'))
     try {
-      const service = serviceWith(tempRoot, localRoot)
-      const picked = service.tempDir()
+      const picked = serviceWith(tempRoot).tempDir()
       mkdirSync(picked, { recursive: true })
-      // 与 service.enqueue(pull) 内部用的是同一个闸门
-      const access = await checkLocalAccess(realpathSyncNative(localRoot), picked)
-      expect(access.ok).toBe(true)
+      const svc = new TransferService({
+        adbPath: () => 'C:/adb.exe',
+        clientFor: () => ({ serial: 'S1' }) as never,
+        emit: () => undefined,
+        runner: () => ({
+          resolveTotalBytes: async () => null,
+          run: async () => ({ ok: true as const, bytes: 0, overwrote: false }),
+          deviceOf: async () => 1,
+        }) as never,
+      })
+      const task = await svc.enqueue({
+        serial: 'S1', direction: 'pull', src: '/sdcard/a.bin', dstDir: picked,
+      })
+      // 落盘位置就是拖拽目录内部（文件名来自远程路径）
+      expect(task.dst).toBe(path.join(realpathSyncNative(picked), 'a.bin'))
+      svc.dispose()
     } finally {
       rmSync(tempRoot, { recursive: true, force: true })
-      rmSync(localRoot, { recursive: true, force: true })
     }
   })
 })
@@ -489,7 +499,6 @@ describe('落点防御：任务的目标不在拖拽临时目录里 → 拒绝�
 
     const service = new DragOutService({
       tempRoot: () => dir,
-      localRoot: () => dir,
       enqueue: async (input) => {
         // 故意把落点放到临时目录之外（模拟「服务被改坏 / 落点被换掉」）
         const task: TransferTask = {

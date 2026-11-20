@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { makeDownloadHandler, runDownload } from '../src/shared/download-flow'
 import { EMPTY_OP_STATE, canConfirm, opReducer, type OpAction, type OpState } from '../src/shared/op-view'
-import { E_DEVICE_OFFLINE, E_OUTSIDE_ROOT } from '../src/shared/errors'
+import { E_DEVICE_OFFLINE, E_PROTECTED_PATH } from '../src/shared/errors'
 import { errorText, t } from '../src/shared/i18n'
 
 /*
@@ -139,13 +139,15 @@ describe('第 2 轮复审 N1：下载结束后 busy 必须复位', () => {
 
   it('中途失败也保留已成功的项（用户要知道哪几个已经进了队列）', async () => {
     const h = harness(async (arg) => arg.src === '/sdcard/2.txt'
-      ? { ok: false, error: E_OUTSIDE_ROOT }
+      ? { ok: false, error: E_PROTECTED_PATH }
       : { ok: true, data: {} })
     await runDownload(h.deps, SERIAL, ['/sdcard/1.txt', '/sdcard/2.txt', '/sdcard/3.txt'], LOCAL_DIR)
     const summary = h.state.lastSummary
     expect(summary?.ok).toBe(2)
     expect(summary?.total).toBe(3)
-    expect(summary?.failures.map((item) => item.code)).toEqual([E_OUTSIDE_ROOT])
+    // 【R2-1】样例错误码从 E_OUTSIDE_ROOT（已删除）换成仍然存在的 E_PROTECTED_PATH：
+    // 本用例测的是「失败项逐个透传」，不是越界拦截。
+    expect(summary?.failures.map((item) => item.code)).toEqual([E_PROTECTED_PATH])
   })
 })
 

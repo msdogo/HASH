@@ -8,7 +8,7 @@ import {
   readDroppedFiles,
   type DragEventLike,
 } from '../src/shared/drag'
-import { E_NOT_A_DIRECTORY, E_OUTSIDE_ROOT } from '../src/shared/errors'
+import { E_NOT_A_DIRECTORY, E_PROTECTED_PATH } from '../src/shared/errors'
 import { errorText } from '../src/shared/i18n'
 import type { FileEntry, IpcResult } from '../src/shared/types'
 import type { TransferTask } from '../src/shared/transfer'
@@ -98,7 +98,7 @@ describe('enqueueDroppedFiles：入队入参逐字段 + 次数', () => {
     let call = 0
     const enqueue = vi.fn(async (input: { src: string }): Promise<IpcResult<TransferTask>> => {
       call += 1
-      return call === 1 ? { ok: false, error: E_OUTSIDE_ROOT } : { ok: true, data: task(input.src) }
+      return call === 1 ? { ok: false, error: E_PROTECTED_PATH } : { ok: true, data: task(input.src) }
     })
     const result = await enqueueDroppedFiles(
       { getPath: fakeGetPath({ a: 'C:/a.txt', b: 'C:/b.txt' }), enqueue },
@@ -106,7 +106,7 @@ describe('enqueueDroppedFiles：入队入参逐字段 + 次数', () => {
     )
     expect(enqueue).toHaveBeenCalledTimes(2)
     expect(result.queued).toBe(1)
-    expect(result.firstError).toBe(E_OUTSIDE_ROOT)
+    expect(result.firstError).toBe(E_PROTECTED_PATH)
   })
 
   it('入队抛异常也被收敛成错误码，其余文件照常入队', async () => {
@@ -153,11 +153,16 @@ describe('dropNotice：结果 → 一句话（走 i18n）', () => {
   })
 
   it('有失败 → 报错误码对应的中文（不是数量）', () => {
-    const text = dropNotice({ queued: 1, skipped: 0, duplicates: 0, firstError: E_OUTSIDE_ROOT })
+    /*
+     * 【R2-1】这里原来用 E_OUTSIDE_ROOT 当「入队失败」的样例。该码随本地根沙箱一起移除，
+     * 换成 E_PROTECTED_PATH（仍然存在的真实入队失败原因）——
+     * 本用例测的是「错误码 → 中文文案」的透传，与具体是哪个码无关。
+     */
+    const text = dropNotice({ queued: 1, skipped: 0, duplicates: 0, firstError: E_PROTECTED_PATH })
     expect(text).not.toBeNull()
-    expect(text).not.toContain('E_OUTSIDE_ROOT')
+    expect(text).not.toContain('E_PROTECTED_PATH')
     // 与 i18n 表的映射直接比（文案改了也不会误判）
-    expect(text).toBe(errorText(E_OUTSIDE_ROOT))
+    expect(text).toBe(errorText(E_PROTECTED_PATH))
   })
 
   it('全部被跳过 → 说明「不是本机磁盘文件」，不是静默', () => {

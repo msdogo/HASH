@@ -54,9 +54,9 @@ export const CH = {
   FS_COPY: 'fs:copy',
   /** invoke：移动（同一设备内 mv）。 */
   FS_MOVE: 'fs:move',
-  /** invoke：列举本地目录（限制在用户选定的根目录内）。 */
+  /** invoke：列举本地目录（任意合法绝对路径；R2-1 之后没有根目录限制）。 */
   LOCAL_LIST: 'local:list',
-  /** invoke：让用户挑选本地根目录（系统目录选择框）。 */
+  /** invoke：让用户挑选本地栏的起始浏览目录（系统目录选择框；不是访问边界）。 */
   LOCAL_PICK_ROOT: 'local:pick-root',
 
   /* ===== 任务 10：批量操作（全设备总览页） ===== */

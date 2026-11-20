@@ -67,7 +67,7 @@ function harness(over: Partial<HandlerDeps> = {}, hasDevice = true): Harness {
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], root: 'C:/Users/me' }) },
+    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
     // 本文件只测传输：批量给空壳，只为满足 HandlerDeps（批量有 tests/batch-*.test.ts）
     batch: fakeBatch(),

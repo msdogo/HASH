@@ -74,7 +74,7 @@ export interface HandlerDeps {
   ops: FileOpsController
   /** 本地目录访问（限制在用户选定的根目录内）。 */
   local: LocalController
-  /** 让用户挑选本地根目录（系统目录选择框）；取消返回空串。 */
+  /** 让用户挑选本地栏的起始浏览目录（系统目录选择框）；取消返回空串。 */
   pickRoot: () => Promise<string>
   /**
    * 批量动作服务（任务 10）。
@@ -114,10 +114,11 @@ export interface HandlerDeps {
  */
 export interface TransferController {
   /**
-   * 入队。**返回 Promise** —— 因为入队前要校验本地根目录（realpath 是 IO）。
+   * 入队。**返回 Promise** —— 因为入队前要解析本地路径（realpath 是 IO）。
    *
-   * 复审 C1 之前这里是同步的，而「同步」正是当时没法做根目录判定的直接原因
-   * （符号链接逃逸只有 realpath 能看出来）。IPC handler 本来就是 async，代价为零。
+   * 复审 C1 之前这里是同步的，而「同步」正是当时没法做路径归一化的直接原因
+   * （符号链接只有 realpath 能展开）。IPC handler 本来就是 async，代价为零。
+   * R2-1：本地根目录限制已移除，但路径解析仍然要做（判定路径 = 执行路径）。
    */
   enqueue(input: {
     serial: string
@@ -380,8 +381,9 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     try {
       return { ok: true, data: await deps.local.list(parsed.data.dir) }
     } catch (err) {
-      // 越界（E_OUTSIDE_ROOT）与不存在（E_NOT_FOUND）都必须如实传出去：
-      // 前者是安全策略，后者是用户路径写错了，界面要给不同提示。
+      // 路径不合法（E_INVALID_PATH）与不存在（E_NOT_FOUND）都必须如实传出去：
+      // 前者是路径本身写错了，后者是目标不在了，界面要给不同提示。
+      // （R2-1：本地根沙箱已移除，这里不再有「越界」这一种失败。）
       return fail(toErrorCode(err))
     }
   })
@@ -463,7 +465,7 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
    *
    * 与其它通道同一条前置链：zod → 会话检查 → adb 就绪。
    * 注意这里**没有**任何 dstDir：落点由主进程定在临时目录，
-   * 渲染层不能指定本地写入位置（否则就绕开了本地根目录闸门）。
+   * 渲染层不能指定本地写入位置（否则一个被注入的路径就能往任意位置落文件）。
    *
    * 返回 { ok: true } 只在**startDrag 已经发出**之后成立；
    * 下载期间界面靠 transfer:drag-out-progress 显示「正在准备拖拽（N/M）」。

@@ -37,17 +37,6 @@ export const DRAG_TEMP_DIR_NAME = 'adbfm-drag'
 export interface DragOutDeps {
   /** 临时根目录（生产是 app.getPath('temp')）。getter：测试可换到 mkdtemp 目录。 */
   tempRoot: () => string
-  /**
-   * 当前的本地根目录 getter（与 TransferService 注入的**同一个**）。
-   *
-   * 拖拽的落点必须落在它之内 —— 不是因为「临时文件也该受管」，
-   * 而是因为入队复用了既有传输服务，而 pull 的本地目标要过 checkLocalAccess。
-   * 默认根是用户主目录，而 app.getPath('temp') 在 Windows 上就在主目录下，
-   * 两者天然相容；但用户可以改根（改成 D:\Downloads 很常见），那之后
-   * 系统临时目录就落在根外，pull 会被 E_OUTSIDE_ROOT 直接拒。
-   * 所以这里要显式判断并给出确定的落点，而不是让功能在改了根之后莫名失效。
-   */
-  localRoot: () => string
   /** 入队（复用既有传输服务，不自己 spawn adb）。 */
   enqueue: (input: EnqueueIntent) => Promise<TransferTask>
   /** 取任务（轮询终态用）。 */
@@ -107,53 +96,24 @@ export class DragOutService implements DragController {
   constructor(private readonly deps: DragOutDeps) {}
 
   /**
-   * 临时目录的绝对路径（每次现算：两个 getter 都可能变）。
+   * 临时目录的绝对路径（每次现算：tempRoot 是 getter）。
    *
-   * 两条规则，理由都是真机/真实路径踩出来的：
+   * R2-1 之后这里只剩一条规则：**先做 realpathSync.native 规范化**。
    *
-   * 1. **先做 realpathSync.native 规范化**。
-   *    Windows 的 TEMP 常常是 8.3 短名（C:\Users\ADMINI~1\AppData\Local\Temp），
-   *    而 node 的 realpath（JS 实现）**不会**把它展开成长名 ——
-   *    于是「短名的临时目录」和「长名的主目录」在词法比较里互不相认，
-   *    本地根判定会把一个完全合法的落点判成 E_OUTSIDE_ROOT。
-   *    只用 realpathSync.native：它走系统 API，8.3 短名会被展开成规范长名。
+   * 为什么必须规范化：Windows 的 TEMP 常常是 8.3 短名
+   * （C:\Users\ADMINI~1\AppData\Local\Temp）。node 的 realpath（JS 实现）
+   * **不会**把它展开成长名，只有 realpathSync.native 走系统 API 才会。
+   * 拖拽落点随后要作为 pull 的本地目标过 resolveLocalPath 并做字符串比对
+   * （verifyLocal 判「落点真的在拖拽目录里」），形态不一致会让一个完全合法的
+   * 落点被判成别处 —— 真机用例第一次跑就是这么红的。
    *
-   * 2. **必须落在当前本地根之内**。系统临时目录在根外时（用户把根改成别的盘），
-   *    退回到 <根>/adbfm-drag —— 换的是位置，不是行为：它同样由 cleanup()
-   *    在下次拖拽前与进程退出时删掉，用户不会因此多出一堆副本。
-   *    反过来「硬用系统临时目录、让 pull 报 E_OUTSIDE_ROOT」才是真正的坏结果：
-   *    用户只看到拖不动，且提示会引导他去改目录（而问题不在他选的目录上）。
+   * 历史上这里还有第二条规则（「落点必须在本地根之内，否则退回 <根>/adbfm-drag」），
+   * 那是为本地根沙箱服务的。**沙箱已由用户裁决移除（R2-1）**，于是系统临时目录
+   * 无论在哪都能作为 pull 的目标，退回逻辑不再需要 —— 删掉它也就删掉了一整类
+   * 「拖不动」的隐性问题。
    */
   tempDir(): string {
-    /*
-     * 落点一律取**规范形式**（realpathSync.native）。
-     *
-     * 为什么必须规范化：Windows 的 TEMP 常常是 8.3 短名
-     * （C:\Users\ADMINI~1\AppData\Local\Temp），而本地根目录是长名
-     * （C:\Users\Administrator）。两者作为字符串互不相认，于是
-     *   - 词法包含判定会认为拖拽目录在根外；
-     *   - 更实质的是 pull 入队时的 checkLocalAccess 也会这样判 ——
-     *     结果是**每一次拖出都 E_OUTSIDE_ROOT**（真机用例第一次跑就是这么红的）。
-     * node 的 realpath 是 JS 实现，**不会**展开 8.3 短名；只有
-     * realpathSync.native 走系统 API 才会。所以这里用它，而不是随手 path.resolve。
-     */
-    const tempRoot = canonicalize(this.deps.tempRoot())
-    const candidate = path.join(tempRoot, DRAG_TEMP_DIR_NAME)
-    if (isInsideRoot(canonicalize(this.deps.localRoot()), candidate)) return candidate
-
-    /*
-     * 系统临时目录不在当前本地根之内（用户把根改到了别的盘，很常见）：
-     * 退回到 <本地根>/adbfm-drag。
-     *
-     * 为什么不能硬用系统临时目录再让 pull 报 E_OUTSIDE_ROOT：
-     * 用户看到的是「拖不动」，而提示会引导他去改目录 —— 但问题不在他选的目录上。
-     * 换位置不换行为：这个目录同样由 cleanup() 在下次拖拽前与进程退出时删掉，
-     * 用户不会因此多出一堆看不见的副本。
-     *
-     * 同样用规范形式：入队时的词法判定用的是 path.resolve 之后的路径，
-     * 两边形态不一致就会绕回上面那个短名/长名的坑。
-     */
-    return path.join(canonicalize(this.deps.localRoot()), DRAG_TEMP_DIR_NAME)
+    return path.join(canonicalize(this.deps.tempRoot()), DRAG_TEMP_DIR_NAME)
   }
 
   /**
@@ -311,7 +271,12 @@ export class DragOutService implements DragController {
   }
 
   /**
-   * 检查每个任务的落点都在临时目录里（防御：不受理挂到别处的路径）。
+   * 检查每个任务的落点都在**本次拖拽的临时目录**里（防御：不受理挂到别处的路径）。
+   *
+   * 注意这与 R2-1 移除的「本地根沙箱」不是一回事：沙箱是「不许出某个用户根目录」，
+   * 已由用户裁决删除；这里只是「本类自己产生的任务，落点必须是它自己刚创建的那个
+   * 临时目录」—— 服务被改坏或任务被换掉时要能发现，而不是把一个来路不明的文件
+   * 交给资源管理器去复制。
    *
    * 比较走 shared/path-guard 的 isInsideRoot，而不是 path.sep 拼前缀：
    * 归一化后的本地路径统一用正斜杠，而 Windows 的 path.sep 是反斜杠 ——
