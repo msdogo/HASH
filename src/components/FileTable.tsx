@@ -4,6 +4,7 @@ import { Folder, FileText, Link2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, selectModeOf, type SelectMode, type SortDir, type SortKey } from '@shared/file-view'
 import { rowClassName } from '@shared/file-row'
+import { isPrimaryPointerButton } from '@shared/context-menu'
 import { errorText, t, tf } from '@shared/i18n'
 
 /**
@@ -43,6 +44,18 @@ export interface FileTableProps {
    * 判定本身在 @shared/file-view 的 selectModeOf 里（可单测），组件只做转发。
    */
   onSelect: (entry: FileEntry, mode: SelectMode) => void
+  /**
+   * 右键一行（R5 事项 2）。
+   *
+   * **preventDefault 留在这一层（组件）**，理由：
+   * 右键在浏览器里的默认行为是「弹系统菜单」，那是 DOM 层的事；如果交给上层，
+   * 上层任何一个提前 return（例如没有当前设备）都会让系统菜单冒出来盖住我们的菜单，
+   * 而用户看到的将是「右键有时有菜单、有时没有」。放在这里就是无条件的。
+   *
+   * 选中语义（右键未选中行先设为唯一选中 / 右键已选中行保持多选）**不在组件里判**：
+   * 那是用户裁决的落点，在 @shared/context-menu 的 contextSelectionFor（有表驱动用例）。
+   */
+  onContextMenuRow: (entry: FileEntry, event: React.MouseEvent<HTMLDivElement>) => void
   onRetry: () => void
   /** 当前排序键与方向（点表头切换，裁决 4：排序结果由 useMemo 算好传进来）。 */
   sort: SortKey
@@ -164,7 +177,23 @@ export function FileTable(props: FileTableProps) {
                       /* 拖出：每一行都可以被拖走（目录行也一样 —— adb pull -r 语义由队列决定） */
                       draggable
                       onDragStart={(event) => { props.onDragStartRow(entry, event) }}
-                      onMouseDown={(event) => { props.onSelect(entry, selectModeOf(event)) }}
+                      /*
+                       * 只有主键（左键）改变选中项：右键也会先发 mousedown，
+                       * 若这里不拦，右键一个多选里的行会先把选择塌缩成 1 项，
+                       * 「右键已选中的行保持多选」就永远走不到（判定在 isPrimaryPointerButton）。
+                       */
+                      onMouseDown={(event) => {
+                        if (!isPrimaryPointerButton(event.button)) return
+                        props.onSelect(entry, selectModeOf(event))
+                      }}
+                      /*
+                       * 右键：preventDefault 在这里无条件执行（见 props 上的说明），
+                       * 然后把「哪一行 + 鼠标位置」整份交给上层 —— 弹不弹菜单是上层的决定。
+                       */
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        props.onContextMenuRow(entry, event)
+                      }}
                       onDoubleClick={() => { props.onOpen(entry) }}
                       onKeyDown={(event) => {
                         if (isOpenKey(event.key)) {

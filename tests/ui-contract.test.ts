@@ -736,6 +736,90 @@ describe('简报 C：双向拖拽契约（静态断言）', () => {
     }
   })
 })
+/*
+ * 简报 R5 的**只能静态查**的那几条规则（禁止形态，注释无法满足：匹配前先剥注释）。
+ *
+ * 判断本身的门禁在别处，这里刻意**不**放任何 toContain(源码文本) 断言：
+ *   - 自动消失与否         → tests/notice-auto-dismiss.test.ts（假时钟 20 条）
+ *   - 结果条的样子         → tests/component-wiring.test.tsx（renderToStaticMarkup）
+ *   - 菜单项 / 右键语义 / 夹取 → tests/context-menu.test.ts（表驱动 40 条）
+ *   - 菜单的样子与定位      → tests/component-wiring.test.tsx
+ */
+const stripComments = (source: string): string =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+describe('简报 R5：自动消失与右键菜单的静态契约', () => {
+  const R5_SOURCES = [
+    'src/shared/notice-auto-dismiss.ts',
+    'src/shared/context-menu.ts',
+    'src/components/ContextMenu.tsx',
+    'src/components/OpDialog.tsx',
+    'src/components/FileTable.tsx',
+    'src/pages/FilesPage.tsx',
+  ]
+
+  it('新增源码不 import node 内置模块 / electron，且无 as any / @ts-ignore', () => {
+    for (const rel of R5_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('新增组件与共享模块的文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of ['src/components/ContextMenu.tsx', 'src/shared/context-menu.ts', 'src/shared/notice-auto-dismiss.ts']) {
+      const source = stripComments(read(rel))
+      const hanInCode = /['"`>][^'"`<]*[一-鿿][^'"`<]*['"`<]/.test(source)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('自动消失的判断不得写回组件（时长与判定都只能来自 shared）', () => {
+    const dialog = stripComments(read('src/components/OpDialog.tsx'))
+    // 禁止形态：组件里不得出现裸的 2000 字面量（时长只能来自 AUTO_DISMISS_MS）。
+    // 注意**不**断言「组件里没有 summary.failed === 0」：OpResultNotice 用它选配色
+    // （成功绿 / 失败红），那是纯展示判断，本来就该留在组件里；
+    // 真正禁止的是拿它决定**要不要计时**，而那件事已经由下面这条「不排定时器」的
+    // 行为用例矩阵覆盖（tests/notice-auto-dismiss.test.ts：失败结果 schedule 零调用）。
+    expect(dialog).not.toMatch(/setTimeout\([^)]*,\s*2000\s*\)/)
+  })
+
+  it('右键菜单的取项与夹取不得写回组件', () => {
+    const menu = stripComments(read('src/components/ContextMenu.tsx'))
+    // 禁止形态：组件里自己按选中数决定菜单项 / 自己做翻转算术
+    expect(menu).not.toMatch(/selectedCount\s*===\s*1/)
+    expect(menu).not.toMatch(/point\.x\s*\+\s*width/)
+  })
+
+  it('右键的选中语义与菜单条数只在 shared 判定（FilesPage 只转发）', () => {
+    const page = stripComments(read('src/pages/FilesPage.tsx'))
+    // 禁止形态：页面里自己写「右键后选中数」（replace ? 1 : …）
+    expect(page).not.toMatch(/replace\s*\?\s*1\s*:/)
+    // 禁止形态：页面里自己按选中数量拼菜单项
+    expect(page).not.toMatch(/id:\s*'rename'/)
+    /*
+     * 禁止形态：菜单条数不得直接取**渲染期**的 current.selected.length。
+     *
+     * 这条是变异实测补的：把
+     *   menuItemsFor(selectedCountAfterContext(menu.name, current.selected))
+     * 改成 menuItemsFor(current.selected.length) 后，全量仍然全绿
+     * （组件里的取值 SSR 观测不到，而 selectedCountAfterContext 的单测只管纯函数本身）。
+     * 后果很具体：右键一个未选中的行时，选中项已变成 1 但菜单仍按旧的 N 项算，
+     * 「重命名」入口凭空消失。所以这里用**禁止形态**把它钉住。
+     */
+    expect(page).not.toMatch(/menuItemsFor\(current\.selected\.length\)/)
+  })
+
+  it('行的 mousedown 必须区分按键（右键不得塌缩多选）', () => {
+    const table = stripComments(read('src/components/FileTable.tsx'))
+    // 禁止形态：无条件在 mousedown 里 onSelect（右键也会发 mousedown）
+    expect(table).not.toMatch(/onMouseDown=\{\(event\)\s*=>\s*\{\s*props\.onSelect\(/)
+  })
+})
+
 describe('简报 R4：文件行焦点的静态契约（真单测见 tests/file-row.test.ts）', () => {
   /*
    * 【事项 3 的门禁分工】class 的**内容**由 tests/file-row.test.ts 直接断言返回值

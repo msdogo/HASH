@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle as Warn, X } from 'lucide-react'
 import { errorText, t, tf } from '@shared/i18n'
 import { canConfirm, isDestructive, type OpDialog } from '@shared/op-view'
 import type { OpSummary } from '@shared/fs-ops'
+import { createAutoDismissTimer } from '@shared/notice-auto-dismiss'
 import { useOpStore } from '@/store/opStore'
 
 /**
@@ -66,8 +67,46 @@ export function OpDialogHost(props: OpDialogProps) {
     lastSummary: storeLastSummary,
   })
 
+  /*
+   * 【R5 事项 1】「N 项全部成功」2 秒后自动消失，有失败项时不自动消失（用户裁决）。
+   *
+   * 判断与计时器**都在 @shared/notice-auto-dismiss**（有 20 条用例）：
+   * 本工程 environment: node、无 jsdom，SSR 只跑 render 不跑 effect ——
+   * 把 shouldAutoDismiss 写在这个 useEffect 里就是零门禁（改坏也没有任何用例会红）。
+   * 这里只剩三件事：建计时器、把最新 summary 喂进去、卸载时拆掉。
+   */
+  const autoDismiss = useMemo(
+    () =>
+      createAutoDismissTimer({
+        // 生产实现的定时器：schedule 返回取消函数（与 upload-refresh 的注入约定一致）
+        schedule: (delayMs, run) => {
+          const timer = setTimeout(run, delayMs)
+          return () => { clearTimeout(timer) }
+        },
+        dismiss: dismissSummary,
+      }),
+    [dismissSummary],
+  )
+
+  useEffect(() => {
+    autoDismiss.arm(lastSummary)
+    // 结果变化（或组件卸载）时先撤掉上一个定时器：否则连做两次操作会 dismiss 两次，
+    // 第二次会把刚出现的新提示条直接关掉
+    return () => { autoDismiss.dispose() }
+  }, [autoDismiss, lastSummary])
+
   if (dialog === null) {
-    return lastSummary === null ? null : <OpResultNotice summary={lastSummary} onDismiss={dismissSummary} />
+    return lastSummary === null
+      ? null
+      : (
+        <OpResultNotice
+          summary={lastSummary}
+          onDismiss={dismissSummary}
+          /* 悬停暂停：鼠标停在提示条上时用户正在看，不该被倒计时抢走 */
+          onHoverStart={autoDismiss.pause}
+          onHoverEnd={autoDismiss.resume}
+        />
+      )
   }
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30">
@@ -238,11 +277,20 @@ function DeleteFacts(props: { facts: OpDialog['facts'] }) {
   )
 }
 
-function OpResultNotice(props: { summary: OpSummary; onDismiss: () => void }) {
+function OpResultNotice(props: {
+  summary: OpSummary
+  onDismiss: () => void
+  /** 鼠标进入：暂停自动消失倒计时（判断在 @shared/notice-auto-dismiss）。 */
+  onHoverStart?: () => void
+  /** 鼠标离开：重新给满 2 秒。 */
+  onHoverEnd?: () => void
+}) {
   const { summary, onDismiss } = props
   const allOk = summary.failed === 0
   return (
     <div
+      onMouseEnter={props.onHoverStart}
+      onMouseLeave={props.onHoverEnd}
       className={
         'absolute bottom-3 left-1/2 z-20 w-[460px] max-w-[92vw] -translate-x-1/2 rounded-lg border px-3 py-2 text-xs shadow-lg ' +
         (allOk ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700')

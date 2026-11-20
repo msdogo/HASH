@@ -18,7 +18,14 @@ import { makeDownloadHandler } from '@shared/download-flow'
 import { downloadDirForDownload } from '@shared/settings'
 import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
 import { createTerminalRefreshWatcher, type RefreshContext } from '@shared/upload-refresh'
+import {
+  contextSelectionFor,
+  menuItemsFor,
+  selectedCountAfterContext,
+  type MenuActionId,
+} from '@shared/context-menu'
 import { Breadcrumb } from '@/components/Breadcrumb'
+import { ContextMenu } from '@/components/ContextMenu'
 import { FileTable } from '@/components/FileTable'
 import { FileToolbar } from '@/components/FileToolbar'
 import { OpDialogHost } from '@/components/OpDialog'
@@ -124,6 +131,16 @@ export function FilesPage() {
 
   /** 上传/下载这类「队列类」操作的提示（走底栏，不走 op 结果条）。 */
   const [queueNotice, setQueueNotice] = useState<string | null>(null)
+
+  /**
+   * 右键菜单状态（R5 事项 2）：视口坐标 + 右键的那一行名字。
+   *
+   * 存 **entry 名字**而不是 FileEntry 对象：菜单动作全部复用既有的
+   * handleRename / handleDelete / handleDownload，它们都从 store 现取选中项，
+   * 所以这里只需要知道「弹在屏幕的哪儿」，不需要持有条目。
+   * 持有对象反而会让刷新后的陈旧引用活在菜单里。
+   */
+  const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(null)
 
   // 【I5/I6】把设备表的变化接到分片生命周期上：
   // 新设备建分片；消失的设备 forget（否则每台设备存一整份 entries，内存单调增长）。
@@ -490,6 +507,63 @@ export function FilesPage() {
     openOp({ type: 'openConfirm', kind: 'move', targets })
   }, [selectedTargets, openOp])
 
+  /**
+   * 右键一行（R5 事项 2）。
+   *
+   * 选中语义是用户裁决的落点，判定在 @shared/context-menu 的 contextSelectionFor（表驱动用例）：
+   * - 右键**未选中**的行 → 先把它设为唯一选中项，再弹菜单；
+   * - 右键**已选中**的行（多选）→ 保持多选不变，菜单作用于整批。
+   *
+   * 坐标取 clientX/clientY（视口坐标系）：ContextMenu 是 position: fixed，
+   * 用滚动容器相对坐标会在虚拟列表滚动后整体错位。
+   */
+  const handleContextMenuRow = useCallback(
+    (entry: FileEntry, event: React.MouseEvent<HTMLDivElement>) => {
+      if (serial === null) return
+      if (contextSelectionFor(entry.name, current.selected) === 'replace') {
+        dispatch(serial, { type: 'select', name: entry.name, mode: 'replace' })
+      }
+      setMenu({ x: event.clientX, y: event.clientY, name: entry.name })
+    },
+    [serial, current.selected, dispatch],
+  )
+
+  /** 菜单关闭（点击外部 / Esc / 选项后 / 滚动）。 */
+  const closeMenu = useCallback(() => { setMenu(null) }, [])
+
+  /**
+   * 菜单动作 → **复用既有 handler**（R5 事项 2 的硬约束：不重写一套业务逻辑）。
+   *
+   * 三个动作与工具条按钮走的是同一批函数：
+   *   rename   → handleRename（内部 openOp rename，需恰好 1 项）
+   *   delete   → handleDelete（内部先 prepareDelete 取事实再开框）
+   *   download → handleDownload（内部走传输队列）
+   *
+   * 唯一要注意的是**顺序**：右键未选中行时，上面刚 dispatch 了 select，
+   * 而 handleDelete / handleDownload 通过 selectedTargets() 从 store 现取选中项 ——
+   * zustand 的 set 是同步的，所以这里读到的一定是「右键之后」的选中集合，
+   * 不会拿旧集合去删/去下。
+   */
+  const handleMenuAction = useCallback(
+    (id: MenuActionId) => {
+      if (id === 'rename') { handleRename(); return }
+      if (id === 'delete') { void handleDelete(); return }
+      void handleDownload()
+    },
+    [handleRename, handleDelete, handleDownload],
+  )
+
+  /*
+   * 菜单项由「右键之后的选中数量」决定（不是当前渲染期的 current.selected.length）：
+   * 右键未选中行时 select 是同一轮事件里刚派发的，current.selected 要等下一次渲染才更新。
+   * selectedCountAfterContext 就是那个「右键之后」的数字（有单测），
+   * 保证「菜单里有几项」与「实际选中几项」严格同源。
+   */
+  const menuItems = useMemo(
+    () => (menu === null ? [] : menuItemsFor(selectedCountAfterContext(menu.name, current.selected))),
+    [menu, current.selected],
+  )
+
   if (serial === null) {
     return <p className="p-8 text-sm text-neutral-500">{t('devices.selectHint')}</p>
   }
@@ -636,6 +710,7 @@ export function FilesPage() {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onDragStartRow={handleDragStartRow}
+          onContextMenuRow={handleContextMenuRow}
         />
       </div>
 
@@ -666,6 +741,22 @@ export function FilesPage() {
           <span className="text-neutral-600">{tf('files.selected', { count: current.selected.length })}</span>
         )}
       </div>
+
+      {/*
+        * 右键菜单（R5 事项 2）。
+        *
+        * 挂在 section 下、position: fixed 定位：它必须跳出虚拟列表的滚动容器，
+        * 否则会被 overflow-auto 裁掉（菜单靠近列表下边缘时就看不全了）。
+        */}
+      {menu !== null && menuItems.length > 0 && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onAction={handleMenuAction}
+          onClose={closeMenu}
+        />
+      )}
 
       {/* 操作对话框与结果提示：绝对定位覆盖在文件页内（不挡住底栏的传输进度） */}
       <OpDialogHost
