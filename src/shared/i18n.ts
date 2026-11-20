@@ -209,6 +209,13 @@ const messages: Record<string, string> = {
   // ---- R2-2：设置页 ----
   'nav.settings': '设置',
   'settings.title': '设置',
+  /*
+   * R3-1：设置页的出口。
+   * 设置在顶栏、页面自身没有返回按钮时，用户点进去就找不到「回到刚才那里」的习惯动作
+   * （用户实测反馈：进了设置页出不来）。返回目标固定为文件页 —— 本应用只有 3 页，
+   * 不做 history 栈。
+   */
+  'settings.back': '返回',
   'settings.downloadDir.title': '默认下载路径',
   'settings.downloadDir.desc': '「下载到本地」把文件存到这里。拖拽到资源管理器时，落点由你松手的位置决定',
   'settings.downloadDir.current': '当前：{dir}',

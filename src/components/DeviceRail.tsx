@@ -16,6 +16,17 @@ import { useDeviceStore } from '@/store/deviceStore'
 export interface DeviceRailProps {
   onShowOverview?: () => void
   /**
+   * 点某台设备之后的通知（R3-1）。
+   *
+   * 组件只负责「把点了哪台报上去」，去哪一页由父级决定（App 用
+   * @shared/nav 的 pageAfterSelectDevice 判：永远是文件页，目录与滚动位置
+   * 由 fileStore 的 serial 分片恢复）。
+   *
+   * **可选**，且调用点在 setActive 之后：生产不传时行为与改前逐字相同
+   * （只切 activeSerial、不动页面）。pickRailData 那套注入逻辑完全不经过它。
+   */
+  onSelectDevice?: (serial: string) => void
+  /**
    * 渲染期注入（与 OverviewPage 的 initial 同一手法，终审 I-4）。
    *
    * 为什么需要：zustand 的 useSyncExternalStore 在 SSR 下取 getServerSnapshot
@@ -105,7 +116,11 @@ export function DeviceRail(props: DeviceRailProps) {
             <button
               key={device.serial}
               type="button"
-              onClick={() => { setActive(device.serial) }}
+              onClick={() => {
+                setActive(device.serial)
+                // R3-1：可选回调。不传时行为与改前逐字相同（只切 activeSerial）
+                props.onSelectDevice?.(device.serial)
+              }}
               title={device.serial + ' · ' + t(DOT_LABEL_KEY[dot])}
               className={
                 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ' +

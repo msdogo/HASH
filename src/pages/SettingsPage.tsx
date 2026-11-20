@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Download, FolderOpen, Info, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Download, FolderOpen, Info, RotateCcw } from 'lucide-react'
 import type { AdbSource } from '@shared/types'
 import { errorText, t, tf } from '@shared/i18n'
 import { useSettingsStore } from '@/store/settingsStore'
@@ -39,6 +39,15 @@ function sourceLabel(source: AdbSource): string {
  * 「先填 store 再渲染」这条路在 renderToStaticMarkup 里走不通（本工程实测过）。
  */
 export interface SettingsPageProps {
+  /**
+   * 出口（R3-1）。
+   *
+   * 为什么**必填**而不是可选：设置页是从顶栏进来的独立功能页，入口那一半
+   * （App 的 ⚙设置）R2-2 已经接好，出口这一半却从来没有 —— 于是用户点进去出不来。
+   * 允许缺省就等于允许「渲染一个没有出口的设置页」，历史会重演；
+   * 必填把「忘了接线」变成编译错误，而不是等用户点进去才发现。
+   */
+  onBack: () => void
   initial?: {
     data?: ReturnType<typeof useSettingsStore.getState>['data']
     loading?: boolean
@@ -46,7 +55,7 @@ export interface SettingsPageProps {
   }
 }
 
-export function SettingsPage(props: SettingsPageProps = {}) {
+export function SettingsPage(props: SettingsPageProps) {
   const storeData = useSettingsStore((state) => state.data)
   const storeLoading = useSettingsStore((state) => state.loading)
   const storeError = useSettingsStore((state) => state.error)
@@ -67,6 +76,21 @@ export function SettingsPage(props: SettingsPageProps = {}) {
 
   return (
     <section className="min-h-0 flex-1 overflow-auto p-4" data-testid="settings-page">
+      {/*
+        * 返回按钮（R3-1）：放在标题**上方**，因为它不属于页面内容，
+        * 而是「离开这一页」的动作 —— 与文件页的地址栏同理，先于内容出现。
+        * 文案走 i18n；样式与页内既有小按钮一致（边框 + 11px 灰字）。
+        */}
+      <button
+        type="button"
+        onClick={props.onBack}
+        title={t('settings.back')}
+        aria-label={t('settings.back')}
+        className="mb-3 flex items-center gap-1 rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+      >
+        <ArrowLeft className="h-3 w-3" aria-hidden="true" />
+        {t('settings.back')}
+      </button>
       <h2 className="mb-3 text-sm font-semibold text-neutral-200">{t('settings.title')}</h2>
 
       {error !== null && (
