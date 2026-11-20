@@ -3,6 +3,7 @@ import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from
 import type { TransferSnapshot, TransferTask } from './transfer'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from './file-ops'
 import type { BatchRunData } from './batch'
+import type { DragOutFailure, DragOutProgress } from './drag'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -72,6 +73,34 @@ export type TransferIdInput = z.infer<typeof TRANSFER_ID_INPUT>
 
 /** transfer:clear 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」的契约）。 */
 export const TRANSFER_CLEAR_INPUT = z.unknown()
+
+/**
+ * transfer:begin-drag-out 入参（简报 C：把设备文件拖给资源管理器）。
+ *
+ * 为什么**没有** dstDir：拖拽的落点由用户在资源管理器里松手的位置决定，
+ * 而那要等 startDrag 之后才知道 —— 我们只能先把文件准备到主进程自己的临时目录
+ * （app.getPath('temp')/adbfm-drag）。让渲染层指定 dstDir 等于给它一个
+ * 任意本地写入入口，绕开本地根目录闸门，所以这里刻意不接受。
+ *
+ * paths 上限 100 与 fs 批量操作同量级：拖 100 个文件时用户已经分不清自己在拖什么。
+ */
+export const DRAG_OUT_INPUT = z.object({
+  serial: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1).max(100),
+})
+
+export type DragOutInput = z.infer<typeof DRAG_OUT_INPUT>
+
+/**
+ * 「File 对象 → 本地路径」的入参形状（**不经过 IPC**，仅用于类型自证）。
+ *
+ * 为什么不给它一个通道：File 对象无法穿过 IPC —— 结构化克隆过去之后
+ * 它已经不是一个可解析的磁盘绑定，webUtils.getPathForFile 只能看到空串。
+ * 而 webUtils 是【渲染进程】的 API（Electron 只允许从 preload 里 import），
+ * 所以这一步在 preload 里同步完成，见 DshApi.transfer.getPathForFile。
+ * 保留这个 schema 是为了让「空串=不是磁盘文件」这条判定有单一事实源。
+ */
+export const DRAG_PATH_INPUT = z.object({ file: z.unknown() })
 
 /* ============ 任务 9：文件操作（新建 / 重命名 / 删除 / 复制 / 移动） ============ */
 
@@ -208,6 +237,7 @@ export type BatchShellInput = z.infer<typeof BATCH_SHELL_INPUT>
 
 export type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 export type { TransferSnapshot, TransferTask } from './transfer'
+export type { DragOutFailure, DragOutProgress } from './drag'
 export type { FsOpData, FsRemoveFactsData, LocalListData, LocalItem } from './file-ops'
 export type { BatchItemResult, BatchRunData } from './batch'
 
@@ -297,6 +327,29 @@ export interface DshApi {
     pickFiles(): Promise<IpcResult<string[]>>
     /** 订阅传输变化推送（进度已在主进程节流）；返回退订函数。 */
     onChanged(callback: (snapshot: TransferSnapshot) => void): Unsubscribe
+    /* ---- 简报 C：设备 ↔ 资源管理器双向拖拽 ---- */
+    /**
+     * File → 本地磁盘绝对路径。**同步**，且不经过 IPC。
+     *
+     * 唯一实现是 Electron 的 webUtils.getPathForFile（渲染层没有 node 能力，
+     * 拿不到 File 的磁盘路径；<input type=file> 也一样）。
+     * 返回**空串**表示这个 File 不是磁盘上的真实文件（例如从网页里拖来的图片），
+     * 调用方必须跳过它 —— 空串绝不能拿去入队。
+     */
+    getPathForFile(file: unknown): string
+    /**
+     * 拖出：把设备上的文件拖给资源管理器。
+     *
+     * 主进程会先下载到临时目录（不设大小门槛，500 MB 也一样），
+     * 全部成功后才调 webContents.startDrag；任一失败则不拖并推 onDragOutFailed。
+     * 因此这个 Promise **在所有任务进终态后才 resolve** —— 期间界面显示
+     * onDragOutProgress 的「正在准备拖拽（N/M）」。
+     */
+    beginDragOut(payload: DragOutInput): Promise<IpcResult<void>>
+    /** 订阅拖出准备进度（「正在准备拖拽（N/M）」）。 */
+    onDragOutProgress(callback: (payload: DragOutProgress) => void): Unsubscribe
+    /** 订阅拖出失败（任一文件失败就整体不拖）。 */
+    onDragOutFailed(callback: (payload: DragOutFailure) => void): Unsubscribe
   }
   /* ---- 任务 10：批量操作（全设备总览页的四个动作） ---- */
   batch: {

@@ -560,3 +560,56 @@ describe('任务 7 审查轮 1：修复项的静态契约', () => {
     expect(model).toContain("const key = serial + '\\u0001' + dir")
   })
 })
+
+describe('简报 C：双向拖拽契约（静态断言）', () => {
+  const DRAG_SOURCES = [
+    'src/shared/drag.ts',
+    'src/shared/drag-flow.ts',
+    'src/store/dragStore.ts',
+    'src/components/FileTable.tsx',
+    'src/pages/FilesPage.tsx',
+  ]
+
+  it('拖拽源码不 import node 内置模块 / electron，且无 as any', () => {
+    for (const rel of DRAG_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+  })
+
+  it('拖拽新增文件（纯逻辑与 store）文案走 i18n，无硬编码中文', () => {
+    for (const rel of ['src/shared/drag.ts', 'src/shared/drag-flow.ts', 'src/store/dragStore.ts']) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  /*
+   * 下面两条查的是**禁止形态**（断言某种写法不存在），不是「某函数名出现过」——
+   * 后者会被注释满足（本项目已经吃过 14 次亏）。
+   */
+  it('渲染层不得自己拼 adb 命令 / 自己 spawn（拖拽必须复用传输队列）', () => {
+    for (const rel of DRAG_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/child_process/)
+      expect(source, rel).not.toMatch(/spawn\(/)
+      expect(source, rel).not.toMatch(/execFile/)
+    }
+  })
+
+  it('渲染层不得直接调 webUtils（File→路径只能经 preload 暴露的 getPathForFile）', () => {
+    for (const rel of DRAG_SOURCES) {
+      // 先剥注释再判：这条查的是**代码形态**，注释里提到 webUtils 是解释而不是实现
+      const source = read(rel)
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+      expect(source, rel).not.toMatch(/\bwebUtils\b/)
+    }
+  })
+})

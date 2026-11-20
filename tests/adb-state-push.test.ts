@@ -159,6 +159,8 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
           pickScreenshotDir: async () => '',
           pickApk: async () => '',
         },
+        // 本文件不测拖拽：空壳只为满足 HandlerDeps（拖拽有 tests/drag-*.test.ts）
+        drag: { dragOut: async () => ({ ok: true }) },
         // 本文件不测传输：给一个空壳，只为满足 HandlerDeps（传输有专门的 tests/transfer-*.test.ts）
         transfer: {
           enqueue: () => { throw new Error('not used') },

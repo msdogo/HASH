@@ -14,6 +14,7 @@ import type { ShellRunner } from '../electron/fs/remote'
 import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
 import { fakeBatch } from './fake-batch'
+import { fakeDrag } from './fake-drag'
 
 /* ============ 假 ipcMain：捕获注册表，直接调用 handler ============ */
 
@@ -206,6 +207,7 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     local: fakeLocal(),
     pickRoot: async () => '',
     batch: fakeBatch(),
+    drag: fakeDrag(),
     ...over,
   }
   const ipc = fakeIpc()
@@ -462,6 +464,8 @@ describe('preload 的 pickRoot 真的把载荷传下去了（问题 1 的第二�
       },
       on: () => undefined,
       off: () => undefined,
+      // 本用例只测 pickRoot：File→路径的真相由 tests/drag-*.test.ts 压制
+      getPathForFile: () => '',
     })
     const result = await api.local.pickRoot()
     expect(result).toEqual({ ok: true, data: '/picked' })

@@ -3,6 +3,7 @@ import {
   BATCH_PUSH_INPUT,
   BATCH_SCREENSHOT_INPUT,
   BATCH_SHELL_INPUT,
+  DRAG_OUT_INPUT,
   FS_BATCH_INPUT,
   FS_LIST_INPUT,
   FS_MKDIR_INPUT,
@@ -82,6 +83,14 @@ export interface HandlerDeps {
    * 四个动作各自的编排（离线跳过、参数预检、截图走队列）由 service 负责并有专门测试。
    */
   batch: BatchController
+  /**
+   * 拖拽（简报 C）。
+   *
+   * 只依赖接口：IPC 层负责「校验 + 会话检查 + 错误码收敛」，
+   * 「下载到临时目录 → 等终态 → startDrag」的编排在 electron/drag/service.ts
+   * 并有专门的行为测试。这样 IPC 测试不需要 Electron、也不需要真 adb。
+   */
+  drag: DragController
   /** 目录列举实现（默认 listDirDetailed；测试可注入）。 */
   fs: {
     list: (client: ShellRunner, adbPath: string, dir: string) => Promise<{
@@ -156,6 +165,16 @@ export interface BatchController {
   shell(input: { serials: readonly string[] }, command: string): Promise<BatchRunData>
   pickScreenshotDir(): Promise<string>
   pickApk(): Promise<string>
+}
+
+/**
+ * 拖拽对 IPC 层暴露的最小面（electron/drag/service 的 DragOutService 满足它）。
+ *
+ * 与 transfer / ops / batch 同一原则：只依赖接口，测试塞假实现即可验证
+ * 「校验/会话检查/错误码收敛」，不必启动 Electron。
+ */
+export interface DragController {
+  dragOut(input: { serial: string; paths: string[] }): Promise<{ ok: true } | { ok: false; code: string }>
 }
 
 /** 统一的失败出口。 */
@@ -434,6 +453,31 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     try {
       // 用户取消选择时返回空数组 —— 取消是正常操作，不是错误
       return { ok: true, data: await deps.pickFiles() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 拖出（简报 C）：设备文件 → 资源管理器。
+   *
+   * 与其它通道同一条前置链：zod → 会话检查 → adb 就绪。
+   * 注意这里**没有**任何 dstDir：落点由主进程定在临时目录，
+   * 渲染层不能指定本地写入位置（否则就绕开了本地根目录闸门）。
+   *
+   * 返回 { ok: true } 只在**startDrag 已经发出**之后成立；
+   * 下载期间界面靠 transfer:drag-out-progress 显示「正在准备拖拽（N/M）」。
+   */
+  handle(CH.TRANSFER_BEGIN_DRAG_OUT, async (_event, payload): Promise<IpcResult<void>> => {
+    const parsed = DRAG_OUT_INPUT.safeParse(payload)
+    if (!parsed.success) return fail(E_BAD_ARGS)
+    const { serial, paths } = parsed.data
+    if (deps.devices.get(serial) === undefined) return fail(E_NO_SERIAL)
+    if (deps.adbPath() === '') return fail(E_ADB_NOT_FOUND)
+    try {
+      const result = await deps.drag.dragOut({ serial, paths })
+      if (!result.ok) return fail(result.code)
+      return { ok: true, data: undefined }
     } catch (err) {
       return fail(toErrorCode(err))
     }

@@ -90,6 +90,8 @@ function harness(options: { adbPath?: string; hasDevices?: boolean; over?: Parti
       clearFinished: () => 0,
     },
     batch,
+    // 本文件不测拖拽：空壳只为满足 HandlerDeps（拖拽有 tests/drag-*.test.ts）
+    drag: { dragOut: async () => ({ ok: true }) },
     ...options.over,
   }
   const ipc = fakeIpc()

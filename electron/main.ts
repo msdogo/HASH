@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, session, ipcMain, protocol } from 'electron'
+import { app, BrowserWindow, dialog, session, ipcMain, protocol, webContents } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { shutdownChildren } from './adb/children'
@@ -15,6 +15,7 @@ import { registerHandlers } from './ipc/handlers'
 import { TransferOnlineTracker, wireBatchToTransfer } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
 import { BatchService } from './batch/service'
+import { DragOutService } from './drag/service'
 import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
 import { LocalFs } from './fs/local'
@@ -201,6 +202,74 @@ const batchService = new BatchService({
   },
 })
 
+
+/**
+ * 拖拽服务（简报 C：设备 ↔ 资源管理器）。
+ *
+ * 落点是 app.getPath('temp')/adbfm-drag：**必须**是临时目录 ——
+ * startDrag 要的是本地磁盘上已存在的文件，而这份文件只是「待拖走」的副本，
+ * 放进用户的文件夹等于每次拖拽都在他不知道的地方留一份。
+ *
+ * 清理有两个调用点，缺一不可（都在下面接好了）：
+ *   1. 每次拖拽开始前（dragOut 内部第一步）；
+ *   2. 进程退出时（before-quit）。
+ */
+const dragService = new DragOutService({
+  tempRoot: () => app.getPath('temp'),
+  /*
+   * 与 TransferService 注入的是**同一个** localRoot getter。
+   * 拖拽落点必须落在本地根之内：pull 的本地目标要过 checkLocalAccess，
+   * 而用户可以改根 —— 那之后系统临时目录就落在根外，硬用它会让拖出稳定失败。
+   * 详见 DragOutService.tempDir 的注释。
+   */
+  localRoot: () => localRoot,
+  enqueue: (input) => transfer.controller.enqueue(input),
+  getTask: (id) => transfer.controller.get(id),
+  emitProgress: (payload) => { broadcastDragProgress(payload) },
+  emitFailed: (payload) => { broadcastDragFailed(payload) },
+  /*
+   * startDrag 只能由主进程发起，且必须挂在**当前窗口**的 webContents 上：
+   * 它是「从这个页面拖出去」这个动作的接续。没有窗口时什么也不做
+   * （此时 beginDragOut 会拿到成功但没有任何拖拽 —— 见下面 resolveWebContents 的说明）。
+   */
+  startDrag: (item) => {
+    const target = dragTarget()
+    if (target === undefined) return
+    target.startDrag(item)
+  },
+})
+
+/**
+ * 发起拖拽的 webContents：取第一个还活着的窗口。
+ *
+ * 为什么用「第一个存活窗口」而不是把发起方传下来：
+ * startDrag 的语义是「当前这个页面开始拖」，本应用只有一个主窗口；
+ * 而 IPC 事件的 sender 无法穿过 HandlerDeps 的接口（那是主进程内部细节），
+ * 为一个单窗口应用多绕一层不值得。若将来多窗口，这里要改成按 sender 取。
+ */
+function dragTarget(): Electron.WebContents | undefined {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) return win.webContents
+  }
+  return undefined
+}
+
+/** 拖出准备进度 → 所有窗口（界面显示「正在准备拖拽（N/M）」）。 */
+function broadcastDragProgress(payload: { total: number; done: number }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    win.webContents.send(CH.TRANSFER_DRAG_OUT_PROGRESS, payload)
+  }
+}
+
+/** 拖出失败 → 所有窗口（任一文件失败就整体不拖）。 */
+function broadcastDragFailed(payload: { total: number; done: number; error: string }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    win.webContents.send(CH.TRANSFER_DRAG_OUT_FAILED, payload)
+  }
+}
+
 /** 退出时用来取消在飞的自检（I5），避免 probe 子进程成孤儿。 */
 const bootAbort = new AbortController()
 
@@ -312,6 +381,7 @@ app.whenReady().then(async () => {
             },
             transfer: transfer.controller,
             batch: batchService,
+            drag: dragService.controller,
             // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
             // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。
             pickFiles: async () => {
@@ -413,6 +483,18 @@ app.on('before-quit', () => {
   // 复审 I1：批量截图的临时文件清理登记也要在退出时兑现，
   // 否则排队中的 transfer 任务永远不进终态（dispose 不 emit），设备上会留 png。
   batchService.dispose()
+  /*
+   * 拖拽临时目录的兜底清理（简报 C 硬性要求）。
+   *
+   * 常规路径是「下次拖拽前清理」，但用户完全可能拖完就退出 ——
+   * 那个目录里留着的是他刚拖走的文件的副本（可能几百 MB），必须在这里删掉。
+   * 清理失败只记日志：退出流程不能被一个删不掉的临时文件卡住。
+   */
+  try {
+    dragService.cleanup()
+  } catch (err) {
+    console.warn('[drag] 退出时清理临时目录失败：' + String(err))
+  }
   // dispose 已经把未结算的清理执行掉了，把表清空避免残留闭包
   batchCleanup.clear()
   shutdownChildren()

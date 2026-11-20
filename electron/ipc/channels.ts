@@ -27,6 +27,19 @@ export const CH = {
   TRANSFER_PICK_FILES: 'transfer:pick-files',
   /** event（主进程 → 渲染层）：传输队列有变化（进度已节流）。 */
   TRANSFER_CHANGED: 'transfer:changed',
+  /**
+   * invoke：把设备上的文件拖给资源管理器（先下载到临时目录，再 startDrag）。
+   *
+   * 注意**没有** transfer:get-path-for-file 通道：File 对象无法穿过 IPC
+   * （结构化克隆会丢掉它的磁盘绑定），而 webUtils 是渲染进程侧的 API。
+   * 所以「File → 本地路径」在 preload 里同步完成，见 electron/preload.ts 的
+   * getPathForFile 与 DshApi.transfer.getPathForFile。
+   */
+  TRANSFER_BEGIN_DRAG_OUT: 'transfer:begin-drag-out',
+  /** event（主进程 → 渲染层）：拖出准备进度「正在准备拖拽（N/M）」。 */
+  TRANSFER_DRAG_OUT_PROGRESS: 'transfer:drag-out-progress',
+  /** event（主进程 → 渲染层）：拖出失败（任一文件失败就整体不拖）。 */
+  TRANSFER_DRAG_OUT_FAILED: 'transfer:drag-out-failed',
 
   /* ===== 任务 9：文件操作与本地双栏 ===== */
   /** invoke：新建目录。 */
@@ -82,6 +95,8 @@ export const INVOKE_CHANNELS = [
   CH.TRANSFER_LIST,
   CH.TRANSFER_CLEAR,
   CH.TRANSFER_PICK_FILES,
+  // 拖拽（简报 C）：拖出必须经主进程（startDrag 只有主进程能调）
+  CH.TRANSFER_BEGIN_DRAG_OUT,
   // 任务 10：批量操作 + 两个选择框
   CH.BATCH_SCREENSHOT,
   CH.BATCH_INSTALL,
@@ -92,7 +107,12 @@ export const INVOKE_CHANNELS = [
 ] as const
 
 /** 由主进程单向推送的通道（webContents.send，绝不 handle）。 */
-export const EVENT_CHANNELS = [CH.DEVICES_CHANGED, CH.TRANSFER_CHANGED] as const
+export const EVENT_CHANNELS = [
+  CH.DEVICES_CHANGED,
+  CH.TRANSFER_CHANGED,
+  CH.TRANSFER_DRAG_OUT_PROGRESS,
+  CH.TRANSFER_DRAG_OUT_FAILED,
+] as const
 
 export function isInvokeChannel(channel: string): boolean {
   return (INVOKE_CHANNELS as readonly string[]).includes(channel)

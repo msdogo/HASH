@@ -14,6 +14,7 @@ import {
 } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
 import { makeDownloadHandler } from '@shared/download-flow'
+import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { FileTable } from '@/components/FileTable'
 import { FileToolbar } from '@/components/FileToolbar'
@@ -24,6 +25,7 @@ import { useFileStore } from '@/store/fileStore'
 import { useLocalStore } from '@/store/localStore'
 import { useOpStore } from '@/store/opStore'
 import { useTransferStore } from '@/store/transferStore'
+import { useDragStore } from '@/store/dragStore'
 import { joinEntryPath } from '@shared/file-view'
 
 /**
@@ -83,6 +85,17 @@ export function FilesPage() {
   const prepareDelete = useOpStore((state) => state.prepareDelete)
   const download = useOpStore((state) => state.download)
   const enqueueTransfer = useTransferStore((state) => state.enqueue)
+
+  /*
+   * 拖拽（简报 C）。
+   *
+   * 只订阅 preparing 与 notice 两个原始字段：它们变化频率极低
+   * （一次拖拽几次），不会像进度那样把整页拖进重渲染地狱。
+   */
+  const dragPreparing = useDragStore((state) => state.preparing)
+  const dragNotice = useDragStore((state) => state.notice)
+  const dragOut = useDragStore((state) => state.dragOut)
+  const dismissDragNotice = useDragStore((state) => state.dismissNotice)
 
   /** 本地面板折叠状态（任务 9：本地双栏可折叠）。 */
   const [localCollapsed, setLocalCollapsed] = useState(false)
@@ -294,6 +307,58 @@ export function FilesPage() {
     if (code === null) void refresh(serial)
   }, [serial, enqueueTransfer, current.cwd, refresh])
 
+
+  /**
+   * 拖入：资源管理器 → 当前设备目录。
+   *
+   * 业务逻辑就是用户的原话：**记录原始文件路径和目标路径，然后直接调用上传功能**。
+   * 这里只做三件事：把 DOM 事件交给 shared 的纯函数、拿到 File 列表、
+   * 交给 enqueueDroppedFiles（它负责去重/跳过非磁盘文件/逐项入队）。
+   */
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    prepareDropTarget(event)
+  }, [])
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      // 必须 preventDefault：否则浏览器会尝试导航到被拖进来的文件
+      event.preventDefault()
+      if (serial === null) return
+      const files = readDroppedFiles(event)
+      if (files.length === 0) return
+      void enqueueDroppedFiles(
+        { getPath: (file) => window.api.transfer.getPathForFile(file), enqueue: window.api.transfer.enqueue },
+        serial,
+        files,
+        current.cwd,
+      ).then((result) => {
+        setQueueNotice(dropNotice(result))
+        if (result.queued > 0) void refresh(serial)
+      })
+    },
+    [serial, current.cwd, refresh],
+  )
+
+  /**
+   * 拖出：设备 → 资源管理器。
+   *
+   * 顺序与资源管理器一致：没选中就先选中这一行（replace），再按 dragOutTargets
+   * 给出的路径集合发起拖出（已多选时拖整个选中集）。
+   *
+   * **必须 preventDefault()**：Electron 的 startDrag 只能由主进程发起，
+   * 浏览器默认的拖拽必须取消——否则会同时发生「拖一个空 HTML 元素」和「主进程拖真文件」。
+   */
+  const handleDragStartRow = useCallback(
+    (entry: FileEntry, event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      if (serial === null) return
+      const targets = dragOutTargets(entry, current.selected, current.cwd)
+      if (targets.selectFirst) dispatch(serial, { type: 'select', name: entry.name, mode: 'replace' })
+      void dragOut(serial, targets.paths)
+    },
+    [serial, current.selected, current.cwd, dispatch, dragOut],
+  )
+
   /** 新建文件夹：打开输入框；提交由对话框负责。 */
   const handleNewFolder = useCallback(() => {
     openOp({ type: 'openConfirm', kind: 'newFolder', targets: [] })
@@ -400,6 +465,36 @@ export function FilesPage() {
         </button>
       </div>
 
+      {/*
+        * 「正在准备拖拽（N/M）」—— 用户确认过不设大小门槛，所以 500 MB 的拖出
+        * 会先下载到临时目录再开始拖，期间的等待必须看得见。
+        * 这一条绝不能省：没有它，用户看到的就是「拖了一下，然后什么都没发生」。
+        */}
+      {dragPreparing !== null && (
+        <div className="flex items-center gap-2 border-b border-sky-900/50 bg-sky-950/30 px-3 py-1.5 text-[11px] leading-snug text-sky-300">
+          <span className="flex-1">
+            {tf('files.dragPreparing', { done: dragPreparing.done, total: dragPreparing.total })}
+            {' '}
+            {t('files.dragPreparingHint')}
+          </span>
+        </div>
+      )}
+
+      {/* 拖拽的提示（成功摘要 / 失败原因）：与队列提示同一位置，用户不必找两处 */}
+      {dragNotice !== null && (
+        <div className="flex items-start gap-2 border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[11px] leading-snug text-amber-300">
+          <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span className="flex-1">{dragNotice}</span>
+          <button
+            type="button"
+            onClick={dismissDragNotice}
+            className="shrink-0 rounded p-0.5 text-amber-400/70 hover:bg-amber-900/40 hover:text-amber-200"
+          >
+            <X className="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
       {notice !== null && (
         <div className="flex items-start gap-2 border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[11px] leading-snug text-amber-300">
           <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
@@ -445,6 +540,9 @@ export function FilesPage() {
           sortDir={current.sortDir}
           onSort={(sort) => { dispatch(serial, { type: 'setSort', sort }) }}
           onKeyNav={onListKeyDown}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          onDragStartRow={handleDragStartRow}
         />
       </div>
 

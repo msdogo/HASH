@@ -20,5 +20,5 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src", "tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/store-wiring.test.ts"]
+  "include": ["src", "tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/store-wiring.test.ts", "tests/drag-store.test.ts"]
 }

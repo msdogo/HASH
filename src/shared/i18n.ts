@@ -187,6 +187,14 @@ const messages: Record<string, string> = {
   'batch.idle': '空闲',
   'batch.storageMissing': '电量与存储暂不可用',
 
+  // ---- 拖拽（简报 C：设备 ↔ 资源管理器）----
+  'files.dragHint': '可以把文件直接拖到这里上传，也可以把列表里的文件拖到资源管理器',
+  'files.dragPreparing': '正在准备拖拽（{done}/{total}）…',
+  'files.dragPreparingHint': '大文件需要先下载到临时目录，下载完成后才会开始拖',
+  'files.dragQueued': '已把 {count} 个文件加入上传队列',
+  'files.dragQueuedSkipped': '已加入 {queued} 个文件；另有 {skipped} 个不是本机磁盘上的文件（例如从网页拖来的），已跳过',
+  'files.dragSkipped': '这些文件不是本机磁盘上的文件（例如从网页拖来的），无法上传。请从资源管理器拖动文件',
+
   // ---- 顶栏页面切换（任务 10）----
   'nav.files': '当前设备',
   'nav.overview': '全部设备',

@@ -49,6 +49,25 @@ export interface FileTableProps {
   onSort: (sort: SortKey) => void
   /** 列表容器的键盘处理（I7：Enter 打开 / Backspace 上级 / F5 刷新）。 */
   onKeyNav: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  /**
+   * 拖入（简报 C：资源管理器 → 设备）。
+   *
+   * 组件只把 DOM 事件转成两个回调，**判断全在 @shared/drag**：
+   *   - onDragOver 必须 preventDefault（否则 drop 永远不触发）；
+   *   - onDrop 交出去的是一整个 DataTransfer（里面是 File 对象，渲染层不能自己转路径）。
+   * 为什么不在组件里调 getPathForFile：那需要 window.api，而组件的可测部分
+   * 只到「这些回调有没有被接上」；路径解析与入队有专门的行为测试。
+   */
+  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void
+  /**
+   * 拖出（简报 C：设备 → 资源管理器）。
+   *
+   * 行上 draggable + onDragStart 交给这个回调。**回调必须自己 preventDefault**
+   * —— Electron 的 startDrag 只能由主进程发起，走 IPC 之后浏览器的默认拖拽
+   * （它会尝试拖动一个 HTML 元素，最后什么也拖不出去）必须被取消。
+   */
+  onDragStartRow: (entry: FileEntry, event: React.DragEvent<HTMLDivElement>) => void
 }
 
 export function FileTable(props: FileTableProps) {
@@ -118,6 +137,9 @@ export function FileTable(props: FileTableProps) {
       <div
         ref={parentRef}
         onScroll={(event) => { handleScroll(event.currentTarget.scrollTop) }}
+        /* 拖入：整个列表区域都是投放目标（与资源管理器一致，不必精确对准某一行） */
+        onDragOver={props.onDragOver}
+        onDrop={props.onDrop}
         className="min-h-0 flex-1 overflow-auto"
         data-testid="file-table-scroll"
       >
@@ -138,6 +160,9 @@ export function FileTable(props: FileTableProps) {
                       tabIndex={0}
                       role="row"
                       aria-selected={active}
+                      /* 拖出：每一行都可以被拖走（目录行也一样 —— adb pull -r 语义由队列决定） */
+                      draggable
+                      onDragStart={(event) => { props.onDragStartRow(entry, event) }}
                       onMouseDown={(event) => { props.onSelect(entry, selectModeOf(event)) }}
                       onDoubleClick={() => { props.onOpen(entry) }}
                       onKeyDown={(event) => {

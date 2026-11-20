@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { CH } from './ipc/channels'
 import type {
   BatchInstallInput,
@@ -6,6 +6,7 @@ import type {
   BatchScreenshotInput,
   BatchShellInput,
   DshApi,
+  DragOutInput,
   FsBatchInput,
   FsListInput,
   FsMkdirInput,
@@ -16,6 +17,7 @@ import type {
   TransferIdInput,
 } from '../src/shared/api-contract'
 import type { BatchRunData } from '../src/shared/batch'
+import type { DragOutFailure, DragOutProgress } from '../src/shared/drag'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from '../src/shared/file-ops'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
@@ -48,6 +50,14 @@ export interface PreloadDeps {
   /** 事件监听器：Electron 传的第一个参数是 IpcRendererEvent，其余是通道载荷。 */
   on: (channel: string, listener: (event: unknown, payload: unknown) => void) => void
   off: (channel: string, listener: (event: unknown, payload: unknown) => void) => void
+  /**
+   * File → 本地磁盘绝对路径（生产是 electron 的 webUtils.getPathForFile）。
+   *
+   * 注入而不是在 buildApi 里直接调 webUtils：
+   *   - 测试能给出确定的返回值（与 invoke/on/off 同一手法）；
+   *   - 「空串表示不是磁盘文件」这条判定才有唯一的可测入口。
+   */
+  getPathForFile: (file: unknown) => string
 }
 
 /**
@@ -134,6 +144,33 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 打开系统文件选择框（渲染层拿不到本地绝对路径，必须走主进程）。 */
       pickFiles: (): Promise<IpcResult<string[]>> =>
         deps.invoke(CH.TRANSFER_PICK_FILES) as Promise<IpcResult<string[]>>,
+      /* ---- 简报 C：双向拖拽 ---- */
+      /**
+       * File → 本地路径（**同步，不走 IPC**）。
+       *
+       * 不经过 IPC 是技术要求：File 对象穿不过结构化克隆，到了主进程已经
+       * 无法再映射回磁盘文件。空串 = 不是磁盘文件（例如网页拖来的）。
+       */
+      getPathForFile: (file: unknown): string => deps.getPathForFile(file),
+      /** 拖出：设备文件 → 资源管理器（主进程下载到临时目录后才 startDrag）。 */
+      beginDragOut: (payload: DragOutInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.TRANSFER_BEGIN_DRAG_OUT, payload) as Promise<IpcResult<void>>,
+      /** 订阅「正在准备拖拽（N/M）」；返回退订函数。 */
+      onDragOutProgress: (callback: (payload: DragOutProgress) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as DragOutProgress)
+        }
+        deps.on(CH.TRANSFER_DRAG_OUT_PROGRESS, listener)
+        return () => { deps.off(CH.TRANSFER_DRAG_OUT_PROGRESS, listener) }
+      },
+      /** 订阅拖出失败（任一文件失败就整体不拖）；返回退订函数。 */
+      onDragOutFailed: (callback: (payload: DragOutFailure) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as DragOutFailure)
+        }
+        deps.on(CH.TRANSFER_DRAG_OUT_FAILED, listener)
+        return () => { deps.off(CH.TRANSFER_DRAG_OUT_FAILED, listener) }
+      },
       /** 订阅传输推送；返回退订函数（组件卸载时必须调用）。 */
       onChanged: (callback: (snapshot: TransferSnapshot) => void): (() => void) => {
         const listener = (_event: unknown, payload: unknown): void => {
@@ -172,6 +209,9 @@ const api = buildApi({
   invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
   on: (channel, listener) => { ipcRenderer.on(channel, listener) },
   off: (channel, listener) => { ipcRenderer.off(channel, listener) },
+  // webUtils 是渲染进程侧的 API：File 在这里还能映射回磁盘文件，
+  // 一旦穿过 IPC 就只剩一个普通对象了。所以这一步必须在 preload 里完成。
+  getPathForFile: (file) => webUtils.getPathForFile(file as File),
 })
 
 contextBridge.exposeInMainWorld('api', api)
