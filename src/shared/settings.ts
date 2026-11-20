@@ -79,24 +79,20 @@ export function isAbsolutePath(candidate: string): boolean {
 /* ============ 普通下载的目标目录（用户裁决的唯一优先级实现） ============ */
 
 /**
- * 判定普通下载目标时需要看的两个候选。
+ * 判定普通下载目标时唯一要看的候选。
  *
- * 【用户裁决 / R2-2】本地面板的当前目录**不再是**下载目标：
+ * 【用户裁决 / R2-2】本地面板的当前目录**不是**下载目标：
  * 普通下载一律用设置里持久化的 downloadDir，「拖拽下载」的落点由资源管理器决定
  * （那条路不经过这里，见 electron/drag/service.ts）。
+ *
+ * 【R4 事项 2】这里原本还有一个 `localPanelCwd` 字段，纯粹是为了让「本地面板目录
+ * 不参与判定」这条规则可被测试证明（`void localPanelCwd`）。本地面板已被用户裁决删除，
+ * 那个入参失去了证明对象 —— 保留它只会让人以为「下载目标还有第二个来源」。
+ * 现在就一个字段：`settingsDir` 是唯一来源，缺了就返回失败，没有任何回退路径。
  */
 export interface DownloadTargetCandidates {
   /** 设置里持久化的默认下载路径（唯一合法来源）。 */
   settingsDir: string | undefined
-  /**
-   * 本地面板的当前目录。
-   *
-   * **它不参与判定** —— 之所以还留在入参里，是为了让「忽略它」这条规则成为
-   * 可执行的断言，而不是只能写在注释里：测试可以同时喂两个目录，
-   * 断言结果永远取 settingsDir；settingsDir 缺失时返回失败而**绝不**回退到它
-   * （那正是用户抱怨的旧行为）。
-   */
-  localPanelCwd?: string | undefined
 }
 
 /** 普通下载目标的判定结果：ok 时给出要用的目录，否则给出降级原因。 */
@@ -126,18 +122,17 @@ export function downloadTargetOf(candidates: DownloadTargetCandidates): Download
  * 为什么这层薄封装仍值得存在（而不是让 FilesPage 内联两行）：
  * FilesPage 是**组件**，本项目的测试工程（tsconfig.node，无 DOM）import 不进 src/pages，
  * 「下载目标到底取了哪一份」在组件里是观测不到的 —— 而它正是用户抱怨的那件事
- * （普通下载用的是本地面板目录）。把判定放在 shared，测试就能直接喂
- * 「设置目录 + 本地面板目录」两种输入，断言结果永远是设置目录，
- * 且设置缺失时返回 undefined（调用方据此提示），**绝不**回退到本地面板目录。
+ * （修前普通下载用的是本地面板目录）。把判定放在 shared，测试就能直接喂各种设置，
+ * 断言结果永远取设置里的目录，且设置缺失时返回 undefined（调用方据此提示）。
+ *
+ * 【R4 事项 2】第二参数 localPanelCwd 已随本地面板一起删除：它此前唯一的作用是
+ * 「被丢弃，以便测试证明它不参与判定」。本地面板不存在了，这个证明对象也消失了，
+ * 留着它只会暗示「下载目标还有第二个来源」—— 现在签名就一个参数，没有回退路径可言。
  *
  * 语义与 makeDownloadHandler 的约定对齐：undefined = 「没有可用的本地目标」，
  * 它会提示 t('op.needLocalDir')；返回目录则直接作为 transfer.enqueue 的 dstDir。
  */
-export function downloadDirForDownload(
-  settings: SettingsData | null,
-  localPanelCwd: string | undefined,
-): string | undefined {
-  void localPanelCwd // 显式丢弃：本地面板目录不参与判定（用户裁决），保留入参只为让测试能证明这一点
+export function downloadDirForDownload(settings: SettingsData | null): string | undefined {
   const target = downloadTargetOf({ settingsDir: settings?.downloadDir })
   return target.ok ? target.dir : undefined
 }

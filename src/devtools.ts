@@ -1,6 +1,5 @@
 import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
-import { useLocalStore } from '@/store/localStore'
 import { useOpStore } from '@/store/opStore'
 import { useSettingsStore } from '@/store/settingsStore'
 
@@ -21,9 +20,7 @@ export function exposeStoresForDebug(): void {
   window.__stores = {
     device: useDeviceStore,
     file: useFileStore,
-    // 任务 9：本地栏与文件操作的状态也要能被手工验证脚本读到
-    // （否则「下载到本地」这条入口只能靠肉眼看底栏，无法断言本地目标路径）
-    local: useLocalStore,
+    // 任务 9：文件操作的状态（否则「下载到本地」这条入口只能靠肉眼看底栏）
     op: useOpStore,
     // R2-2：设置（默认下载路径）。手工验证要能读到「下载目标到底是哪个目录」——
     // 否则这条用户裁决只能靠肉眼看文件落在哪，无法断言。
@@ -37,7 +34,6 @@ declare global {
     __stores?: {
       device: typeof useDeviceStore
       file: typeof useFileStore
-      local: typeof useLocalStore
       op: typeof useOpStore
       settings: typeof useSettingsStore
     }

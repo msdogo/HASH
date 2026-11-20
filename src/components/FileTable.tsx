@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Folder, FileText, Link2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, selectModeOf, type SelectMode, type SortDir, type SortKey } from '@shared/file-view'
+import { rowClassName } from '@shared/file-row'
 import { errorText, t, tf } from '@shared/i18n'
 
 /**
@@ -179,10 +180,14 @@ export function FileTable(props: FileTableProps) {
                         height: ROW_HEIGHT,
                         transform: 'translateY(' + item.start + 'px)',
                       }}
-                      className={
-                        'flex cursor-default select-none items-center gap-2 px-3 text-sm ' +
-                        (active ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-700 hover:bg-neutral-200/50')
-                      }
+                      /*
+                       * 【R4 事项 3】行是 tabIndex={0} 的 div，浏览器会给它画默认焦点环 ——
+                       * 用户鼠标点一下（多选时连点几次）就是一屏黄色描边。
+                       * 拼装逻辑搬进 @shared/file-row 的 rowClassName（有真单测）：
+                       * outline-none 让鼠标点击不再显示环，focus-visible 的细蓝内描边
+                       * 保证 Tab 聚焦仍然看得见（键盘可达性不能跟着一起去掉）。
+                       */
+                      className={rowClassName(active)}
                     >
                       {entry.isDir
                         ? <Folder className="h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />

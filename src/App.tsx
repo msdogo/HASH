@@ -25,7 +25,7 @@ import { pageAfterSelectDevice, pageAfterSettingsClick, type Page } from '@share
  */
 export interface AppProps {
   /**
-   * 渲染期注入（与 DeviceRail / SettingsPage / LocalPanel 的 initial 同一手法）。
+   * 渲染期注入（与 DeviceRail / SettingsPage 的 initial 同一手法）。
    *
    * 为什么需要：当前在哪一页是 useState 的内部状态，而本工程没有 jsdom ——
    * SSR 只跑一次 render、拿不到 onClick，也不存在「点一下再断言」。

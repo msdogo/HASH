@@ -46,7 +46,7 @@ const REMOTE_DIR = '/sdcard/Download/adb-fm-settings-itest'
 describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径（R2-2）', () => {
   let storeDir = ''
   let settingsDir = ''
-  let localPanelDir = ''
+  let decoyDir = ''
   let transfer: TransferService
 
   /** 设备侧执行一条命令。 */
@@ -61,11 +61,12 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
      * 三个真实目录，语义各不相同：
      *   storeDir        —— electron-store 的落盘目录（模拟 userData）
      *   settingsDir     —— 用户「在设置里选的」下载路径（本用例的核心断言对象）
-     *   localPanelDir   —— 本地面板的当前目录（**不该**成为下载目标）
+     *   decoyDir        —— 一个**不该**收到文件的干扰目录（R4 之前这里是「本地面板目录」，
+     *                      本地面板删除后改名，但反向断言仍有意义：文件不许落到别处）
      */
     storeDir = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-settings-real-')))
     settingsDir = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-settings-dl-')))
-    localPanelDir = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-settings-local-panel-')))
+    decoyDir = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'adbfm-settings-decoy-')))
 
     transfer = new TransferService({
       adbPath: () => ADB,
@@ -79,7 +80,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
 
   afterAll(() => {
     try { shell('rm -rf ' + REMOTE_DIR) } catch { /* 忽略清理失败 */ }
-    for (const dir of [storeDir, settingsDir, localPanelDir]) {
+    for (const dir of [storeDir, settingsDir, decoyDir]) {
       if (dir !== '') rmSync(dir, { recursive: true, force: true })
     }
     // 释放设备锁（最后一个动作：确保设备侧清理已经跑完）
@@ -101,28 +102,25 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
     // 2) 设置里写入「自定义下载路径」（真实 fs + 真实 electron-store 文件）
     const store = createSettingsStore({
       filePath: storeDir,
-      // 默认值指向本地面板目录：如果实现里偷偷回退到本地面板，这条会红
-      defaultDownloadDir: localPanelDir,
+      // 默认值指向这个干扰目录：如果实现里偷偷回退到「别的目录」，这条会红
+      defaultDownloadDir: decoyDir,
       warn: () => undefined,
     })
     store.setDownloadDir(settingsDir)
     // 重建一次，证明拿到的确实是**持久化后**的值，而不是内存里的顺带结果
     const reloaded = createSettingsStore({
       filePath: storeDir,
-      defaultDownloadDir: localPanelDir,
+      defaultDownloadDir: decoyDir,
       warn: () => undefined,
     })
     expect(reloaded.getDownloadDir()).toBe(settingsDir)
 
-    // 3) 与 FilesPage 完全相同的一行注入
-    const target = downloadDirForDownload(
-      {
-        downloadDir: reloaded.getDownloadDir(),
-        defaultDownloadDir: reloaded.getDefaultDownloadDir(),
-        adb: { state: 'checking' },
-      },
-      localPanelDir,
-    )
+    // 3) 与 FilesPage 完全相同的一行注入（R4：签名只剩 settings 一个参数）
+    const target = downloadDirForDownload({
+      downloadDir: reloaded.getDownloadDir(),
+      defaultDownloadDir: reloaded.getDefaultDownloadDir(),
+      adb: { state: 'checking' },
+    })
     expect(target).toBe(settingsDir)
 
     // 4) 真下载（普通下载走的就是这条：transfer.enqueue direction=pull）
@@ -147,8 +145,8 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
     expect(existsSync(landed)).toBe(true)
     expect(readFileSync(landed).equals(payload)).toBe(true)
 
-    // 6) 且**没有**落在本地面板的目录里（这条就是用户抱怨的旧行为）
-    expect(existsSync(path.join(localPanelDir, name))).toBe(false)
+    // 6) 且**没有**落到那个干扰目录里（R4 之前这里断言的是「本地面板目录」）
+    expect(existsSync(path.join(decoyDir, name))).toBe(false)
 
     // 7) 与设备侧 sha256 对拍（内容一致，不只是大小一致）
     const remoteHash = shell('sha256sum ' + shellQuote(remotePath)).trim().split(/\s+/)[0]
@@ -179,14 +177,11 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
       store.resetDownloadDir()
       expect(store.getDownloadDir()).toBe(defaultDir)
 
-      const target = downloadDirForDownload(
-        {
-          downloadDir: store.getDownloadDir(),
-          defaultDownloadDir: store.getDefaultDownloadDir(),
-          adb: { state: 'checking' },
-        },
-        localPanelDir,
-      )
+      const target = downloadDirForDownload({
+        downloadDir: store.getDownloadDir(),
+        defaultDownloadDir: store.getDefaultDownloadDir(),
+        adb: { state: 'checking' },
+      })
       expect(target).toBe(defaultDir)
 
       const task = await transfer.controller.enqueue({

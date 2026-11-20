@@ -144,20 +144,6 @@ const messages: Record<string, string> = {
   'op.needLocalDir': '还没读到默认下载路径，请到「设置」里选一个下载文件夹后重试',
   'op.downloaded': '已加入下载队列，可在下方查看进度',
 
-  // ---- 本地栏（任务 9 / 裁决 5）----
-  'local.title': '本地',
-  /*
-   * R2-1：本地根目录沙箱已移除，所以这两条文案不再有「范围/之外」的语义。
-   * 用户现在可以从任何位置读写本地文件，这里只说明「打开本地栏时先看哪」。
-   */
-  'local.startDir': '起始目录：{dir}',
-  'local.pickRoot': '更换目录',
-  'local.up': '上一级',
-  'local.empty': '这个文件夹是空的',
-  'local.loading': '正在读取本地目录…',
-  'local.selectHint': '点击文件夹进入，选中文件后可上传',
-  'local.refresh': '刷新',
-
   // ---- 批量操作与设备总览页（任务 10 / 规格 §9.3）----
   'batch.title': '设备总览',
   'batch.screenshot': '批量截图',

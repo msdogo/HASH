@@ -172,11 +172,9 @@ describe('任务 7：文件页契约（静态断言）', () => {
 describe('任务 9：文件操作与本地双栏契约（静态断言）', () => {
   const OP_SOURCES = [
     'src/components/FileToolbar.tsx',
-    'src/components/LocalPanel.tsx',
     'src/components/OpDialog.tsx',
     'src/pages/FilesPage.tsx',
     'src/store/opStore.ts',
-    'src/store/localStore.ts',
     'src/shared/op-view.ts',
     'src/shared/fs-ops.ts',
     'src/shared/path-guard.ts',
@@ -195,7 +193,7 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
   })
 
   it('新增组件文案全部走 i18n（无硬编码中文）', () => {
-    for (const rel of ['src/components/FileToolbar.tsx', 'src/components/LocalPanel.tsx', 'src/components/OpDialog.tsx']) {
+    for (const rel of ['src/components/FileToolbar.tsx', 'src/components/OpDialog.tsx']) {
       const source = read(rel)
       const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
@@ -222,9 +220,16 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
     expect(opStore).toContain('window.api.transfer.enqueue(')
     const downloadFlow = read('src/shared/download-flow.ts')
     expect(downloadFlow).toContain('direction: \'pull\'')
-    // 本地访问只经 local 命名空间
-    expect(read('src/store/localStore.ts')).toContain('window.api.local.list(')
-    expect(read('src/store/localStore.ts')).toContain('window.api.local.pickRoot(')
+    /*
+     * 【R4 事项 2 删除】这里原本还有两条：
+     *   expect(read('src/store/localStore.ts')).toContain('window.api.local.list(')
+     *   expect(read('src/store/localStore.ts')).toContain('window.api.local.pickRoot(')
+     * 它们查的是本地栏的 store，而本地栏已由用户裁决删除（本地面板 + localStore + 测试一并移除）。
+     * 按裁决「删除而不是放宽」：断言的**对象文件**已不存在，保留任何放宽版只会变成
+     * 「某个字符串在某个文件里出现过」的空转。local:list / local:pick-root 这两条 IPC
+     * 通道本身仍在使用（另一个调用方是「选择要推送的文件」对话框），
+     * 它们的真门禁在 tests/ipc-handlers.test.ts（含 preload 载荷与取消语义）。
+     */
   })
 
   /*
@@ -296,25 +301,17 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
   })
 
   /*
-   * 【R2 复审 Minor 2 / 第 15 次假护栏的残留】这里原本是：
-   *   expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.startDir'")
-   * 复审实测：把 LocalPanel 里那行渲染换成 JSX 注释（注释里保留原文）→ 本文件
-   * 44 passed 全绿。也就是说「起始目录真的显示出来了」**完全没有门禁** ——
-   * 这条断言查的是「某段文本出现过」，注释即可满足。
+   * 【R4 事项 2 删除】这里原本有一条「起始浏览目录的文案带 {dir} 占位」的断言，
+   * 守的是本地面板顶部那行「起始目录：<路径>」（第 15 次假护栏留下的替代品）。
    *
-   * **已删除该文本断言**，替代品是 tests/local-panel.test.tsx 的渲染用例：
-   * 给 LocalPanel 加 initial 注入后 renderToStaticMarkup 渲染真组件，断言 HTML 里
-   * 出现 tf('local.startDir', { dir }) 拼好的**整句话**（含真实路径），
-   * 且换一个起始目录文本随之变化、data 为 null 时不渲染。
+   * 本地面板已由用户裁决删除（组件 / store / 渲染用例 / i18n 的 local.* 一批一起移除），
+   * 这条断言的对象——`local.startDir` 这个 key——也随之不存在了。
+   * 按裁决「删除而不是放宽」：把断言改成 not.toBe 或换 key 都是空转。
    *
-   * 这里只保留一条**运行时事实**断言（不读源码文本）：i18n 表里必须有带 {dir}
-   * 占位的那条文案 —— 少了它 tf 会原样返回 key（渲染用例也会暴露，但在这里失败更好定位）。
+   * 注意这里**不是**在放宽门禁：本地面板的可观测行为整块消失，对应的门禁理应一起消失。
+   * 上传仍有两条真实入口，它们的行为门禁分别在
+   * tests/drag-flow.test.ts（拖入）与 tests/transfer-*（底栏上传按钮走的队列）。
    */
-  it('R2-1：起始浏览目录的文案带 {dir} 占位（渲染门禁见 tests/local-panel.test.tsx）', () => {
-    expect(t('local.startDir')).toContain('{dir}')
-    // 反向自证：未注册的 key 会原样返回自身，所以这条不是恒真
-    expect(t('local.startDir')).not.toBe('local.startDir')
-  })
 
   it('裁决 1：主进程写操作必须过统一路径闸门与受保护判定', () => {
     const ops = read('electron/fs/operations.ts')
@@ -582,10 +579,15 @@ describe('R2-2：设置页与下载路径的静态契约', () => {
     }
   })
 
-  it('下载目标的判定不碰本地面板的 store（本地面板不再作为下载目标）', () => {
-    // 这条查的是**禁止形态**：shared 的下载目标判定与设置 store 都不得 import localStore /
-    // 不得读 useLocalStore 的 data.cwd —— 一旦有人把「回退到本地面板目录」加回来，
-    // 这里与 tests/settings-flow.test.ts 的优先级用例会同时红。
+  it('下载目标只有一个来源：shared 的判定与设置 store 都不碰已删除的本地栏状态', () => {
+    /*
+     * 这条查的是**禁止形态**（断言某种写法不存在），不是「某函数名出现过」——
+     * 后者会被注释满足（本项目已经吃过 15 次亏）。
+     *
+     * 【R4 事项 2】本地面板与 localStore 已删除，所以「回退到本地面板目录」这条路
+     * 连类型都不成立了（import 会直接编译失败）。这里保留禁止形态是第二道保险：
+     * 拦住有人重新引入一个同名的「别的本地目录来源」写进判定。
+     */
     for (const rel of ['src/shared/settings.ts', 'src/store/settingsStore.ts']) {
       const source = read(rel)
       expect(source, rel).not.toMatch(/localStore/)
@@ -599,21 +601,22 @@ describe('R2-2：设置页与下载路径的静态契约', () => {
   /*
    * 【如实记录门禁边界】FilesPage 里那一行注入（localDir: () => downloadDirForDownload(...)）
    * 是**点击时才执行**的组件接线，本工程无 jsdom、只做 SSR 渲染，
-   * 实测把它换回「本地面板 cwd」后全量仍然全绿 —— 与项目里已记录的
+   * 实测把它换成别的实现后全量仍然全绿 —— 与项目里已记录的
    * N10 / I-3 属于同一类「组件内调用点无法观测」的缺口。
    *
-   * 所以这里保留一条**禁止形态**断言（查的是「某种写法不存在」，注释无法满足它，
-   * 因为匹配前先把注释剥掉）：FilesPage 的 localDir 注入不得直接读 useLocalStore。
-   * 判定本身仍在 src/shared/settings.ts（tests/settings-flow.test.ts 有优先级用例），
-   * 这条只负责拦住「接线被改回旧行为」这一种退化。
+   * 所以这里保留一条**接线存在性**断言：FilesPage 必须把 downloadDirForDownload 的
+   * 结果注入 localDir（不是别的目录来源）。R4 之后签名只收 settings 一个参数，
+   * 断言随之收窄 —— 多传一个「本地目录」会直接编译失败，不需要靠正则拦。
+   * 判定本身仍在 src/shared/settings.ts（tests/settings-flow.test.ts 有优先级用例）。
    */
-  it('FilesPage 的下载目标注入不得直接读本地面板 store（禁止形态）', () => {
+  it('FilesPage 的下载目标注入来自 downloadDirForDownload（接线存在性）', () => {
     const page = read('src/pages/FilesPage.tsx')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '')
     expect(page).toMatch(/localDir:\s*\(\)\s*=>\s*downloadDirForDownload\(/)
-    // 反向：localDir 的箭头函数体内不得出现 useLocalStore
+    // 反向：不得再出现任何「本地栏目录」作为下载目标
     expect(page).not.toMatch(/localDir:\s*\(\)\s*=>\s*[^,\n]*useLocalStore/)
+    expect(page).not.toMatch(/localStore/)
   })
 })
 
@@ -731,5 +734,29 @@ describe('简报 C：双向拖拽契约（静态断言）', () => {
         .replace(/^\s*\/\/.*$/gm, '')
       expect(source, rel).not.toMatch(/\bwebUtils\b/)
     }
+  })
+})
+describe('简报 R4：文件行焦点的静态契约（真单测见 tests/file-row.test.ts）', () => {
+  /*
+   * 【事项 3 的门禁分工】class 的**内容**由 tests/file-row.test.ts 直接断言返回值
+   * （outline-none 必须存在、focus-visible:ring-1 必须存在、不得出现裸 ring）——
+   * 那是真门禁：改坏实现就红。
+   *
+   * 而「FileTable 那一行到底有没有调用 rowClassName」发生在渲染期，本工程
+   * environment: node、无 jsdom，SSR 也渲染不出虚拟列表（useVirtualizer 需要真实滚动容器），
+   * 所以那段接线**没有门禁**，已如实登记进「已知无门禁清单」。
+   *
+   * 这里只加一条**禁止形态**（注释无法满足，因为匹配前先剥注释）：行的排版/状态 class
+   * 不得再inline 回 FileTable —— 那正是修前导致黄框的写法。revert 到旧实现会立刻红。
+   */
+  it('行的 class 不得inline 回 FileTable（黄框修前就是那种写法）', () => {
+    const table = read('src/components/FileTable.tsx')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    // 旧实现里的行 class 片段：cursor-default + 状态色直接拼在组件里
+    expect(table).not.toMatch(/cursor-default/)
+    expect(table).not.toMatch(/bg-neutral-200 text-neutral-900/)
+    expect(table).not.toMatch(/outline-none/)
+    expect(table).not.toMatch(/focus-visible:/)
   })
 })

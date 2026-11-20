@@ -17,14 +17,13 @@ import { errorText, t, tf } from '@shared/i18n'
 import { makeDownloadHandler } from '@shared/download-flow'
 import { downloadDirForDownload } from '@shared/settings'
 import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
+import { createTerminalRefreshWatcher, type RefreshContext } from '@shared/upload-refresh'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { FileTable } from '@/components/FileTable'
 import { FileToolbar } from '@/components/FileToolbar'
-import { LocalPanel } from '@/components/LocalPanel'
 import { OpDialogHost } from '@/components/OpDialog'
 import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
-import { useLocalStore } from '@/store/localStore'
 import { useOpStore } from '@/store/opStore'
 import { useSettingsStore } from '@/store/settingsStore'
 import { useTransferStore } from '@/store/transferStore'
@@ -98,7 +97,6 @@ export function FilesPage() {
   const openOp = useOpStore((state) => state.open)
   const prepareDelete = useOpStore((state) => state.prepareDelete)
   const download = useOpStore((state) => state.download)
-  const enqueueTransfer = useTransferStore((state) => state.enqueue)
 
   /*
    * 拖拽（简报 C）。
@@ -124,9 +122,7 @@ export function FilesPage() {
   // 首次进入文件页时确保设置已加载：下载目标依赖它，没加载就会出现「没读到路径」的提示
   useEffect(() => { void loadSettings() }, [loadSettings])
 
-  /** 本地面板折叠状态（任务 9：本地双栏可折叠）。 */
-  const [localCollapsed, setLocalCollapsed] = useState(false)
-  /** 下载/上传这类「队列类」操作的提示（走底栏，不走 op 结果条）。 */
+  /** 上传/下载这类「队列类」操作的提示（走底栏，不走 op 结果条）。 */
   const [queueNotice, setQueueNotice] = useState<string | null>(null)
 
   // 【I5/I6】把设备表的变化接到分片生命周期上：
@@ -330,22 +326,64 @@ export function FilesPage() {
          * 于是用户必须先把本地栏切到想要的位置，否则文件会落在一个他不认识的地方。
          * 现在两件事彻底分开：普通下载看设置，拖拽下载看资源管理器的落点。
          *
-         * settingsData 来自 store 订阅（渲染期已就位），不需要再 getState() 现取；
-         * 本地面板的 cwd 仍然传进去，只为让「它不参与判定」这条规则可被测试证明。
+         * settingsData 来自 store 订阅（渲染期已就位），不需要再 getState() 现取。
+         * 【R4 事项 2】第二参数（本地面板 cwd）已随本地面板一起删除：现在签名只收 settings，
+         * 「下载目标没有第二个来源」由签名本身表达，而不是靠一条传两个参数的用例证明。
          */
-        localDir: () => downloadDirForDownload(settingsData, useLocalStore.getState().data?.cwd),
+        localDir: () => downloadDirForDownload(settingsData),
         notify: setQueueNotice,
       })(),
     [serial, selectedTargets, download, settingsData],
   )
 
-  /** 上传：本地面板选中的文件 → 设备当前目录（同样走队列，与任务 8 的入口一致）。 */
-  const handleUpload = useCallback(async (localPath: string) => {
-    if (serial === null) return
-    const code = await enqueueTransfer({ serial, direction: 'push', src: localPath, dstDir: current.cwd })
-    setQueueNotice(code === null ? null : errorText(code))
-    if (code === null) void refresh(serial)
-  }, [serial, enqueueTransfer, current.cwd, refresh])
+  /*
+   * 【R4 事项 1】上传**真正传完**之后自动刷新当前目录。
+   *
+   * 修前只有「入队成功」时刷一次（enqueue 返回即 refresh），而 adb push 是排队异步跑的，
+   * 几秒到几分钟后才落盘 —— 于是用户看到「底栏显示已完成，但文件列表里没有它」，
+   * 只能手动按右上角刷新。上传入口在上轮也变了：本地面板已删除（R4 事项 2），
+   * 剩下「拖入」与「传输底栏的上传按钮」两个，两条都不能再指望调用方刷。
+   *
+   * 判断本体全在 @shared/upload-refresh（纯函数 + 可注入时钟的看门狗，有 33 条用例）：
+   * 方向必须是 push、状态必须是 done、serial 必须是当前设备、
+   * 且 dst 的目录（归一别名后）必须等于当前 cwd。
+   *
+   * 这里只剩三行接线（订阅 / 喂快照 / 卸载）—— 它们发生在 useEffect 里，
+   * 而本工程 environment: node、无 jsdom，SSR 只跑一次 render 不跑 effect，
+   * 所以**这三行本身没有门禁**，已如实登记进「已知无门禁清单」。
+   */
+  useEffect(() => {
+    const readContext = (): RefreshContext => {
+      // 现取：用户随时会切设备/切目录，判定必须用**事件到来时**的那一份
+      const active = useDeviceStore.getState().activeSerial
+      return {
+        serial: active,
+        cwd: active === null ? '' : (useFileStore.getState().views[active]?.cwd ?? ''),
+      }
+    }
+    const watcher = createTerminalRefreshWatcher(
+      {
+        readContext,
+        refresh: (target) => { void refresh(target) },
+        schedule: (delayMs, run) => {
+          const timer = setTimeout(run, delayMs)
+          return () => { clearTimeout(timer) }
+        },
+      },
+      // 起始快照只用来「不把历史任务当成刚完成」，随后的变化都走订阅
+      useTransferStore.getState().snapshot.tasks,
+    )
+    // transferStore 已订阅主进程的整份快照推送（main.tsx 挂一次）；这里再订阅一份**本地状态**
+    // 的变化 —— 因为快照对象是不可变替换的，引用比较即可去掉无意义的重复回调。
+    const unsubscribe = useTransferStore.subscribe((state, previous) => {
+      if (state.snapshot === previous.snapshot) return
+      watcher.onSnapshot(state.snapshot.tasks)
+    })
+    return () => {
+      unsubscribe()
+      watcher.dispose()
+    }
+  }, [refresh])
 
 
   /**
@@ -636,11 +674,6 @@ export function FilesPage() {
         onRefresh={() => { void refresh(serial) }}
       />
     </section>
-    <LocalPanel
-      onUpload={(localPath) => { void handleUpload(localPath) }}
-      collapsed={localCollapsed}
-      onToggleCollapsed={() => { setLocalCollapsed(!localCollapsed) }}
-    />
     </div>
   )
 }
