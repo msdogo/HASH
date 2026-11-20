@@ -663,6 +663,7 @@ export type FileViewAction =
   | { type: 'selectAll'; names: readonly string[] }
   /** 清空选择（Esc）。 */
   | { type: 'clearSelection' }
+  // 注意：全选按钮与 Ctrl+A 都经下面的 makeSelectAllHandler 生成同一条 action
   | { type: 'setScrollTop'; value: number }
   /** 行内错误（地址栏非法输入 / 链接无法进入）：只写提示，不动当前目录。 */
   | { type: 'addressError'; code: string }
@@ -912,6 +913,52 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
       return state.noticeDismissed ? state : { ...state, noticeDismissed: true }
     default:
       return state
+  }
+}
+
+/* ============ 全选入口（R2-2：按钮与 Ctrl+A 的唯一实现） ============ */
+
+/**
+ * 全选逻辑的最小依赖：把 action 派发到某台设备的分片。
+ *
+ * 只依赖注入，不碰 store —— 这是本项目处理「组件接线无法观测」（N10 / I-3 那一类）
+ * 的标准手法：把「取哪些名字 + 派发什么 action」收成纯函数，测试就能直接驱动它。
+ */
+export interface SelectAllDeps {
+  /** 派发到该设备分片的 dispatch（生产是 fileStore 的 dispatch）。 */
+  dispatch: (serial: string, action: FileViewAction) => void
+}
+
+/**
+ * 造一个「全选」处理器（工具条按钮与 Ctrl+A 共用）。
+ *
+ * ===== 为什么需要它（R2 复审 Minor 3 的直接产物）=====
+ * 复审变异 M3：把 FilesPage 里 `onSelectAll={handleSelectAll}` 改成空函数 →
+ * **全量 1393 passed 全绿**。原因是那条链路（按钮 → handleSelectAll → dispatch）
+ * 全部发生在点击事件回调里，而本工程无 jsdom、只做 SSR 渲染，拿不到 onClick。
+ * 与已登记的 N10 / syncDevices / onDownload 是同一类缺口。
+ *
+ * 抽成纯函数之后，「从可见条目取名字 + 派发 selectAll」这段**逻辑**有了行为门禁
+ * （tests/file-view.test.ts 的「全选入口」一组：喂 entries 与 serial，断言 dispatch
+ * 收到逐字一致的 { type: 'selectAll', names }；没有设备时零调用）。
+ * 剩下的「按钮 onClick 那一行有没有接上它」仍然只能靠 code review ——
+ * 已按裁决登记进 progress.md 的「已知无门禁清单」，不再造假文本断言。
+ *
+ * @returns 一个「传 serial + 当前可见条目 → 全选」的函数。
+ */
+export function makeSelectAllHandler(deps: SelectAllDeps): (
+  serial: string | null,
+  entries: readonly { name: string }[],
+) => void {
+  return (serial, entries) => {
+    // 没有设备：什么都不做（与 makeDownloadHandler 的 serial === null 分支同一条约定）
+    if (serial === null) return
+    /*
+     * 名字来自**调用方传进来的可见条目**（FilesPage 里那份 useMemo 结果），
+     * 不是 state.entries 全量 —— 隐藏项被过滤掉时，全选不该选到看不见的东西。
+     * reducer 里还有第二道（selectAll 只接受入参名单），两处一致。
+     */
+    deps.dispatch(serial, { type: 'selectAll', names: entries.map((entry) => entry.name) })
   }
 }
 

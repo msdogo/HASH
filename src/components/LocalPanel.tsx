@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowUp, Folder, FileText, Link2, RefreshCw, FolderOpen } from 'lucide-react'
+import type { LocalListData } from '@shared/file-ops'
 import { errorText, t, tf } from '@shared/i18n'
 import { selectedLocalPath, useLocalStore } from '@/store/localStore'
 
@@ -22,13 +23,60 @@ export interface LocalPanelProps {
   /** 折叠状态放外层（文件页要据此调整布局宽度）。 */
   collapsed: boolean
   onToggleCollapsed: () => void
+  /**
+   * 渲染期注入（与 DeviceRail 的 initial / SettingsPage 的 initial 同一手法）。
+   *
+   * 为什么需要（R2 复审 Minor 2 / 第 15 次假护栏的残留）：此前「起始目录真的显示出来了」
+   * 只有一条 `expect(read('LocalPanel.tsx')).toContain("tf('local.startDir'")` 的源码文本断言 ——
+   * 复审实测把那一行换成 JSX 注释（注释里保留原文）后 ui-contract 仍 44 passed 全绿，
+   * 也就是这个显示**完全没有门禁**。允许注入后就能真渲染一次，断言 HTML 里出现那句话。
+   *
+   * 生产不传 → 与改前逐字相同（读 store）。
+   */
+  initial?: Partial<LocalView>
+}
+
+/** 本地面板渲染所需的一屏状态（来自 store 或注入）。 */
+export interface LocalView {
+  data: LocalListData | null
+  loading: boolean
+  error: string | null
+  selected: string[]
+}
+
+/**
+ * 决定「这一屏渲染什么数据」：注入优先，缺哪个字段就用 store 的对应字段。
+ *
+ * 为什么用逐字段 `=== undefined` 而不是 `??`：这里 `null` 是**有意义的值**
+ * （「还没读到本地目录」），`??` 会把注入的 null 当成「没注入」而回落到 store，
+ * 于是「空状态」这条分支根本测不出来。DeviceRail 用 ?? 是因为它的 adb 字段
+ * 在测试里不需要注入 null；这里需要，所以要显式判 undefined。
+ *
+ * 抽成纯函数（而不是在组件里内联）的理由与 pickRailData 相同：
+ * 组件是否真的调用了它，只能靠渲染用例间接观察（见 tests/local-panel.test.tsx
+ * 的「不传 initial → 原样读 store」一组）。
+ */
+export function pickLocalData(initial: LocalPanelProps['initial'], store: LocalView): LocalView {
+  return {
+    data: initial?.data === undefined ? store.data : initial.data,
+    loading: initial?.loading === undefined ? store.loading : initial.loading,
+    error: initial?.error === undefined ? store.error : initial.error,
+    selected: initial?.selected === undefined ? store.selected : initial.selected,
+  }
 }
 
 export function LocalPanel(props: LocalPanelProps) {
-  const data = useLocalStore((state) => state.data)
-  const loading = useLocalStore((state) => state.loading)
-  const error = useLocalStore((state) => state.error)
-  const selected = useLocalStore((state) => state.selected)
+  const storeData = useLocalStore((state) => state.data)
+  const storeLoading = useLocalStore((state) => state.loading)
+  const storeError = useLocalStore((state) => state.error)
+  const storeSelected = useLocalStore((state) => state.selected)
+  // 注入优先、缺字段回落到 store（生产不传 initial → 与改前逐字相同）
+  const { data, loading, error, selected } = pickLocalData(props.initial, {
+    data: storeData,
+    loading: storeLoading,
+    error: storeError,
+    selected: storeSelected,
+  })
   const load = useLocalStore((state) => state.load)
   const pickRoot = useLocalStore((state) => state.pickRoot)
   const select = useLocalStore((state) => state.select)

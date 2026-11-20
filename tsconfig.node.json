@@ -24,5 +24,5 @@
    * 渲染期用例（.tsx）必须有 DOM lib 与 jsx，属于 tsconfig.app；
    * 两个工程都收它会触发 TS6307（同一文件属于两个 composite 工程）。
    */
-  "exclude": ["tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/settings-page.test.tsx", "tests/store-wiring.test.ts", "tests/drag-store.test.ts"]
+  "exclude": ["tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/settings-page.test.tsx", "tests/local-panel.test.tsx", "tests/store-wiring.test.ts", "tests/drag-store.test.ts"]
 }

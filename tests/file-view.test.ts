@@ -15,6 +15,7 @@ import {
   isDotEntry,
   isHiddenName,
   keyToSelectionAction,
+  makeSelectAllHandler,
   rangeNames,
   selectModeOf,
   isMetaKnown,
@@ -1603,6 +1604,74 @@ describe('多选增强：selectAll 与 clearSelection', () => {
     expect(reduce(empty, { type: 'selectAll', names: [] })).toBe(empty)
     const all = reduce(empty, { type: 'selectAll', names: ['a', 'b'] })
     expect(reduce(all, { type: 'selectAll', names: ['a', 'b'] })).toBe(all)
+  })
+})
+
+/*
+ * 全选**入口**（R2-2 / 复审 Minor 3）。
+ *
+ * 复审变异 M3：把 FilesPage 里 onSelectAll={handleSelectAll} 改成空函数 →
+ * 全量 1393 passed 全绿。这条链路全部发生在点击事件回调里，而无 jsdom 的 SSR
+ * 工程拿不到 onClick（与已登记的 N10 / syncDevices / onDownload 同类）。
+ *
+ * 所以「取哪些名字 + 派发什么 action」被抽成 makeSelectAllHandler（生产代码里
+ * 工具条按钮与 Ctrl+A 都调它）。这里直接驱动它 —— 断言的是**派发记录**，
+ * 不是源码文本：把 entries 的映射写错、或者 dispatch 的 action 类型写错、
+ * 或者没有设备时照样派发，这三种退化都会在这里红。
+ *
+ * 仍然无门禁的部分（已登记 progress.md）：FilesPage 里 onClick 那一行有没有接上它。
+ */
+describe('R2-2 全选入口：makeSelectAllHandler', () => {
+  type Call = { serial: string; action: FileViewAction }
+
+  function harness(): { calls: Call[]; selectAll: ReturnType<typeof makeSelectAllHandler> } {
+    const calls: Call[] = []
+    const selectAll = makeSelectAllHandler({
+      dispatch: (serial, action) => { calls.push({ serial, action }) },
+    })
+    return { calls, selectAll }
+  }
+
+  it('把【传入的可见条目】的名字派发成 selectAll（逐字一致，顺序不变）', () => {
+    const h = harness()
+    h.selectAll('SERIAL1', [{ name: 'b.txt' }, { name: 'a.txt' }, { name: 'dir' }])
+    expect(h.calls).toEqual([
+      { serial: 'SERIAL1', action: { type: 'selectAll', names: ['b.txt', 'a.txt', 'dir'] } },
+    ])
+  })
+
+  it('派发的 action 交给真正的 reducer 后，选中项就是全部可见条目', () => {
+    // 端到端：入口 → action → 真状态机，而不是只比 action 字面量
+    const h = harness()
+    h.selectAll('SERIAL1', [{ name: 'a' }, { name: 'b' }, { name: 'c' }])
+    const call = h.calls[0]
+    expect(call).toBeDefined()
+    const view = reduce(createFileView(), call!.action)
+    expect(view.selected).toEqual(['a', 'b', 'c'])
+  })
+
+  it('没有设备（serial 为 null）时**零派发**', () => {
+    const h = harness()
+    h.selectAll(null, [{ name: 'a' }])
+    expect(h.calls).toEqual([])
+  })
+
+  it('空目录：派发一个 names 为空的 selectAll，选择保持为空（不报错）', () => {
+    const h = harness()
+    h.selectAll('SERIAL1', [])
+    expect(h.calls).toEqual([{ serial: 'SERIAL1', action: { type: 'selectAll', names: [] } }])
+    const view = reduce(createFileView(), h.calls[0]!.action)
+    expect(view.selected).toEqual([])
+  })
+
+  it('已经全选时再次全选不改变状态引用（依赖 reducer 的幂等，入口不重复造 state）', () => {
+    const h = harness()
+    const entries = [{ name: 'a' }, { name: 'b' }]
+    h.selectAll('SERIAL1', entries)
+    const first = reduce(createFileView(), h.calls[0]!.action)
+    h.selectAll('SERIAL1', entries)
+    const second = reduce(first, h.calls[1]!.action)
+    expect(second).toBe(first)
   })
 })
 

@@ -296,12 +296,24 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
   })
 
   /*
-   * 【R2-1】本地根沙箱移除后，这一行不再是「当前限制范围」，而是「起始浏览目录」。
-   * 断言随之换成新 key（i18n 里必须真有这条文案，否则 tf 会原样返回 key）。
+   * 【R2 复审 Minor 2 / 第 15 次假护栏的残留】这里原本是：
+   *   expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.startDir'")
+   * 复审实测：把 LocalPanel 里那行渲染换成 JSX 注释（注释里保留原文）→ 本文件
+   * 44 passed 全绿。也就是说「起始目录真的显示出来了」**完全没有门禁** ——
+   * 这条断言查的是「某段文本出现过」，注释即可满足。
+   *
+   * **已删除该文本断言**，替代品是 tests/local-panel.test.tsx 的渲染用例：
+   * 给 LocalPanel 加 initial 注入后 renderToStaticMarkup 渲染真组件，断言 HTML 里
+   * 出现 tf('local.startDir', { dir }) 拼好的**整句话**（含真实路径），
+   * 且换一个起始目录文本随之变化、data 为 null 时不渲染。
+   *
+   * 这里只保留一条**运行时事实**断言（不读源码文本）：i18n 表里必须有带 {dir}
+   * 占位的那条文案 —— 少了它 tf 会原样返回 key（渲染用例也会暴露，但在这里失败更好定位）。
    */
-  it('R2-1：本地面板显示起始浏览目录（不再是「范围」）', () => {
+  it('R2-1：起始浏览目录的文案带 {dir} 占位（渲染门禁见 tests/local-panel.test.tsx）', () => {
     expect(t('local.startDir')).toContain('{dir}')
-    expect(read('src/components/LocalPanel.tsx')).toContain("tf('local.startDir'")
+    // 反向自证：未注册的 key 会原样返回自身，所以这条不是恒真
+    expect(t('local.startDir')).not.toBe('local.startDir')
   })
 
   it('裁决 1：主进程写操作必须过统一路径闸门与受保护判定', () => {
@@ -546,10 +558,19 @@ describe('R2-2：设置页与下载路径的静态契约', () => {
       expect(source, rel).not.toMatch(/require\(/)
       expect(source, rel).not.toMatch(/from ['"]electron['"]/)
     }
-    // 主进程的设置存储反过来**必须**用 electron-store 与 node 的真实文件系统
-    const store = read('electron/settings/store.ts')
-    expect(store).toMatch(/from ['"]electron-store['"]/)
-    expect(store).toMatch(/from ['"]node:fs['"]/)
+  /*
+   * 【复审 E / 第 15 次假护栏】这里原本还有两条：
+   *   expect(store).toMatch(/from ['"]electron-store['"]/)
+   *   expect(store).toMatch(/from ['"]node:fs['"]/)
+   * 复审实测：把 electron/settings/store.ts 的 import 换成注释（真 import 删掉）
+   * → 本文件 44 passed 全绿。它们查的是「某段文本出现过」，注释即可满足。
+   *
+   * **已删除**。这两条从来不是 load-bearing：
+   *   - 同一变异下 `npx tsc -b` → TSC=1（TS2351：这个表达式不可构造）；
+   *   - tests/settings-store.test.ts 12 条红（真实 electron-store 文件读写跑不起来）。
+   * 也就是说「用没用真的 electron-store / node:fs」已经由类型系统 + 真读写用例
+   * 双重守住；再补一条静态断言只会是第二个假护栏，故此处**刻意不再加**。
+   */
   })
 
   it('设置页与 store 的文案全部走 i18n（无硬编码中文）', () => {

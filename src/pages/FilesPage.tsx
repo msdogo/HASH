@@ -5,6 +5,7 @@ import type { FileEntry } from '@shared/types'
 import {
   isHiddenName,
   keyToSelectionAction,
+  makeSelectAllHandler,
   navKeyCommand,
   openTarget,
   summarizeEntries,
@@ -76,6 +77,17 @@ export function FilesPage() {
   const refresh = useFileStore((state) => state.refresh)
   const load = useFileStore((state) => state.load)
   const syncDevices = useFileStore((state) => state.syncDevices)
+
+  /*
+   * 全选的唯一实现（R2-2）。
+   *
+   * 工具条按钮与 Ctrl+A 都调它 —— 两处各写一遍是这类功能最典型的漂移来源。
+   * 逻辑本体在 @shared/file-view 的 makeSelectAllHandler（纯函数，有行为用例），
+   * 这里只把 store 的 dispatch 注入进去。抽出去的理由见那个函数的注释：
+   * 按钮 onClick 那一行在无 jsdom 的工程里观测不到，所以「取哪些名字 + 派发什么」
+   * 这段必须能被直接测到。
+   */
+  const selectAll = useMemo(() => makeSelectAllHandler({ dispatch }), [dispatch])
 
   /*
    * 文件操作（任务 9）。
@@ -258,8 +270,12 @@ export function FilesPage() {
       const selection = keyToSelectionAction(event)
       if (selection.kind === 'selectAll') {
         event.preventDefault()
-        // 全选的是【当前可见】条目：用与表格同一个 entries（已过滤+排序）
-        dispatch(serial, { type: 'selectAll', names: entries.map((entry) => entry.name) })
+        /*
+         * 与工具条「全选」按钮走**同一条**实现（makeSelectAllHandler）：
+         * 全选的是【当前可见】条目（与表格同一个 entries，已过滤+排序）。
+         * 两处各写一遍是这类功能最典型的漂移来源（隐藏项/排序变化后选到不同集合）。
+         */
+        selectAll(serial, entries)
         return
       }
       if (selection.kind === 'clear') {
@@ -421,9 +437,8 @@ export function FilesPage() {
    * 无选中项时按钮**不禁用**：全选的意义正是「当前什么都没选」。
    */
   const handleSelectAll = useCallback(() => {
-    if (serial === null) return
-    dispatch(serial, { type: 'selectAll', names: entries.map((entry) => entry.name) })
-  }, [serial, dispatch, entries])
+    selectAll(serial, entries)
+  }, [serial, entries, selectAll])
 
   const handleCopyTo = useCallback(() => {
     const targets = selectedTargets()
