@@ -8,6 +8,7 @@ import { DragOutService } from '../electron/drag/service'
 import { shellQuote } from '../electron/adb/shellsafe'
 import { TransferService } from '../electron/transfer/service'
 import { AdbClient } from '../electron/adb/client'
+import { acquireDeviceLock, deviceSkipMessage, resolveSerial } from './device-lock'
 
 /*
  * 简报 C 的真机验收：**拖出一个真实文件，内容必须逐字节一致**。
@@ -23,25 +24,20 @@ import { AdbClient } from '../electron/adb/client'
 
 const ADB = process.env.ADB_PATH ?? 'adb'
 
-function resolveSerial(): string | null {
-  const fromEnv = process.env.ADB_TEST_SERIAL
-  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
-  try {
-    const out = execFileSync(ADB, ['devices'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
-    for (const line of out.split(/\r?\n/)) {
-      const match = /^(\S+)\s+device\b/.exec(line.trim())
-      if (match !== null) return match[1]
-    }
-  } catch {
-    return null
-  }
-  return null
-}
-
+/*
+ * 设备锁（N17）：batch/drag/ops/transfer 四个真机文件共用同一把
+ * `adbfm-device-<serial>.lock` —— 默认并行的 `npx vitest run` 里它们互斥，
+ * 不再互相删对方的临时文件。
+ *
+ * 必须在**模块顶层**抢：放 beforeAll 就晚了（那时临时目录、service 都已建好）。
+ */
 const SERIAL = resolveSerial()
-const skip = SERIAL === null
+const lockRelease = SERIAL === null ? null : acquireDeviceLock(SERIAL, 'drag-real')
+const skip = SERIAL === null || lockRelease === null
 if (skip) {
-  console.log('[drag-real] 跳过真机用例：没有找到在线设备（ADB_TEST_SERIAL 未设置，adb devices 也没有 device 状态的设备）')
+  // 三种原因（无设备 / serial 不在线 / 撞锁）必须能区分，且在模块顶层打印
+  // （放 beforeAll 就晚了：全员 skip 时 beforeAll 根本不执行）
+  console.log(deviceSkipMessage('drag-real', SERIAL, lockRelease))
 }
 
 /** 设备侧临时目录（用例结束清理）。 */
@@ -109,6 +105,8 @@ describe.skipIf(skip)('真机拖出（简报 C）：下载到临时目录后内�
   afterAll(() => {
     try { shell('rm -rf ' + REMOTE_DIR) } catch { /* 忽略清理失败 */ }
     if (localRoot !== '') rmSync(localRoot, { recursive: true, force: true })
+    // 释放设备锁（最后一个动作：确保设备侧清理已经跑完）
+    lockRelease?.()
   })
 
   it('设备文件 → 临时目录：内容逐字节一致（sha256 比对）', async () => {

@@ -4,6 +4,7 @@ import { AdbClient } from '../electron/adb/client'
 import { RemoteOps } from '../electron/fs/operations'
 import { FsOpsService } from '../electron/fs/op-service'
 import { E_ALREADY_EXISTS, E_CROSS_DEVICE, E_INTO_SELF, E_OP_PARTIAL, E_PROTECTED_PATH } from '../src/shared/errors'
+import { acquireDeviceLock, deviceSkipMessage, resolveSerial } from './device-lock'
 
 /*
  * 裁决 9：真机上的全链路文件操作（中文 / 空格 / 单引号文件名）。
@@ -18,25 +19,20 @@ import { E_ALREADY_EXISTS, E_CROSS_DEVICE, E_INTO_SELF, E_OP_PARTIAL, E_PROTECTE
 
 const ADB = process.env.ADB_PATH ?? 'adb'
 
-function resolveSerial(): string | null {
-  const fromEnv = process.env.ADB_TEST_SERIAL
-  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
-  try {
-    const out = execFileSync(ADB, ['devices'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
-    for (const line of out.split(/\r?\n/)) {
-      const match = /^(\S+)\s+device\b/.exec(line.trim())
-      if (match !== null) return match[1]
-    }
-  } catch {
-    return null
-  }
-  return null
-}
-
+/*
+ * 设备锁（N17）：batch/drag/ops/transfer 四个真机文件共用同一把
+ * `adbfm-device-<serial>.lock` —— 默认并行的 `npx vitest run` 里它们互斥，
+ * 不再互相删对方的临时文件。
+ *
+ * 必须在**模块顶层**抢：放 beforeAll 就晚了（那时临时目录、service 都已建好）。
+ */
 const SERIAL = resolveSerial()
-const skip = SERIAL === null
+const lockRelease = SERIAL === null ? null : acquireDeviceLock(SERIAL, 'ops-real')
+const skip = SERIAL === null || lockRelease === null
 if (skip) {
-  console.log('[ops-real] 跳过真机用例：没有找到在线设备（ADB_TEST_SERIAL 未设置，adb devices 也没有 device 状态的设备）')
+  // 三种原因（无设备 / serial 不在线 / 撞锁）必须能区分，且在模块顶层打印
+  // （放 beforeAll 就晚了：全员 skip 时 beforeAll 根本不执行）
+  console.log(deviceSkipMessage('ops-real', SERIAL, lockRelease))
 }
 
 /** 设备上的测试目录（含空格、中文、单引号 —— 正是易出错的三种字符）。 */
@@ -83,6 +79,8 @@ describe.skipIf(skip)('真机文件操作（裁决 9）', () => {
     // 无论用例成败都清干净：这是本项目的硬要求（不许留垃圾）
     try { shell('rm -rf -- ' + q(BASE)) } catch { /* 忽略清理失败 */ }
     try { shell('rm -rf -- ' + q(BASE + ' 副本')) } catch { /* 同上 */ }
+    // 释放设备锁（最后一个动作：确保设备侧清理已经跑完）
+    lockRelease?.()
   }, 120_000)
 
   it('新建目录 → 新建子目录 → 每一步用 ls 复核', async () => {

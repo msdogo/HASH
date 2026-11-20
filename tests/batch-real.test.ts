@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { openSync, closeSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { AdbClient } from '../electron/adb/client'
@@ -17,7 +16,7 @@ import {
 import type { ShellRunner } from '../electron/fs/remote'
 import type { TransferTask } from '../src/shared/transfer'
 import { E_DEVICE_OFFLINE, E_TIMEOUT } from '../src/shared/errors'
-import { isStaleLock, type LockRecord } from './device-lock'
+import { acquireDeviceLock, deviceSkipMessage, resolveSerial } from './device-lock'
 
 /*
  * 真机批量动作（任务 10 / 简报「步骤 5」）。
@@ -39,148 +38,24 @@ import { isStaleLock, type LockRecord } from './device-lock'
 
 const ADB = process.env.ADB_PATH ?? 'adb'
 
-/**
- * 跨进程的「设备独占」锁（【N14】的根因修复）。
+/*
+ * 设备锁（N17）：batch / drag / ops / transfer 四个真机文件共用同一把
+ * `adbfm-device-<serial>.lock`，默认并行的 `npx vitest run` 里它们互斥，
+ * 不再互相删对方的临时文件（N14 的根因）。
  *
- * ===== 为什么固定 sleep 改轮询还不够 =====
- * 复审把真机用例与全量测试**同时在两个进程里**跑时，两边各红一条。
- * 我照做复现了同样现象（3 轮全红）。
- *
- * 根因不是「等得不够久」，而是**两个进程在抢同一台设备**：
- *   - 两边都用同一个 serial，`adb -s <serial> shell rm -f ...` 互相删对方的临时文件；
- *   - 两个进程同时 screencap 到 `/sdcard/.adbfm/<serial>/adbfm-shot-*.png` 同名空间。
- * 轮询解决的是「我的 rm 多久落地」，解决不了「别人的 rm 删了我的在途文件」。
- *
- * 所以真机用例在**模块顶层**抢一个文件锁（设备级），抢不到就整组跳过并打印原因 ——
- * 与「没有设备」同一语义：不是失败，是资源不可用。并行跑全部用例仍然绿。
- */
-/** 锁文件内容与陈旧判定都在 tests/device-lock.ts（可单测的纯函数，N21）。 */
-
-function lockPathOf(serial: string): string {
-  const safe = serial.replace(/[^A-Za-z0-9._-]/g, '_')
-  return path.join(tmpdir(), 'adbfm-batch-real-' + safe + '.lock')
-}
-
-/** 读锁内容；读不懂（旧格式 / 空文件 / 半个 JSON）一律视为陈旧。 */
-function readLockRecord(lockPath: string): LockRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'))
-    if (typeof parsed !== 'object' || parsed === null) return null
-    const { pid, startedAt } = parsed as Partial<LockRecord>
-    if (typeof pid !== 'number' || typeof startedAt !== 'number') return null
-    return { pid, startedAt }
-  } catch {
-    return null
-  }
-}
-
-/** 持锁进程还活着吗（signal 0 只探测，不发送）。 */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * 抢设备锁；抢不到时**判断持有者是否已死**，死了就接管。
- *
- * 【N15】上一版只写 wx、只在 afterAll unlink —— 进程崩溃或 Ctrl-C 后锁永久留下，
- * 之后每次跑都整组静默 skip，而套件仍然是绿的（复审实测：造一个陈旧锁 →
- * 5 skipped、全量 1143 passed | 6 skipped、EXIT=0）。
- * **静默通过比失败更危险**：失败有人看，静默跳过没人看。
- *
- * 判据只有一条：**持有者死了吗**（isStaleLock，见 tests/device-lock.ts）。
- *
- * 【第 5 轮 N20】第 4 轮这里还有一个「超过 15 分钟即接管」的 TTL 分支，
- * 而且它是无条件 OR —— 不看 pid 是否还活着。复审当场指出这会**抢走活锁**：
- * 真机用例本来就可能跑很久，一个持锁 16 分钟的合法进程会被后来者 rm 掉锁、
- * 夺走设备，N14 的并发症（两个进程互删在途临时文件）原封不动地回来。
- *
- * 那个 TTL 是照着「pid 复用兜底」的想象写的，但注释与实际实现不符（代码里
- * 从来没有 stat 过 mtime，算的是锁内容里的 startedAt）。现在整条删除：
- * 进程活着时年龄毫无意义，跑 5 小时的用例仍然是合法持有者。
- * pid 复用的极小概率后果是「需要手工删一个锁文件」，远轻于抢走活锁。
- */
-function acquireDeviceLock(serial: string): (() => void) | null {
-  const lockPath = lockPathOf(serial)
-  const release = (): void => { try { unlinkSync(lockPath) } catch { /* 已被清掉 */ } }
-  const claim = (): (() => void) => {
-    // wx：文件已存在即失败 —— 跨进程互斥。建文件与写内容不能合并成一个原子操作，
-    // 所以「先 wx 占位、再写 {pid, startedAt}」；读到空内容时 readLockRecord 返回 null，
-    // 会被当成陈旧锁（写入方要么正在写、要么已崩溃，两者都不该长期阻塞后来者）。
-    closeSync(openSync(lockPath, 'wx'))
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), 'utf8')
-    return release
-  }
-
-  try {
-    return claim()
-  } catch {
-    // 抢不到：下面判断持有者是否还活着
-  }
-
-  const record = readLockRecord(lockPath)
-  if (!isStaleLock(record, pidAlive)) return null
-
-  console.warn(
-    '[batch-real] 接管陈旧设备锁：' + lockPath
-      + '（' + (record === null ? '内容不可解析' : 'pid=' + record.pid + ' 已不存活') + '）',
-  )
-  try {
-    rmSync(lockPath, { force: true })
-    return claim()
-  } catch {
-    return null
-  }
-}
-
-/**
- * 取一台**当前**处于 device 状态的设备。
- *
- * ADB_TEST_SERIAL 指定了但设备已经拔掉时必须**跳过**，不能硬跑 ——
- * 否则 beforeAll 直接抛 "device not found"，整个文件红成一片，
- * 看起来像实现坏了，而不是「设备不在」。
- */
-function resolveSerial(): string | null {
-  let online: string[] = []
-  try {
-    const out = execFileSync(ADB, ['devices'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
-    for (const line of out.split(/\r?\n/)) {
-      const match = /^(\S+)\s+device\b/.exec(line.trim())
-      if (match !== null) online.push(match[1])
-    }
-  } catch {
-    return null
-  }
-  const fromEnv = process.env.ADB_TEST_SERIAL
-  if (fromEnv !== undefined && fromEnv !== '') {
-    return online.includes(fromEnv) ? fromEnv : null
-  }
-  return online[0] ?? null
-}
-
-const SERIAL = resolveSerial()
-/**
- * 设备锁：抢不到就把整组 skip（另一个进程正在用这台设备）。
+ * 锁的实现、陈旧判定、跳过措辞都在 tests/device-lock.ts：
+ * 文件名只允许有一处定义 —— N17 的病根正是「文件名只对 batch-real 成立」。
  *
  * 必须在**模块顶层**抢（与 SERIAL 解析同级）：放在 beforeAll 里就晚了 ——
  * 那时临时目录、TransferService、BatchService 都已经建好。
  */
-const lockRelease = SERIAL === null ? null : acquireDeviceLock(SERIAL)
+const SERIAL = resolveSerial()
+const lockRelease = SERIAL === null ? null : acquireDeviceLock(SERIAL, 'batch-real')
 const skip = SERIAL === null || lockRelease === null
 if (skip) {
-  const wanted = process.env.ADB_TEST_SERIAL
-  console.log(
-    '[batch-real] 跳过真机用例：'
-      + (lockRelease === null && SERIAL !== null
-        ? '设备 ' + SERIAL + ' 正被另一个进程独占（跨进程锁），避免两边互相删临时文件'
-        : wanted !== undefined && wanted !== ''
-          ? 'ADB_TEST_SERIAL=' + wanted + ' 不在 device 状态（可能是 offline/unauthorized/已拔掉）'
-          : '没有找到在线设备（adb devices 里没有 device 状态的设备）'),
-  )
+  // 三种原因（无设备 / serial 不在线 / 撞锁）必须能区分；模块顶层打印，
+  // 不能放 beforeAll —— 全员 skip 时 beforeAll 根本不执行。
+  console.log(deviceSkipMessage('batch-real', SERIAL, lockRelease))
 }
 
 /** 设备上的测试目录（用例结束清理）。 */

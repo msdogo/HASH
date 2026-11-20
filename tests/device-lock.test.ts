@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest'
-import { isStaleLock } from './device-lock'
+import { describe, it, expect, afterEach } from 'vitest'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import {
+  DEVICE_LOCK_PREFIX,
+  acquireDeviceLock,
+  deviceSkipReason,
+  isStaleLock,
+  lockPathOf,
+  readLockRecord,
+} from './device-lock'
 import type { LockRecord } from './device-lock'
 
 /*
@@ -58,6 +68,121 @@ describe('isStaleLock：设备锁的陈旧判定（N20 / N21）', () => {
     for (const age of ages) {
       expect(isStaleLock(record(4321, NOW - age), () => true), 'age=' + age).toBe(false)
       expect(isStaleLock(record(4321, NOW - age), () => false), 'age=' + age).toBe(true)
+    }
+  })
+})
+
+/*
+ * ===== N17：互斥必须是**行为**证明出来的 =====
+ *
+ * 这一组的每一条都在真实文件系统上抢真锁（tmpdir 下的 adbfm-device-*.lock），
+ * 并且自己清理。它们要证明的不是「源码里有某个字符串」，
+ * 而是「同一 serial 抢两次，第二次拿不到」—— 后者才是四个真机文件互斥的原因。
+ *
+ * 变异验证（见 device-lock-report.md）：把锁文件名改成带文件名字样的前缀，
+ * 下面「不同 label 也必须互斥」这条立刻红。
+ */
+
+/** 本组用的 serial：足够特别，不会与真实设备或其残留撞上。 */
+const TEST_SERIAL = 'ADBfm-lock-unit-9Z'
+
+/** 每条用例结束都把锁清掉：失败时也不留垃圾（本项目硬要求）。 */
+afterEach(() => {
+  rmSync(lockPathOf(TEST_SERIAL), { force: true })
+})
+
+describe('acquireDeviceLock：跨文件互斥（N17 的行为证明）', () => {
+  it('首次获取返回释放函数，且锁文件确实已落盘', () => {
+    const release = acquireDeviceLock(TEST_SERIAL, 'unit-first')
+    expect(release).not.toBeNull()
+
+    const lockPath = lockPathOf(TEST_SERIAL)
+    expect(existsSync(lockPath)).toBe(true)
+    const recordNow = readLockRecord(lockPath)
+    expect(recordNow === null ? -1 : recordNow.pid).toBe(process.pid)
+    release?.()
+  })
+
+  it('同进程第二次获取 → null（模拟另一个测试文件同时抢同一台设备）', () => {
+    const first = acquireDeviceLock(TEST_SERIAL, 'unit-A')
+    expect(first).not.toBeNull()
+    // 第二个文件（另一个 label）也必须拿不到 —— label 不进文件名
+    const second = acquireDeviceLock(TEST_SERIAL, 'unit-B')
+    expect(second).toBeNull()
+    first?.()
+  })
+
+  it('release 之后可以再次获取（锁不是一次性的）', () => {
+    const first = acquireDeviceLock(TEST_SERIAL, 'unit-A')
+    expect(first).not.toBeNull()
+    first?.()
+    expect(existsSync(lockPathOf(TEST_SERIAL))).toBe(false)
+    const second = acquireDeviceLock(TEST_SERIAL, 'unit-B')
+    expect(second).not.toBeNull()
+    second?.()
+  })
+
+  it('陈旧锁（持有者 pid 已死）被接管，并打印 warn', () => {
+    // 造一把「pid 不可能存在」的锁
+    writeFileSync(lockPathOf(TEST_SERIAL), JSON.stringify({ pid: 999999, startedAt: NOW }), 'utf8')
+    const release = acquireDeviceLock(TEST_SERIAL, 'unit-stale')
+    expect(release).not.toBeNull()
+    const recordNow = readLockRecord(lockPathOf(TEST_SERIAL))
+    expect(recordNow === null ? -1 : recordNow.pid).toBe(process.pid)
+    release?.()
+  })
+
+  it('【行为断言】锁文件名只由 serial 决定：两个不同 label 指向同一个文件', () => {
+    /*
+     * 这一条替代了曾经想写的 `expect(源码).not.toContain('adbfm-batch-real-')`：
+     * 那是「源码文本断言」，本项目已经为它踩了 14 次坑，而且它证明不了互斥。
+     *
+     * 真正要证明的是：batch-real 与 ops-real 这类不同调用方，抢的是**同一个文件**。
+     * 所以先拿一次锁、让另一个 label 抢 —— 抢不到，就说明它们指向同一个路径。
+     */
+    const first = acquireDeviceLock(TEST_SERIAL, 'batch-real')
+    expect(first).not.toBeNull()
+
+    const other = acquireDeviceLock(TEST_SERIAL, 'ops-real')
+    // 若第二个也拿到了（变异 B：label 进了文件名），先把它放掉再断言，避免残留影响后续用例
+    other?.()
+    expect(other).toBeNull()
+
+    const batchPath = lockPathOf(TEST_SERIAL)
+    expect(batchPath.startsWith(path.join(tmpdir(), DEVICE_LOCK_PREFIX))).toBe(true)
+    // 文件内容里只有持有者信息，**没有 label** —— 否则每个文件会各拿一把锁
+    const raw = readFileSync(batchPath, 'utf8')
+    expect(raw).not.toContain('batch-real')
+    expect(raw).not.toContain('ops-real')
+    first?.()
+  })
+})
+
+describe('deviceSkipReason：三种跳过原因必须能区分', () => {
+  it('有 serial 但没抢到锁 → 说明是跨进程独占', () => {
+    const reason = deviceSkipReason(TEST_SERIAL, null)
+    expect(reason).toContain(TEST_SERIAL)
+    expect(reason).toContain('独占')
+  })
+
+  it('ADB_TEST_SERIAL 指定了但不在线 → 说明 serial 不可用', () => {
+    const previous = process.env.ADB_TEST_SERIAL
+    process.env.ADB_TEST_SERIAL = 'GHOST-SERIAL-LOCK'
+    try {
+      expect(deviceSkipReason(null, null)).toContain('GHOST-SERIAL-LOCK')
+    } finally {
+      if (previous === undefined) delete process.env.ADB_TEST_SERIAL
+      else process.env.ADB_TEST_SERIAL = previous
+    }
+  })
+
+  it('没有环境变量也没有设备 → 说明没有在线设备', () => {
+    const previous = process.env.ADB_TEST_SERIAL
+    delete process.env.ADB_TEST_SERIAL
+    try {
+      expect(deviceSkipReason(null, null)).toContain('没有找到在线设备')
+    } finally {
+      if (previous !== undefined) process.env.ADB_TEST_SERIAL = previous
     }
   })
 })
