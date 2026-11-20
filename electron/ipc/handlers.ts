@@ -234,9 +234,31 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
    *
    * 返回 Ok 时把 deps 里的 serial 收窄成分支，避免每个 handler 再写一遍。
    */
-  const preflight = <T>(payload: unknown, schema: { safeParse: (value: unknown) => { success: boolean; data?: T; error?: unknown } }): { ok: true; data: T } | { ok: false; error: string } => {
+  /*
+   * schema 的返回形状写成一个可判别联合（而不是 { success: boolean; data?: T }）：
+   * 后者在 success 为真时 data 仍然是 T | undefined，收窄不过去，只能靠 as 硬转。
+   * 联合写法与 zod 的 ZodSafeParseResult 同形（成功分支 data 必填），
+   * 于是 if (!parsed.success) 之后 data 自然就是 T —— 类型是真收敛的，不是断言出来的。
+   */
+  type ParseResult<T> =
+    | { success: true; data: T; error?: never }
+    | { success: false; data?: never; error?: unknown }
+  const preflight = <T>(payload: unknown, schema: { safeParse: (value: unknown) => ParseResult<T> }): { ok: true; data: T } | { ok: false; error: string } => {
     const parsed = schema.safeParse(payload)
-    if (!parsed.success || parsed.data === undefined) return { ok: false, error: E_BAD_ARGS }
+    /*
+     * 【问题 1 修复】这里只认 success，不再要求 data !== undefined。
+     *
+     * 修前是 !parsed.success || parsed.data === undefined：而 ipcRenderer.invoke(channel)
+     * 不带载荷时 payload 就是 undefined，z.unknown().safeParse(undefined) 是 success=true、
+     * data=undefined —— 于是「无载荷」这个【合法】形态被判成 E_BAD_ARGS，
+     * 「更换目录」按钮稳定报「请求参数不合法」（真机实测复现）。
+     *
+     * 安全性没有因此降低：真正需要载荷的通道用的是 z.object(...)，缺字段时 success 为 false，
+     * 仍然在这里被拒（tests/ipc-handlers.test.ts 有对照组：fs:list 不带载荷仍是 E_BAD_ARGS）。
+     */
+    if (!parsed.success) return { ok: false, error: E_BAD_ARGS }
+    // zod 的成功分支里 data 一定存在（ZodSafeParseSuccess.data 是必填字段，没有 undefined 成员）——
+    // 这里的收窄靠的是联合类型判别，不是 as。
     return { ok: true, data: parsed.data }
   }
 
@@ -443,7 +465,7 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
    */
   const batchPreflight = <T extends { serials: string[] }>(
     payload: unknown,
-    schema: { safeParse: (value: unknown) => { success: boolean; data?: T; error?: unknown } },
+    schema: { safeParse: (value: unknown) => ParseResult<T> },
   ): { ok: true; data: T } | { ok: false; error: string } => {
     const parsed = preflight<T>(payload, schema)
     if (!parsed.ok) return { ok: false, error: parsed.error }

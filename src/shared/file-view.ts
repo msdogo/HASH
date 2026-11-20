@@ -457,6 +457,16 @@ export interface FileViewState {
   generation: number
   /** 选中项的名字（任务 9 的文件操作要用）。 */
   selected: string[]
+  /**
+   * 区间选择（Shift 点击）的起点：最近一次普通点击 / Ctrl 点击落下的那一行。
+   *
+   * 【多选增强 / 问题 2】为什么单独存一个字段，而不是从 selected[0] 推：
+   * 区间选择期间 anchor 必须【一动不动】—— 否则连按 Shift 点击时，第二次点击
+   * 会把起点重置成上一次的终点，区间永远扩不出去（也就缩不回来）。
+   * 全选 / 清空**不动** anchor，与 Windows 资源管理器一致：
+   * 起点永远是「用户最后一次点过的那一行」。
+   */
+  anchor: string | null
   /** 列表滚动位置（切设备回来要恢复）。 */
   scrollTop: number
   /**
@@ -511,6 +521,113 @@ export interface ListResultData {
   tzOffsetMinutes: number
 }
 
+/* ============ 多选（问题 2）：三态选中 + 区间 + 全选 ============ */
+
+/**
+ * 一次点击的选中语义。
+ *
+ * 修改历史：修前是布尔 additive，于是 Shift 被当成「再加一项」——
+ * 用户按住 Shift 点第 10 行，期望的是「第 1 行到第 10 行」，实际只多选了那一行。
+ */
+export type SelectMode = 'replace' | 'toggle' | 'range'
+
+/** 修饰键的最小面（只取渲染事件里够用的三个布尔量，便于脱离 DOM 单测）。 */
+export interface SelectModifiers {
+  shiftKey?: boolean
+  ctrlKey?: boolean
+  metaKey?: boolean
+}
+
+/**
+ * 把修饰键翻成选中语义。优先级：Shift > Ctrl/Cmd > 无。
+ *
+ * 为什么 Shift 最高：Windows / macOS 资源管理器里 Shift 点击就是「选一段」，
+ * 即使同时按着 Ctrl 也不改变这个直觉（Ctrl 只影响「要不要保留原有选择」）。
+ */
+export function selectModeOf(modifiers: SelectModifiers): SelectMode {
+  if (modifiers.shiftKey === true) return 'range'
+  if (modifiers.ctrlKey === true || modifiers.metaKey === true) return 'toggle'
+  return 'replace'
+}
+
+/** 键盘选中命令的语义（Ctrl/Cmd+A 全选、Esc 清空）。 */
+export type SelectionKeyCommand =
+  | { kind: 'selectAll' }
+  | { kind: 'clear' }
+  | { kind: 'none' }
+
+/**
+ * 把按键翻成「选中命令」（问题 2 的 Ctrl+A / Esc）。
+ *
+ * 为什么抽成纯函数而不是写在组件的 keydown 里：
+ * 本工程没有 jsdom，SSR（renderToStaticMarkup）拿不到事件回调，
+ * 组件里的按键分支只能靠「看代码」保证 —— 那正是本项目已经吃过多次亏的假护栏。
+ * 抽出来之后，键位判定有真正可复现的行为断言，组件只负责转发。
+ *
+ * 入参是「事件的形状」而不是 DOM 事件：KeyboardEvent 天然满足它（结构子类型），
+ * 测试可以直接传字面量。
+ */
+/**
+ * 从事件目标里取 tagName。
+ *
+ * 为什么参数是 unknown 而不是 HTMLElement：这个模块是 src/shared，
+ * 同时被渲染层与主进程编译（后者没有 DOM lib）。用 unknown + 结构收窄，
+ * 两个工程都能编译，而 KeyboardEvent<HTMLElement> 也能直接传进来（结构子类型）。
+ */
+function tagNameOf(target: unknown): string | undefined {
+  if (typeof target !== 'object' || target === null) return undefined
+  if (!('tagName' in target)) return undefined
+  const value = target.tagName
+  return typeof value === 'string' ? value : undefined
+}
+
+export function keyToSelectionAction(event: {
+  key: string
+  ctrlKey?: boolean
+  metaKey?: boolean
+  target?: unknown
+}): SelectionKeyCommand {
+  /*
+   * 焦点在输入控件里时一律不拦截：
+   * 地址栏（input）里按 Ctrl+A 必须选中输入框里的文本，Esc 也不该清掉文件选中项。
+   * 判定放在这里而不是组件里，测试才能覆盖到「输入框保护」这一条。
+   */
+  const tagName = tagNameOf(event.target)
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA') return { kind: 'none' }
+
+  // 大小写兼容：A 与 a（CapsLock / 大小写状态）都要认
+  if (event.key === 'a' || event.key === 'A') {
+    if (event.ctrlKey === true || event.metaKey === true) return { kind: 'selectAll' }
+    return { kind: 'none' }
+  }
+  if (event.key === 'Escape' || event.key === 'Esc') return { kind: 'clear' }
+  return { kind: 'none' }
+}
+
+/**
+ * 区间选择：在【展示顺序】里取 anchor 到 name 之间（含两端）的全部名字。
+ *
+ * 三个必须点（都有用例）：
+ * 1. 顺序来自展示数组（过滤+排序后），不是 entries 原始顺序 ——
+ *    用原始顺序会出现「界面上连着的一大段，选中的却是散落几项」；
+ * 2. anchor 或目标不在当前展示列表里（刷新后消失 / 翻到了别的目录）→ 退化成「只选目标」；
+ * 3. 反向拖（从下往上 Shift 点击）同样要正确，所以按两端下标排序后切片。
+ */
+export function rangeNames(
+  displays: readonly string[],
+  anchor: string | null,
+  target: string,
+): string[] {
+  if (anchor === null) return [target]
+  const from = displays.indexOf(anchor)
+  const to = displays.indexOf(target)
+  // 起点已经不在当前列表里（刷新后被删 / 换了目录）：退化成单选，绝不产生空选择
+  if (from < 0 || to < 0) return [target]
+  const start = Math.min(from, to)
+  const end = Math.max(from, to)
+  return displays.slice(start, end + 1)
+}
+
 export type FileViewAction =
   /**
    * 请求跳转（进入子目录 / 面包屑 / 地址栏 / 上一级）：只登记目标，成功后由 resolve 提交 cwd。
@@ -528,8 +645,24 @@ export type FileViewAction =
   /** 列头点击排序：同列切升降，换列回到升序。 */
   | { type: 'setSort'; sort: SortKey }
   | { type: 'setShowHidden'; value: boolean }
-  /** 点选条目；additive 对应 Ctrl/Shift 多选。 */
-  | { type: 'select'; name: string; additive: boolean }
+  /**
+   * 点选条目。mode 是这次点击的语义（由修饰键决定，见 selectModeOf）：
+   * - replace：普通点击，只选它；anchor 移到它；
+   * - toggle：Ctrl/Cmd 点击，按存在与否增删；anchor 移到它；
+   * - range：Shift 点击，从 anchor 到它在【展示顺序】上的一段；anchor 不动。
+   */
+  | { type: 'select'; name: string; mode: SelectMode }
+  /**
+   * 全选（Ctrl/Cmd+A）。
+   *
+   * 为什么把「可见条目的名字」当参数传进来，而不是让 reducer 自己算：
+   * reducer 里虽然有 entries / sort / showHidden，但「用户看到的列表」是
+   * FilesPage 用 useMemo 算出来的那一个（与虚拟列表同源）。让调用方把那份
+   * 结果传进来，才不会出现「reducer 算出 12 项、界面只显示 10 项」的分叉。
+   */
+  | { type: 'selectAll'; names: readonly string[] }
+  /** 清空选择（Esc）。 */
+  | { type: 'clearSelection' }
   | { type: 'setScrollTop'; value: number }
   /** 行内错误（地址栏非法输入 / 链接无法进入）：只写提示，不动当前目录。 */
   | { type: 'addressError'; code: string }
@@ -552,6 +685,7 @@ export function createFileView(): FileViewState {
     tzOffsetMinutes: 0,
     generation: 0,
     selected: [],
+    anchor: null,
     scrollTop: 0,
     linkTrail: [],
     linkHops: 0,
@@ -573,6 +707,20 @@ export function createFileView(): FileViewState {
 function appendLinkTrail(trail: readonly string[], from: string, to: string): string[] {
   const next = [...trail, normalizePath(from), normalizePath(to)]
   return next.length > MAX_LINK_HOPS * 2 ? next.slice(next.length - MAX_LINK_HOPS * 2) : next
+}
+
+/**
+ * 当前展示顺序（过滤 + 排序后）的名字列表。
+ *
+ * 区间选择必须按这个顺序取段：entries 是 ls 的原始顺序，用户看到的却是排序后的列表。
+ * 直接复用 visibleEntries，保证和 FilesPage 里渲染列表用的是同一套规则（不会分叉）。
+ */
+function displayOrder(state: FileViewState): string[] {
+  return visibleEntries(state.entries, {
+    showHidden: state.showHidden,
+    sort: state.sort,
+    sortDir: state.sortDir,
+  }).map((entry) => entry.name)
 }
 
 /** 选中项与新条目求交集（I2：刷新后不对看不见的条目执行操作）。 */
@@ -644,6 +792,14 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
       const dir = normalizePath(data.dir)
       // 目录是否变了决定 selected / scrollTop 的处置（I2）
       const sameDir = dir === state.cwd
+      /*
+       * 【多选增强】刷新后 anchor 必须与 selected 一起收敛：
+       * 区间起点若已被删掉，anchor 也要同步失效 —— 否则下一次 Shift 点击
+       * 会拿一个列表里已不存在的名字当起点，静默退化成单选（用户看到的就是「区间没了」）。
+       * 存活判据与 intersectSelected 完全一致：名字仍在这次返回的条目里。
+       */
+      const survived = new Set(data.entries.map((entry) => entry.name))
+      const nextAnchor = sameDir && state.anchor !== null && survived.has(state.anchor) ? state.anchor : null
       return {
         ...state,
         cwd: dir,
@@ -660,6 +816,7 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         // 普通导航时清空）；若在 resolve 里按「目录变了」清空，刚追加进去的轨迹会被立即抹掉，
         // 防环又变回死代码（这正是审查轮 2 / N2 报的问题）。
         selected: sameDir ? intersectSelected(state.selected, data.entries) : [],
+        anchor: sameDir ? nextAnchor : null,
         scrollTop: sameDir ? state.scrollTop : 0,
         // 【M1】跟随成功才提交轨迹与跳数（失败路径见 fail 分支：直接丢弃 pendingLink）
         linkTrail: state.pendingLink === null
@@ -707,16 +864,44 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
     case 'setShowHidden':
       return state.showHidden === action.value ? state : { ...state, showHidden: action.value }
     case 'select': {
-      if (!action.additive) {
-        return { ...state, selected: [action.name] }
+      // replace：只选它，anchor 落到它身上
+      if (action.mode === 'replace') {
+        return { ...state, selected: [action.name], anchor: action.name }
       }
-      const exists = state.selected.includes(action.name)
+      // toggle：Ctrl/Cmd 点击，按存在与否增删；anchor 同样落到它（与资源管理器一致）
+      if (action.mode === 'toggle') {
+        const exists = state.selected.includes(action.name)
+        return {
+          ...state,
+          selected: exists
+            ? state.selected.filter((name) => name !== action.name)
+            : [...state.selected, action.name],
+          anchor: action.name,
+        }
+      }
+      /*
+       * range：Shift 点击。区间取【展示顺序】（过滤 + 排序后），与用户看到的一致。
+       * anchor 保持不变 —— 连续 Shift 点击才能「先扩大再缩小」；
+       * 若这里也跟着移动，第二次点击的起点就变成上一次的终点，区间永远只是一格。
+       */
+      const displayed = displayOrder(state)
       return {
         ...state,
-        selected: exists
-          ? state.selected.filter((name) => name !== action.name)
-          : [...state.selected, action.name],
+        selected: rangeNames(displayed, state.anchor, action.name),
       }
+    }
+    case 'selectAll': {
+      // 全选 = 当前可见的全部条目（入参由 FilesPage 用同一个 useMemo 结果给），不动 anchor
+      if (action.names.length === 0) return state.selected.length === 0 ? state : { ...state, selected: [] }
+      const same =
+        action.names.length === state.selected.length &&
+        action.names.every((name, index) => name === state.selected[index])
+      return same ? state : { ...state, selected: [...action.names] }
+    }
+    case 'clearSelection': {
+      // Esc 清空：只清选中项，不动 anchor（起点仍是用户最后点过的那一行）
+      if (state.selected.length === 0) return state
+      return { ...state, selected: [] }
     }
     case 'setScrollTop':
       // 像素级抖动不需要进 store；只有整行级变化才值得一次重渲染
@@ -771,6 +956,7 @@ export function viewFromPartial(partial: Partial<FileViewSlice> | undefined): Fi
     noticeDismissed: partial?.noticeDismissed ?? base.noticeDismissed,
     tzOffsetMinutes: partial?.tzOffsetMinutes ?? base.tzOffsetMinutes,
     selected: partial?.selected ?? base.selected,
+    anchor: partial?.anchor === undefined ? base.anchor : partial.anchor,
     loadedOnce: partial?.loadedOnce ?? base.loadedOnce,
   }
 }

@@ -103,9 +103,17 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 列举本地目录（限制在用户选定的根目录内）。 */
       list: (payload: LocalListInput): Promise<IpcResult<LocalListData>> =>
         deps.invoke(CH.LOCAL_LIST, payload) as Promise<IpcResult<LocalListData>>,
-      /** 挑选本地根目录；取消返回空串。 */
+      /**
+       * 挑选本地根目录；取消返回空串。
+       *
+       * 【问题 1 修复】必须显式传一个载荷（这里用 null）。
+       * 修前写的是 deps.invoke(CH.LOCAL_PICK_ROOT)，ipcRenderer.invoke 不带第二参时
+       * 主进程收到的 payload 是 undefined，被 preflight 判成 E_BAD_ARGS ——
+       * 「更换目录」按钮点了就报「请求参数不合法」。
+       * 显式传 null 是防御性的第二层：即使将来 preflight 又收紧，这个通道也不会再踩空。
+       */
       pickRoot: (): Promise<IpcResult<string>> =>
-        deps.invoke(CH.LOCAL_PICK_ROOT) as Promise<IpcResult<string>>,
+        deps.invoke(CH.LOCAL_PICK_ROOT, null) as Promise<IpcResult<string>>,
     },
     transfer: {
       /** 加入传输队列。 */

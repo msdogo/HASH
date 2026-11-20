@@ -14,6 +14,9 @@ import {
   formatSize,
   isDotEntry,
   isHiddenName,
+  keyToSelectionAction,
+  rangeNames,
+  selectModeOf,
   isMetaKnown,
   isOpenKey,
   joinEntryPath,
@@ -92,7 +95,7 @@ function loadedView(): FileViewState {
     createFileView(),
     { type: 'navigate', cwd: '/sdcard/DCIM' },
     { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
-    { type: 'select', name: 'a.jpg', additive: false },
+    { type: 'select', name: 'a.jpg', mode: 'replace' },
     { type: 'setScrollTop', value: 250 },
   )
 }
@@ -553,8 +556,8 @@ describe('I2：selected 不与条目脱节', () => {
       createFileView(),
       { type: 'navigate', cwd: '/sdcard/DCIM' },
       { type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' }), entry({ name: 'gone.jpg' })] }) },
-      { type: 'select', name: 'a.jpg', additive: false },
-      { type: 'select', name: 'gone.jpg', additive: true },
+      { type: 'select', name: 'a.jpg', mode: 'replace' },
+      { type: 'select', name: 'gone.jpg', mode: 'toggle' },
     )
     expect(loaded.selected).toEqual(['a.jpg', 'gone.jpg'])
 
@@ -669,14 +672,14 @@ describe('视图状态：排序、隐藏文件、选中、滚动', () => {
     expect(view.showHidden).toBe(true)
   })
 
-  it('点击选中：非累加替换、累加切换', () => {
-    let view = reduce(createFileView(), { type: 'select', name: 'a', additive: false })
+  it('点击选中：replace 替换、toggle 按存在与否增删', () => {
+    let view = reduce(createFileView(), { type: 'select', name: 'a', mode: 'replace' })
     expect(view.selected).toEqual(['a'])
-    view = reduce(view, { type: 'select', name: 'b', additive: true })
+    view = reduce(view, { type: 'select', name: 'b', mode: 'toggle' })
     expect(view.selected).toEqual(['a', 'b'])
-    view = reduce(view, { type: 'select', name: 'a', additive: true })
+    view = reduce(view, { type: 'select', name: 'a', mode: 'toggle' })
     expect(view.selected).toEqual(['b'])
-    view = reduce(view, { type: 'select', name: 'c', additive: false })
+    view = reduce(view, { type: 'select', name: 'c', mode: 'replace' })
     expect(view.selected).toEqual(['c'])
   })
 
@@ -695,7 +698,7 @@ describe('裁决 7：每设备独立视图（按 serial 分片）', () => {
     views = fileViewsReducer(views, { serial: 'A', type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) })
     views = fileViewsReducer(views, { serial: 'B', type: 'resolve', generation: 1, data: listData({ dir: '/sdcard/Download', entries: [entry({ name: 'b.zip' })] }) })
     views = fileViewsReducer(views, { serial: 'A', type: 'setScrollTop', value: 900 })
-    views = fileViewsReducer(views, { serial: 'A', type: 'select', name: 'a.jpg', additive: false })
+    views = fileViewsReducer(views, { serial: 'A', type: 'select', name: 'a.jpg', mode: 'replace' })
 
     expect(views.A.cwd).toBe('/sdcard/DCIM')
     expect(views.B.cwd).toBe('/sdcard/Download')
@@ -1129,7 +1132,7 @@ describe('I5：连点刷新与 forget 语义', () => {
     const first = h.model.openDir('S', '/sdcard/DCIM')
     h.resolveAt(0, { dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] })
     await first
-    h.model.dispatch('S', { type: 'select', name: 'a.jpg', additive: false })
+    h.model.dispatch('S', { type: 'select', name: 'a.jpg', mode: 'replace' })
     h.model.dispatch('S', { type: 'setScrollTop', value: 250 })
 
     const bad = h.model.openDir('S', '/sdcard/NOPE')
@@ -1446,5 +1449,299 @@ describe('N3：LRU 淘汰不得被在飞响应复活', () => {
     expect(h.views.A).toBeDefined()
     expect(h.views.B).toBeDefined()
     expect(h.views.D).toBeUndefined()
+  })
+})
+
+/* ============ 多选增强（问题 2）：三态选中 / 区间 / 全选 / Esc ============ */
+
+describe('多选增强：修饰键 → 选中语义', () => {
+  it('Shift 优先于 Ctrl/Cmd，无修饰键是 replace', () => {
+    expect(selectModeOf({})).toBe('replace')
+    expect(selectModeOf({ ctrlKey: true })).toBe('toggle')
+    expect(selectModeOf({ metaKey: true })).toBe('toggle')
+    expect(selectModeOf({ shiftKey: true })).toBe('range')
+    expect(selectModeOf({ shiftKey: true, ctrlKey: true })).toBe('range')
+    expect(selectModeOf({ shiftKey: true, metaKey: true })).toBe('range')
+  })
+})
+
+describe('多选增强：三种 mode 的 reducer 行为', () => {
+  /** 已加载的视图：四个文件，entries 原始顺序是 d/b/a/c，展示顺序（名称升序）是 a/b/c/d。 */
+  function fourFiles(): FileViewState {
+    return reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/DCIM',
+          entries: [entry({ name: 'd' }), entry({ name: 'b' }), entry({ name: 'a' }), entry({ name: 'c' })],
+        }),
+      },
+    )
+  }
+
+  it('replace：只选目标，anchor 落到目标', () => {
+    const view = reduce(fourFiles(), { type: 'select', name: 'c', mode: 'replace' })
+    expect(view.selected).toEqual(['c'])
+    expect(view.anchor).toBe('c')
+  })
+
+  it('toggle：在已有选择上增删，anchor 跟随到本次点击的行', () => {
+    let view = reduce(fourFiles(), { type: 'select', name: 'a', mode: 'replace' })
+    view = reduce(view, { type: 'select', name: 'c', mode: 'toggle' })
+    expect(view.selected).toEqual(['a', 'c'])
+    expect(view.anchor).toBe('c')
+    // 再点一次同一行 = 取消选中，anchor 仍然停在它
+    view = reduce(view, { type: 'select', name: 'c', mode: 'toggle' })
+    expect(view.selected).toEqual(['a'])
+    expect(view.anchor).toBe('c')
+  })
+
+  it('range：从 anchor 到目标取一段（正向）', () => {
+    let view = reduce(fourFiles(), { type: 'select', name: 'b', mode: 'replace' })
+    view = reduce(view, { type: 'select', name: 'd', mode: 'range' })
+    expect(view.selected).toEqual(['b', 'c', 'd'])
+    // anchor 不动：连续 Shift 才能扩大/缩小
+    expect(view.anchor).toBe('b')
+  })
+
+  it('range：反向（从下往上 Shift）同样取两端的闭区间', () => {
+    let view = reduce(fourFiles(), { type: 'select', name: 'd', mode: 'replace' })
+    view = reduce(view, { type: 'select', name: 'b', mode: 'range' })
+    expect(view.selected).toEqual(['b', 'c', 'd'])
+    expect(view.anchor).toBe('d')
+  })
+
+  it('连续 range：先把区间扩大，再在原 anchor 上缩小', () => {
+    let view = reduce(fourFiles(), { type: 'select', name: 'b', mode: 'replace' })
+    view = reduce(view, { type: 'select', name: 'd', mode: 'range' })
+    expect(view.selected).toEqual(['b', 'c', 'd'])
+    view = reduce(view, { type: 'select', name: 'c', mode: 'range' })
+    expect(view.selected).toEqual(['b', 'c'])
+    expect(view.anchor).toBe('b')
+  })
+
+  it('range：anchor 为 null（全新视图）时退化成单选', () => {
+    const view = reduce(fourFiles(), { type: 'select', name: 'c', mode: 'range' })
+    expect(view.selected).toEqual(['c'])
+  })
+
+  it('关键回归：range 取【展示顺序】（排序后）而不是 entries 原始顺序', () => {
+    /*
+     * 若实现用 entries 原始顺序（d b a c）切片，从 a 到 c 会得到 d、b、a ——
+     * 内容与顺序都不对，而这正是「界面上连着的一大段，选中的却是散落几项」。
+     */
+    let view = reduce(fourFiles(), { type: 'select', name: 'a', mode: 'replace' })
+    view = reduce(view, { type: 'select', name: 'c', mode: 'range' })
+    expect(view.selected).toEqual(['a', 'b', 'c'])
+    // 对照：原始 entries 顺序确实不是 a/b/c/d（否则这条用例区分不出两种实现）
+    expect(names(view.entries)).toEqual(['d', 'b', 'a', 'c'])
+  })
+
+  it('range 也按【过滤后】的列表：隐藏文件不参与区间', () => {
+    let view = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/DCIM',
+          entries: [entry({ name: 'a' }), entry({ name: '.hidden' }), entry({ name: 'b' })],
+        }),
+      },
+      { type: 'select', name: 'a', mode: 'replace' },
+    )
+    view = reduce(view, { type: 'select', name: 'b', mode: 'range' })
+    expect(view.selected).toEqual(['a', 'b'])
+  })
+})
+
+describe('多选增强：selectAll 与 clearSelection', () => {
+  it('selectAll 只选传入的可见条目，anchor 不动', () => {
+    const base = reduce(createFileView(), { type: 'select', name: 'x', mode: 'replace' })
+    const view = reduce(base, { type: 'selectAll', names: ['a', 'b', 'c'] })
+    expect(view.selected).toEqual(['a', 'b', 'c'])
+    expect(view.anchor).toBe('x')
+  })
+
+  it('selectAll 用的是【传入的可见名单】，不是 state.entries 全量', () => {
+    // 视图里有 a/b/c，但调用方只报了两项（隐藏项被过滤掉的情形）
+    const base = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/DCIM',
+          entries: [entry({ name: 'a' }), entry({ name: '.hidden' }), entry({ name: 'b' }), entry({ name: 'c' })],
+        }),
+      },
+    )
+    const view = reduce(base, { type: 'selectAll', names: ['a', 'b'] })
+    expect(view.selected).toEqual(['a', 'b'])
+  })
+
+  it('selectAll 传入空列表（空目录）：选择保持为空，不报错', () => {
+    const view = reduce(createFileView(), { type: 'selectAll', names: [] })
+    expect(view.selected).toEqual([])
+  })
+
+  it('clearSelection：清空选中项，anchor 保留', () => {
+    const selected = reduce(createFileView(), { type: 'select', name: 'a', mode: 'replace' })
+    const cleared = reduce(selected, { type: 'clearSelection' })
+    expect(cleared.selected).toEqual([])
+    expect(cleared.anchor).toBe('a')
+  })
+
+  it('无变化时返回同一个 state 引用（不触发无谓重渲染）', () => {
+    const empty = createFileView()
+    expect(reduce(empty, { type: 'clearSelection' })).toBe(empty)
+    expect(reduce(empty, { type: 'selectAll', names: [] })).toBe(empty)
+    const all = reduce(empty, { type: 'selectAll', names: ['a', 'b'] })
+    expect(reduce(all, { type: 'selectAll', names: ['a', 'b'] })).toBe(all)
+  })
+})
+
+describe('多选增强：刷新后选中项与 anchor 一起收敛', () => {
+  it('多选场景下刷新：仍存在的选中项保留，消失的被剔除', () => {
+    const loaded = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/DCIM',
+          entries: [entry({ name: 'a' }), entry({ name: 'b' }), entry({ name: 'c' }), entry({ name: 'd' })],
+        }),
+      },
+      { type: 'select', name: 'a', mode: 'replace' },
+      { type: 'select', name: 'd', mode: 'range' },
+    )
+    expect(loaded.selected).toEqual(['a', 'b', 'c', 'd'])
+
+    const refreshed = reduce(
+      loaded,
+      { type: 'beginLoad' },
+      {
+        type: 'resolve',
+        generation: loaded.generation + 1,
+        data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a' }), entry({ name: 'c' })] }),
+      },
+    )
+    expect(refreshed.selected).toEqual(['a', 'c'])
+    expect(refreshed.anchor).toBe('a')
+  })
+
+  it('anchor 在刷新后消失 → anchor 置空，下一次 Shift 退化成单选', () => {
+    const loaded = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a' }), entry({ name: 'b' })] }),
+      },
+      { type: 'select', name: 'a', mode: 'replace' },
+    )
+    expect(loaded.anchor).toBe('a')
+    const refreshed = reduce(
+      loaded,
+      { type: 'beginLoad' },
+      {
+        type: 'resolve',
+        generation: loaded.generation + 1,
+        data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'b' })] }),
+      },
+    )
+    expect(refreshed.anchor).toBeNull()
+    expect(refreshed.selected).toEqual([])
+    const shifted = reduce(refreshed, { type: 'select', name: 'b', mode: 'range' })
+    expect(shifted.selected).toEqual(['b'])
+  })
+
+  it('换目录：selected 与 anchor 都清空', () => {
+    const loaded = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/DCIM' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a' }), entry({ name: 'b' })] }),
+      },
+      { type: 'select', name: 'a', mode: 'replace' },
+      { type: 'select', name: 'b', mode: 'range' },
+    )
+    expect(loaded.selected).toEqual(['a', 'b'])
+    const moved = reduce(
+      loaded,
+      { type: 'navigate', cwd: '/sdcard/Download' },
+      {
+        type: 'resolve',
+        generation: loaded.generation + 1,
+        data: listData({ dir: '/sdcard/Download', entries: [entry({ name: 'x' })] }),
+      },
+    )
+    expect(moved.selected).toEqual([])
+    expect(moved.anchor).toBeNull()
+  })
+})
+
+describe('多选增强：Ctrl/Cmd+A 与 Esc 的按键映射（纯函数）', () => {
+  it('Ctrl+A / Cmd+A（含大写 A）都是全选', () => {
+    expect(keyToSelectionAction({ key: 'a', ctrlKey: true })).toEqual({ kind: 'selectAll' })
+    expect(keyToSelectionAction({ key: 'A', ctrlKey: true })).toEqual({ kind: 'selectAll' })
+    expect(keyToSelectionAction({ key: 'a', metaKey: true })).toEqual({ kind: 'selectAll' })
+  })
+
+  it('单独按 a 不是全选（不能吞掉正常字符输入）', () => {
+    expect(keyToSelectionAction({ key: 'a' })).toEqual({ kind: 'none' })
+  })
+
+  it('Esc / Escape 都是清空', () => {
+    expect(keyToSelectionAction({ key: 'Escape' })).toEqual({ kind: 'clear' })
+    expect(keyToSelectionAction({ key: 'Esc' })).toEqual({ kind: 'clear' })
+  })
+
+  it('输入框焦点保护：input / textarea 里的 Ctrl+A 与 Esc 一律不拦截', () => {
+    expect(keyToSelectionAction({ key: 'a', ctrlKey: true, target: { tagName: 'INPUT' } })).toEqual({ kind: 'none' })
+    expect(keyToSelectionAction({ key: 'a', ctrlKey: true, target: { tagName: 'TEXTAREA' } })).toEqual({ kind: 'none' })
+    expect(keyToSelectionAction({ key: 'Escape', target: { tagName: 'INPUT' } })).toEqual({ kind: 'none' })
+    expect(keyToSelectionAction({ key: 'Escape', target: { tagName: 'TEXTAREA' } })).toEqual({ kind: 'none' })
+  })
+
+  it('其它目标（列表容器 / 行）不触发保护', () => {
+    expect(keyToSelectionAction({ key: 'a', ctrlKey: true, target: { tagName: 'DIV' } })).toEqual({ kind: 'selectAll' })
+    expect(keyToSelectionAction({ key: 'Escape', target: null })).toEqual({ kind: 'clear' })
+  })
+
+  it('其它键交给导航处理（不进选中命令）', () => {
+    for (const key of ['Backspace', 'F5', 'Enter', 'ArrowDown']) {
+      expect(keyToSelectionAction({ key }), key).toEqual({ kind: 'none' })
+    }
+  })
+})
+
+describe('多选增强：rangeNames 的边界', () => {
+  it('anchor 为 null → 只选目标', () => {
+    expect(rangeNames(['a', 'b', 'c'], null, 'c')).toEqual(['c'])
+  })
+
+  it('anchor 或目标不在列表里 → 只选目标', () => {
+    expect(rangeNames(['a', 'b', 'c'], 'zzz', 'c')).toEqual(['c'])
+    expect(rangeNames(['a', 'b', 'c'], 'a', 'zzz')).toEqual(['zzz'])
+  })
+
+  it('两端都命中 → 闭区间，且与方向无关', () => {
+    expect(rangeNames(['a', 'b', 'c', 'd'], 'b', 'c')).toEqual(['b', 'c'])
+    expect(rangeNames(['a', 'b', 'c', 'd'], 'c', 'b')).toEqual(['b', 'c'])
+  })
+
+  it('anchor 与目标是同一项 → 只有它自己', () => {
+    expect(rangeNames(['a', 'b'], 'b', 'b')).toEqual(['b'])
   })
 })

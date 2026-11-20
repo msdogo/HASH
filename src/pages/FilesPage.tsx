@@ -4,11 +4,13 @@ import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
   isHiddenName,
+  keyToSelectionAction,
   navKeyCommand,
   openTarget,
   summarizeEntries,
   viewFromPartial,
   visibleEntries,
+  type SelectMode,
 } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
 import { makeDownloadHandler } from '@shared/download-flow'
@@ -179,9 +181,9 @@ export function FilesPage() {
   )
 
   const handleSelect = useCallback(
-    (entry: FileEntry, additive: boolean) => {
+    (entry: FileEntry, mode: SelectMode) => {
       if (serial === null) return
-      dispatch(serial, { type: 'select', name: entry.name, additive })
+      dispatch(serial, { type: 'select', name: entry.name, mode })
     },
     [serial, dispatch],
   )
@@ -220,6 +222,23 @@ export function FilesPage() {
       const target = event.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
       if (serial === null) return
+      /*
+       * 【多选增强 / 问题 2】selectAll 与 clear 是同一条 keydown 里的两个分支，
+       * 与 Backspace / F5 共用一处键盘处理 —— 两套 keydown 早晚漂移（本项目已有先例）。
+       * 判定在 keyToSelectionAction 里（纯函数，可单测；输入框保护也在那儿）。
+       */
+      const selection = keyToSelectionAction(event)
+      if (selection.kind === 'selectAll') {
+        event.preventDefault()
+        // 全选的是【当前可见】条目：用与表格同一个 entries（已过滤+排序）
+        dispatch(serial, { type: 'selectAll', names: entries.map((entry) => entry.name) })
+        return
+      }
+      if (selection.kind === 'clear') {
+        event.preventDefault()
+        dispatch(serial, { type: 'clearSelection' })
+        return
+      }
       const command = navKeyCommand(event.key, current.cwd)
       if (command.kind === 'up') {
         event.preventDefault()
@@ -231,7 +250,7 @@ export function FilesPage() {
         void refresh(serial)
       }
     },
-    [serial, current.cwd, handleJump, refresh],
+    [serial, current.cwd, handleJump, refresh, dispatch, entries],
   )
 
   /*

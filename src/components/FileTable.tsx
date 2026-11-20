@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Folder, FileText, Link2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
-import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, type SortDir, type SortKey } from '@shared/file-view'
+import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, selectModeOf, type SelectMode, type SortDir, type SortKey } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
 
 /**
@@ -37,7 +37,11 @@ export interface FileTableProps {
   /** 滚动时上报位置（已按帧节流）。 */
   onScrollTop: (value: number) => void
   onOpen: (entry: FileEntry) => void
-  onSelect: (entry: FileEntry, additive: boolean) => void
+  /**
+   * 点击一行。mode 由修饰键决定（Shift=区间 / Ctrl=Cmd 切换 / 无=替换），
+   * 判定本身在 @shared/file-view 的 selectModeOf 里（可单测），组件只做转发。
+   */
+  onSelect: (entry: FileEntry, mode: SelectMode) => void
   onRetry: () => void
   /** 当前排序键与方向（点表头切换，裁决 4：排序结果由 useMemo 算好传进来）。 */
   sort: SortKey
@@ -134,7 +138,7 @@ export function FileTable(props: FileTableProps) {
                       tabIndex={0}
                       role="row"
                       aria-selected={active}
-                      onMouseDown={(event) => { props.onSelect(entry, event.ctrlKey || event.metaKey || event.shiftKey) }}
+                      onMouseDown={(event) => { props.onSelect(entry, selectModeOf(event)) }}
                       onDoubleClick={() => { props.onOpen(entry) }}
                       onKeyDown={(event) => {
                         if (isOpenKey(event.key)) {

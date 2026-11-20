@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { DeviceManager } from '../electron/devices/manager'
 import { CH, INVOKE_CHANNELS } from '../electron/ipc/channels'
 import {
@@ -368,5 +368,107 @@ describe('fs:list（裁决 7：接真实实现）', () => {
     const result = await ipc.invoke(CH.FS_LIST, { serial: '9N9CN2G0012A6F', dir: '/sdcard/a\nb' })
     expect(result).toEqual({ ok: false, error: 'E_INVALID_PATH' })
     expect(listCalls).toEqual([])
+  })
+})
+
+/* ============ 问题 1：local:pick-root 的「无载荷」必须合法 ============ */
+
+/*
+ * 修前 preflight 是：!parsed.success || parsed.data === undefined → E_BAD_ARGS。
+ * 而 ipcRenderer.invoke(channel) 不带第二参时，payload 就是 undefined，
+ * z.unknown().safeParse(undefined) 是 success=true、data=undefined ——
+ * 于是「更换目录」按钮稳定报「请求参数不合法」（真机实测复现）。
+ *
+ * 下面三条都断言**行为**：返回值 + deps.pickRoot 的调用次数，不看任何源码文本。
+ * 第三条是对照组：去掉判据不能把真正需要载荷的通道也一起放过。
+ */
+
+/** 记录 pickRoot 被调用几次、返回什么（默认空串 = 用户在对话框里点了取消）。 */
+function fakePickRoot(result: string | Error = ''): { calls: number; pickRoot: () => Promise<string> } {
+  const state = { calls: 0 }
+  return {
+    get calls() { return state.calls },
+    pickRoot: async () => {
+      state.calls += 1
+      if (result instanceof Error) throw result
+      return result
+    },
+  }
+}
+
+describe('local:pick-root（问题 1：不带载荷的 invoke 必须成功）', () => {
+  it('不带载荷调用（invoke(channel) 的真实形态）→ { ok:true }，且 pickRoot 恰好被调用一次', async () => {
+    const picker = fakePickRoot('/home/me/Pictures')
+    const { ipc } = harness({ pickRoot: picker.pickRoot })
+    // 关键：第二个参数根本不传 —— 与 preload 的 deps.invoke(CH.LOCAL_PICK_ROOT) 完全一致
+    const result = await ipc.invoke(CH.LOCAL_PICK_ROOT)
+    expect(result).toEqual({ ok: true, data: '/home/me/Pictures' })
+    expect(picker.calls).toBe(1)
+  })
+
+  it('带 null 载荷调用（preload 现在的显式形态）→ 同样 { ok:true } 且 pickRoot 调用一次', async () => {
+    const picker = fakePickRoot('/home/me/Music')
+    const { ipc } = harness({ pickRoot: picker.pickRoot })
+    const result = await ipc.invoke(CH.LOCAL_PICK_ROOT, null)
+    expect(result).toEqual({ ok: true, data: '/home/me/Music' })
+    expect(picker.calls).toBe(1)
+  })
+
+  it('用户取消（pickRoot 返回空串）也是 ok:true + 空串，不是错误', async () => {
+    const picker = fakePickRoot('')
+    const { ipc } = harness({ pickRoot: picker.pickRoot })
+    expect(await ipc.invoke(CH.LOCAL_PICK_ROOT)).toEqual({ ok: true, data: '' })
+    expect(picker.calls).toBe(1)
+  })
+
+  it('pickRoot 抛异常 → 收敛成错误码，不冒泡', async () => {
+    const picker = fakePickRoot(new Error('E_BAD_ARGS'))
+    const { ipc } = harness({ pickRoot: picker.pickRoot })
+    expect(await ipc.invoke(CH.LOCAL_PICK_ROOT)).toEqual({ ok: false, error: 'E_BAD_ARGS' })
+    expect(picker.calls).toBe(1)
+  })
+
+  it('对照组：真正需要载荷的通道（fs:list）不带载荷仍然必须是 E_BAD_ARGS', async () => {
+    const { ipc, listCalls, clients } = harness()
+    // 与上面第一条同样是「不带载荷」，但 fs:list 用的是 z.object，缺字段 → success=false
+    expect(await ipc.invoke(CH.FS_LIST)).toEqual({ ok: false, error: 'E_BAD_ARGS' })
+    expect(listCalls).toEqual([])
+    expect(clients).toEqual([])
+  })
+})
+
+/*
+ * preload 那一层：electron 在 node 测试环境里是 undefined（preload.ts 模块顶层就调用
+ * contextBridge.exposeInMainWorld），所以这里用 vi.mock('electron') 提供一个空壳桥，
+ * 再驱动真正的 buildApi —— 判据仍然是「调用记录」，不是源码文本。
+ */
+vi.mock('electron', () => ({
+  contextBridge: { exposeInMainWorld: () => undefined },
+  ipcRenderer: { invoke: async () => undefined, on: () => undefined, off: () => undefined },
+}))
+
+describe('preload 的 pickRoot 真的把载荷传下去了（问题 1 的第二层防线）', () => {
+  it('buildApi 的 local.pickRoot 调用 invoke 时带上了 LOCAL_PICK_ROOT 通道与一个非 undefined 载荷', async () => {
+    /*
+     * 直接驱动 buildApi（注入假 invoke），断言「调用记录」而不是源码文本：
+     * 修前 deps.invoke(CH.LOCAL_PICK_ROOT) 只有通道名，args 是空数组。
+     */
+    const { buildApi } = await import('../electron/preload')
+    const calls: Array<{ channel: string; args: unknown[] }> = []
+    const api = buildApi({
+      invoke: async (channel, ...args) => {
+        calls.push({ channel, args })
+        return { ok: true, data: '/picked' }
+      },
+      on: () => undefined,
+      off: () => undefined,
+    })
+    const result = await api.local.pickRoot()
+    expect(result).toEqual({ ok: true, data: '/picked' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].channel).toBe('local:pick-root')
+    // 关键：确实传了载荷，且不是 undefined（undefined 会被主进程当成「没传」）
+    expect(calls[0].args).toHaveLength(1)
+    expect(calls[0].args[0]).not.toBeUndefined()
   })
 })
