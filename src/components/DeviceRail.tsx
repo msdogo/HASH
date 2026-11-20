@@ -95,16 +95,16 @@ export function DeviceRail(props: DeviceRailProps) {
   const adbCode = adb !== null && adb.state === 'error' ? adb.code : ''
 
   return (
-    <aside className="flex w-[200px] shrink-0 flex-col border-r border-neutral-800 bg-[#1B1E27]">
+    <aside className="flex w-[200px] shrink-0 flex-col border-r border-neutral-300 bg-[#F0F2F5]">
       <div className="flex items-baseline justify-between px-3 py-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-400">{t('devices.title')}</h2>
-        <span className="text-[11px] text-neutral-600">{summary.total}</span>
+        <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-600">{t('devices.title')}</h2>
+        <span className="text-[11px] text-neutral-400">{summary.total}</span>
       </div>
 
       {adbBroken && (
-        <div className="mx-2 mb-2 rounded border border-amber-800/60 bg-amber-950/40 px-2 py-1.5 text-[11px] leading-snug text-amber-300">
+        <div className="mx-2 mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-700">
           <div className="font-medium">{t('devices.adbUnusable')}</div>
-          <div className="mt-0.5 text-amber-400/80">{errorText(adbCode)}</div>
+          <div className="mt-0.5 text-amber-600/80">{errorText(adbCode)}</div>
         </div>
       )}
 
@@ -125,14 +125,14 @@ export function DeviceRail(props: DeviceRailProps) {
               className={
                 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ' +
                 (active
-                  ? 'bg-neutral-800 text-neutral-100'
-                  : 'text-neutral-400 hover:bg-neutral-800/60')
+                  ? 'bg-neutral-200 text-neutral-900'
+                  : 'text-neutral-600 hover:bg-neutral-200/70')
               }
             >
               <span className={'h-2 w-2 shrink-0 rounded-full ' + DOT_CLASS[dot]} />
               {/* 裁决 9：有型号显示型号，没有回退 serial 后 4 位 */}
               <span className="truncate">{deviceLabel(device)}</span>
-              <span className="ml-auto shrink-0 text-[11px] tabular-nums text-neutral-600">
+              <span className="ml-auto shrink-0 text-[11px] tabular-nums text-neutral-400">
                 {serialTail(device.serial)}
               </span>
             </button>
@@ -146,7 +146,7 @@ export function DeviceRail(props: DeviceRailProps) {
           <p className="px-3 py-4 text-xs text-neutral-500">{t('devices.adbChecking')}</p>
         )}
         {showUnauthorizedHint && (
-          <p className="px-3 py-2 text-[11px] leading-snug text-amber-400/80">
+          <p className="px-3 py-2 text-[11px] leading-snug text-amber-600/80">
             {t('devices.unauthorizedHint')}
           </p>
         )}
@@ -156,12 +156,12 @@ export function DeviceRail(props: DeviceRailProps) {
       <button
         type="button"
         onClick={props.onShowOverview}
-        className="border-t border-neutral-800 px-3 py-2 text-left text-xs text-neutral-400 hover:bg-neutral-800/60"
+        className="border-t border-neutral-300 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-200/70"
       >
         {t('devices.all')}
       </button>
 
-      <div className="border-t border-neutral-800 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
+      <div className="border-t border-neutral-300 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
         {tf('devices.summary', { total: summary.total, online: summary.online })}
       </div>
     </aside>

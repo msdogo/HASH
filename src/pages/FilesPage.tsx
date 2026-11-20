@@ -486,7 +486,7 @@ export function FilesPage() {
         onSelectAll={handleSelectAll}
         downloadHint={queueNotice}
       />
-      <div className="flex items-center gap-1 border-b border-neutral-800 pr-2">
+      <div className="flex items-center gap-1 border-b border-neutral-300 pr-2">
         <div className="min-w-0 flex-1">
           <Breadcrumb
             path={current.cwd}
@@ -502,8 +502,8 @@ export function FilesPage() {
           className={
             'shrink-0 rounded p-1.5 ' +
             (current.showHidden
-              ? 'bg-neutral-800 text-neutral-100'
-              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100')
+              ? 'bg-neutral-200 text-neutral-900'
+              : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900')
           }
         >
           {current.showHidden
@@ -514,7 +514,7 @@ export function FilesPage() {
           type="button"
           onClick={() => { void refresh(serial) }}
           title={t('files.refresh')}
-          className="shrink-0 rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+          className="shrink-0 rounded p-1.5 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900"
         >
           <RefreshCw className={'h-3.5 w-3.5 ' + (current.status === 'loading' ? 'animate-spin' : '')} aria-hidden="true" />
         </button>
@@ -526,7 +526,7 @@ export function FilesPage() {
         * 这一条绝不能省：没有它，用户看到的就是「拖了一下，然后什么都没发生」。
         */}
       {dragPreparing !== null && (
-        <div className="flex items-center gap-2 border-b border-sky-900/50 bg-sky-950/30 px-3 py-1.5 text-[11px] leading-snug text-sky-300">
+        <div className="flex items-center gap-2 border-b border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] leading-snug text-sky-700">
           <span className="flex-1">
             {tf('files.dragPreparing', { done: dragPreparing.done, total: dragPreparing.total })}
             {' '}
@@ -537,13 +537,13 @@ export function FilesPage() {
 
       {/* 拖拽的提示（成功摘要 / 失败原因）：与队列提示同一位置，用户不必找两处 */}
       {dragNotice !== null && (
-        <div className="flex items-start gap-2 border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[11px] leading-snug text-amber-300">
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] leading-snug text-amber-700">
           <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span className="flex-1">{dragNotice}</span>
           <button
             type="button"
             onClick={dismissDragNotice}
-            className="shrink-0 rounded p-0.5 text-amber-400/70 hover:bg-amber-900/40 hover:text-amber-200"
+            className="shrink-0 rounded p-0.5 text-amber-600/70 hover:bg-amber-100 hover:text-amber-800"
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>
@@ -551,7 +551,7 @@ export function FilesPage() {
       )}
 
       {notice !== null && (
-        <div className="flex items-start gap-2 border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[11px] leading-snug text-amber-300">
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] leading-snug text-amber-700">
           <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span className="flex-1">
             {notice.degraded
@@ -562,7 +562,7 @@ export function FilesPage() {
             type="button"
             onClick={() => { dispatch(serial, { type: 'dismissNotice' }) }}
             title={t('files.notice.dismiss')}
-            className="shrink-0 rounded p-0.5 text-amber-400/70 hover:bg-amber-900/40 hover:text-amber-200"
+            className="shrink-0 rounded p-0.5 text-amber-600/70 hover:bg-amber-100 hover:text-amber-800"
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>
@@ -571,7 +571,7 @@ export function FilesPage() {
 
       {/* 刷新失败（不是跳转失败）：保留列表，只在顶部提示（裁决 3 的同一条原则） */}
       {current.error !== null && current.entries.length > 0 && (
-        <div className="border-b border-red-900/50 bg-red-950/30 px-3 py-1 text-[11px] text-red-300">
+        <div className="border-b border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-600">
           {errorText(current.error)}
         </div>
       )}
@@ -614,7 +614,7 @@ export function FilesPage() {
       {entries.length > 0 && (
         <div
           className={
-            'border-t border-neutral-800/60 px-3 py-1 text-[10px] text-neutral-600 transition-opacity ' +
+            'border-t border-neutral-300/70 px-3 py-1 text-[10px] text-neutral-400 transition-opacity ' +
             (current.selected.length > 0 ? 'opacity-60' : 'opacity-100')
           }
         >
@@ -622,10 +622,10 @@ export function FilesPage() {
         </div>
       )}
 
-      <div className="flex items-center gap-3 border-t border-neutral-800 px-3 py-1 text-[11px] text-neutral-500">
+      <div className="flex items-center gap-3 border-t border-neutral-300 px-3 py-1 text-[11px] text-neutral-500">
         <span>{tf('files.summary', { dirs: summary.dirs, files: summary.files })}</span>
         {current.selected.length > 0 && (
-          <span className="text-neutral-400">{tf('files.selected', { count: current.selected.length })}</span>
+          <span className="text-neutral-600">{tf('files.selected', { count: current.selected.length })}</span>
         )}
       </div>
 

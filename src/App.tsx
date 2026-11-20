@@ -45,8 +45,8 @@ export function App(props: AppProps = {}) {
 
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
-        <h1 className="text-sm font-semibold text-neutral-200">{t('app.name')}</h1>
+      <header className="flex items-center gap-3 border-b border-neutral-300 px-4 py-2">
+        <h1 className="text-sm font-semibold text-neutral-900">{t('app.name')}</h1>
         {/* 顶栏页签：当前设备 / 全部设备 */}
         <nav className="flex items-center gap-1">
           <button
@@ -54,7 +54,7 @@ export function App(props: AppProps = {}) {
             onClick={() => { setPage('files') }}
             className={
               'rounded px-2 py-0.5 text-xs ' +
-              (page === 'files' ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:bg-neutral-800/60')
+              (page === 'files' ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-500 hover:bg-neutral-200/70')
             }
           >
             {t('nav.files')}
@@ -64,7 +64,7 @@ export function App(props: AppProps = {}) {
             onClick={() => { setPage('overview') }}
             className={
               'rounded px-2 py-0.5 text-xs ' +
-              (page === 'overview' ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:bg-neutral-800/60')
+              (page === 'overview' ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-500 hover:bg-neutral-200/70')
             }
           >
             {t('nav.overview')}
@@ -89,7 +89,7 @@ export function App(props: AppProps = {}) {
           aria-label={t('nav.settings')}
           className={
             'ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-xs ' +
-            (page === 'settings' ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:bg-neutral-800/60')
+            (page === 'settings' ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-500 hover:bg-neutral-200/70')
           }
         >
           <Settings className="h-3.5 w-3.5" aria-hidden="true" />

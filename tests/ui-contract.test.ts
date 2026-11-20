@@ -276,7 +276,7 @@ describe('任务 9：文件操作与本地双栏契约（静态断言）', () =>
    * 但只要在改动处留一句 isDestructive(dialog) 的注释诱饵 → **全量 1203 passed、tsc 0**。
    * 即「注释即满足」，与第 9~13 次逐字同款。**已删除**，替代品是：
    *   - tests/op-view.test.ts：isDestructive 纯函数真值表（delete→true，其余→false，null→false）；
-   *   - tests/component-wiring.test.tsx：真渲染删除框断言标题带 text-red-300、
+   *   - tests/component-wiring.test.tsx：真渲染删除框断言标题带 text-red-600、
    *     确认按钮带 bg-red-600；渲染「新建文件夹」框断言**不带**这两个红色类 ——
    *     组件若把 isDestructive 写死 true/false，两个方向都会红。
    * 剩下两条（titleKey 映射与词面标题）保留：它查的是「标题走哪个 key」这一映射，

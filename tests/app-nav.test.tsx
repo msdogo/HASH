@@ -94,10 +94,10 @@ describe('R3-1：App 的 page 状态真的决定渲染哪一页', () => {
 
 describe('R3-1：顶栏「⚙设置」按钮的高亮跟着 page 走（toggle 的可见面）', () => {
   /*
-   * 高亮类必须带**前后空格**再匹配：未选中的那一支是 hover:bg-neutral-800/60，
-   * 直接用 includes('bg-neutral-800') 会永远为真（本项目反复踩过的无牙断言形态）。
+   * 高亮类必须带**前后空格**再匹配：未选中的那一支是 hover:bg-neutral-200/70，
+   * 直接用 includes('bg-neutral-200') 会永远为真（本项目反复踩过的无牙断言形态）。
    */
-  const ACTIVE = ' bg-neutral-800 '
+  const ACTIVE = ' bg-neutral-200 '
 
   it('在设置页时该按钮是高亮态', () => {
     expect(buttonByText(appHtml('settings'), t('nav.settings'))).toContain(ACTIVE)
@@ -135,7 +135,7 @@ describe('R3-1：设置页的「返回」按钮', () => {
     expect(tag).not.toMatch(/\sdisabled=""/)
     expect(tag).toContain('aria-label="' + t('settings.back') + '"')
     // 与页内既有小按钮同样的样式（边框 + 11px 灰字），不是裸文字按钮
-    expect(tag).toContain('border-neutral-700')
+    expect(tag).toContain('border-neutral-300')
   })
 
   it('文案来自 i18n（不是写死中文的裸字面量）', () => {

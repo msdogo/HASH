@@ -303,7 +303,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1100,
     minHeight: 680,
-    backgroundColor: '#12141A',
+    backgroundColor: '#F7F8FA',
     webPreferences: {
       // preload 产物是 CJS（.cjs）。不要关闭 sandbox：本项目 preload 依赖沙箱预加载器
       // 提供的 require 垫片，sandbox: false 时 window.api 会全部变成 undefined 且不报错。

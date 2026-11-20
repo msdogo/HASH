@@ -218,8 +218,8 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-y-auto">
-      <header className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-2">
-        <h2 className="mr-2 text-sm font-semibold text-neutral-200">{t('batch.title')}</h2>
+      <header className="flex flex-wrap items-center gap-2 border-b border-neutral-300 px-4 py-2">
+        <h2 className="mr-2 text-sm font-semibold text-neutral-900">{t('batch.title')}</h2>
         <button
           type="button"
           onClick={() => { void handleScreenshot() }}
@@ -260,29 +260,29 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
           <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
           {t('batch.shell')}
         </button>
-        {running && <span className="text-xs text-amber-400">{t('batch.running')}</span>}
+        {running && <span className="text-xs text-amber-600">{t('batch.running')}</span>}
         <span className="ml-auto text-xs text-neutral-500">
           {tf('batch.selected', { count: serials.length })}
         </span>
       </header>
 
       {/* 四个动作各自的附加输入：只显示与当前动作有关的字段，避免一行塞四个输入框 */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-1.5 text-xs text-neutral-400">
+      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-300 px-4 py-1.5 text-xs text-neutral-600">
         <button
           type="button"
           onClick={() => { void handlePickFiles() }}
-          className="rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-800"
+          className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-200"
         >
           {t('batch.pickFiles')}
         </button>
-        <span className="text-neutral-600">{files.length}</span>
+        <span className="text-neutral-400">{files.length}</span>
         <label className="flex items-center gap-1">
           {t('batch.dstDir')}
           <input
             value={dstDir}
             onChange={(event) => { setDstDir(event.target.value) }}
             placeholder={t('batch.dstDirPlaceholder')}
-            className="w-64 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-neutral-200"
+            className="w-64 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 text-neutral-900"
           />
         </label>
         <label className="flex items-center gap-1">
@@ -291,14 +291,14 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
             value={command}
             onChange={(event) => { setCommand(event.target.value) }}
             placeholder={t('batch.shellPlaceholder')}
-            className="w-64 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-neutral-200"
+            className="w-64 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 text-neutral-900"
           />
         </label>
       </div>
 
       {/* 设备表：列 = 勾选 / 型号 / 状态 / Android / 电量 / 存储 / 任务 */}
       <div className="min-h-0 flex-1">
-        <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-1 text-[11px] uppercase tracking-wide text-neutral-500">
+        <div className="flex items-center gap-2 border-b border-neutral-300 px-4 py-1 text-[11px] uppercase tracking-wide text-neutral-500">
           <input
             type="checkbox"
             checked={allPicked}
@@ -329,9 +329,9 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
 
       {/* 结果矩阵：顺序与入参一致（主进程按下标回填，R4） */}
       {(rows.length > 0 || error !== null || notice !== null) && (
-        <div className="border-t border-neutral-800 px-4 py-2">
+        <div className="border-t border-neutral-300 px-4 py-2">
           <div className="mb-1 flex items-center gap-2 text-xs">
-            <span className="font-medium text-neutral-300">
+            <span className="font-medium text-neutral-700">
               {error !== null
                 ? errorText(error)
                 : notice !== null
@@ -341,7 +341,7 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
             <button
               type="button"
               onClick={dismiss}
-              className="ml-auto rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800"
+              className="ml-auto rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:bg-neutral-200"
             >
               {t('batch.result.dismiss')}
             </button>
@@ -349,10 +349,10 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
           {/* R4 明确允许同一 serial 重复出现 → key 必须带下标，否则 React 会复用错行 */}
           {rows.map((row, index) => (
             <div key={row.serial + '#' + index} className="flex items-center gap-2 py-0.5 text-xs">
-              <span className={row.ok ? 'text-emerald-400' : 'text-red-400'}>
+              <span className={row.ok ? 'text-emerald-400' : 'text-red-700'}>
                 {row.ok ? '✔' : '✖'}
               </span>
-              <span className="w-52 shrink-0 truncate text-neutral-300">{row.serial}</span>
+              <span className="w-52 shrink-0 truncate text-neutral-700">{row.serial}</span>
               <span className="flex-1 truncate text-neutral-500">
                 {row.ok ? detailText(action, row) : errorText(row.code ?? 'E_UNKNOWN')}
               </span>
@@ -362,7 +362,7 @@ export function OverviewPage({ initial }: OverviewPageProps = {}) {
       )}
 
       {/* 数据可得性如实说明：电量与存储列当前没有数据来源 */}
-      <p className="border-t border-neutral-800 px-4 py-1.5 text-[11px] text-neutral-600">
+      <p className="border-t border-neutral-300 px-4 py-1.5 text-[11px] text-neutral-400">
         {t('batch.storageMissing')}
       </p>
     </section>
@@ -407,7 +407,7 @@ function DeviceRow(props: {
   const selectable = device.status === 'device'
 
   return (
-    <div className="flex items-center gap-2 border-b border-neutral-900 px-4 py-1 text-sm text-neutral-300">
+    <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-1 text-sm text-neutral-700">
       <input
         type="checkbox"
         checked={checked}
@@ -419,21 +419,21 @@ function DeviceRow(props: {
         <span className={'h-2 w-2 shrink-0 rounded-full ' + DOT_CLASS[dot]} />
         <span className="truncate">{deviceLabel(device)}</span>
       </span>
-      <span className="w-20 shrink-0 text-xs text-neutral-400">{t(DOT_LABEL_KEY[dot])}</span>
-      <span className="w-24 shrink-0 text-xs text-neutral-400">
+      <span className="w-20 shrink-0 text-xs text-neutral-600">{t(DOT_LABEL_KEY[dot])}</span>
+      <span className="w-24 shrink-0 text-xs text-neutral-600">
         {device.android === undefined ? t('batch.unknown') : 'Android ' + device.android}
       </span>
       {/* 电量：没有数据就显示 —（绝不编造 0%） */}
-      <span className="w-16 shrink-0 text-xs text-neutral-400">
+      <span className="w-16 shrink-0 text-xs text-neutral-600">
         {battery === null ? t('batch.unknown') : battery + '%'}
       </span>
       {/* 存储条：没有数据就只有占位符，不画一条假的 0% 进度条 */}
       <span className="flex w-44 shrink-0 items-center gap-1.5">
         {storage === null ? (
-          <span className="text-xs text-neutral-600">{t('batch.unknown')}</span>
+          <span className="text-xs text-neutral-400">{t('batch.unknown')}</span>
         ) : (
           <>
-            <span className="h-1.5 w-24 overflow-hidden rounded bg-neutral-800">
+            <span className="h-1.5 w-24 overflow-hidden rounded bg-neutral-200">
               <span
                 className="block h-full rounded bg-sky-500"
                 style={{ width: storage.percent + '%' }}
@@ -443,7 +443,7 @@ function DeviceRow(props: {
           </>
         )}
       </span>
-      <span className="w-20 shrink-0 text-xs text-neutral-400">
+      <span className="w-20 shrink-0 text-xs text-neutral-600">
         {taskCount === 0 ? t('batch.idle') : tf('batch.tasks', { count: taskCount })}
       </span>
     </div>

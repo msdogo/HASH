@@ -70,7 +70,7 @@ export function OpDialogHost(props: OpDialogProps) {
     return lastSummary === null ? null : <OpResultNotice summary={lastSummary} onDismiss={dismissSummary} />
   }
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50">
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30">
       <OpDialogCard key={dialog.kind + ':' + dialog.targets.join('|')} dialog={dialog} serial={props.serial} cwd={props.cwd} onRefresh={props.onRefresh} />
     </div>
   )
@@ -125,9 +125,9 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
   }
 
   return (
-    <div className="w-[440px] max-w-[92vw] rounded-lg border border-neutral-700 bg-neutral-900 p-4 shadow-xl">
+    <div className="w-[440px] max-w-[92vw] rounded-lg border border-neutral-300 bg-neutral-100 p-4 shadow-xl">
       <div className="flex items-center gap-2">
-        <h2 className={'text-sm font-medium ' + (isDestructive(dialog) ? 'text-red-300' : 'text-neutral-200')}>
+        <h2 className={'text-sm font-medium ' + (isDestructive(dialog) ? 'text-red-600' : 'text-neutral-900')}>
           {t(titleKey(dialog))}
         </h2>
         <button
@@ -135,17 +135,17 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
           onClick={close}
           disabled={busy}
           title={t('op.cancel')}
-          className="ml-auto rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40"
+          className="ml-auto rounded p-0.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-40"
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
       {dialog.kind === 'delete' ? <DeleteFacts facts={dialog.facts} /> : (
-        <div className="mt-3 space-y-2 text-xs text-neutral-300">
+        <div className="mt-3 space-y-2 text-xs text-neutral-700">
           {needsName && (
             <label className="block">
-              <span className="text-neutral-400">{t('op.field.name')}</span>
+              <span className="text-neutral-600">{t('op.field.name')}</span>
               <input
                 autoFocus
                 value={name}
@@ -154,13 +154,13 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
                 onChange={(event) => { setName(event.target.value) }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void confirm() }}
                 placeholder={dialog.kind === 'newFolder' ? t('op.field.folderPlaceholder') : t('op.field.namePlaceholder')}
-                className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-200"
+                className="mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 text-neutral-900"
               />
             </label>
           )}
           {needsDir && (
             <label className="block">
-              <span className="text-neutral-400">{t('op.field.dstPlaceholder')}</span>
+              <span className="text-neutral-600">{t('op.field.dstPlaceholder')}</span>
               <input
                 autoFocus
                 value={dstDir}
@@ -168,7 +168,7 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
                 aria-label={t('op.field.dstPlaceholder')}
                 onChange={(event) => { setDstDir(event.target.value) }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void confirm() }}
-                className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 font-mono text-neutral-200"
+                className="mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 font-mono text-neutral-900"
               />
             </label>
           )}
@@ -182,7 +182,7 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
           onClick={close}
           disabled={busy}
           title={t('op.cancel')}
-          className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+          className="rounded border border-neutral-300 px-3 py-1 text-xs text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
         >
           {t('op.cancel')}
         </button>
@@ -205,24 +205,24 @@ function OpDialogCard(props: { dialog: OpDialog; serial: string; cwd: string; on
 
 function DeleteFacts(props: { facts: OpDialog['facts'] }) {
   const facts = props.facts
-  if (facts === undefined) return <p className="mt-3 text-xs text-red-300">{t('op.busy')}</p>
+  if (facts === undefined) return <p className="mt-3 text-xs text-red-600">{t('op.busy')}</p>
   return (
-    <div className="mt-3 space-y-2 text-xs text-neutral-300">
-      <p className="font-medium text-neutral-200">{tf('op.delete.count', { count: facts.count })}</p>
-      <ul className="max-h-40 space-y-0.5 overflow-auto rounded bg-neutral-950/60 p-2 font-mono text-[11px]">
+    <div className="mt-3 space-y-2 text-xs text-neutral-700">
+      <p className="font-medium text-neutral-900">{tf('op.delete.count', { count: facts.count })}</p>
+      <ul className="max-h-40 space-y-0.5 overflow-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
         {facts.names.map((item) => <li key={item} className="truncate">{item}</li>)}
         {facts.truncated && (
           <li className="text-neutral-500">{tf('op.delete.more', { rest: facts.count - facts.names.length })}</li>
         )}
       </ul>
       {facts.hasNonEmptyDir && (
-        <p className="flex items-start gap-1 rounded bg-amber-950/40 px-2 py-1 text-amber-300">
+        <p className="flex items-start gap-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
           <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{t('op.delete.nonEmpty')}</span>
         </p>
       )}
       {facts.blocked.length > 0 && (
-        <div className="rounded bg-neutral-950/60 px-2 py-1 text-[11px] text-neutral-400">
+        <div className="rounded bg-neutral-50 px-2 py-1 text-[11px] text-neutral-600">
           <p>{tf('op.delete.blocked', { count: facts.blocked.length })}</p>
           <ul className="mt-0.5 space-y-0.5">
             {facts.blocked.map((item) => (
@@ -233,7 +233,7 @@ function DeleteFacts(props: { facts: OpDialog['facts'] }) {
           </ul>
         </div>
       )}
-      <p className="text-red-400">{t('op.delete.irreversible')}</p>
+      <p className="text-red-700">{t('op.delete.irreversible')}</p>
     </div>
   )
 }
@@ -245,7 +245,7 @@ function OpResultNotice(props: { summary: OpSummary; onDismiss: () => void }) {
     <div
       className={
         'absolute bottom-3 left-1/2 z-20 w-[460px] max-w-[92vw] -translate-x-1/2 rounded-lg border px-3 py-2 text-xs shadow-lg ' +
-        (allOk ? 'border-emerald-800 bg-emerald-950/90 text-emerald-200' : 'border-red-900 bg-red-950/90 text-red-200')
+        (allOk ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700')
       }
       data-testid="op-result"
     >
@@ -268,7 +268,7 @@ function OpResultNotice(props: { summary: OpSummary; onDismiss: () => void }) {
                 也不知道重试会撞上什么。这两个数字是唯一能让他做决定的依据。
               */}
               {item.removed !== undefined && item.remaining !== undefined && (
-                <span className="ml-1 text-amber-300">
+                <span className="ml-1 text-amber-700">
                   （{tf('op.result.partial', { removed: item.removed, remaining: item.remaining })}）
                 </span>
               )}

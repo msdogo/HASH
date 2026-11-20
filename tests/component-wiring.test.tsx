@@ -148,7 +148,7 @@ describe('终审 I-5：删除确认框必须渲染出事实（OpDialog + DeleteF
  * 就含这两个词。复审实测：组件里的判断改成写死的 false / true，全量 1203 仍全绿。
  *
  * 这里改成「用户看得见的东西」：
- *   - isDestructive → 标题是否红（text-red-300）、确认按钮是否红（bg-red-600）；
+ *   - isDestructive → 标题是否红（text-red-600）、确认按钮是否红（bg-red-600）；
  *   - canConfirm   → 确认按钮是否 disabled（count=0 必须禁用，count>0 必须可用）。
  * 任一函数被写死或不再被调用，正反两个方向都会红。
  */
@@ -171,10 +171,10 @@ function isDisabled(tag: string): boolean {
 }
 
 describe('合并前复审：isDestructive 的渲染效果必须跟着 dialog.kind 走', () => {
-  it('删除框：标题红色（text-red-300）+ 确认按钮红色（bg-red-600）', () => {
+  it('删除框：标题红色（text-red-600）+ 确认按钮红色（bg-red-600）', () => {
     const html = dialogHtml(DIALOG)
     // 两处 isDestructive(dialog)（OpDialog.tsx:107 标题 / :196 按钮）都要真的生效
-    expect(html).toContain('text-red-300')
+    expect(html).toContain('text-red-600')
     expect(buttonWithTitle(html, t('op.confirm'))).toContain('bg-red-600')
     // 对照组：不是空 HTML
     expect(html).toContain(t('op.delete.title'))
@@ -182,7 +182,7 @@ describe('合并前复审：isDestructive 的渲染效果必须跟着 dialog.kin
 
   it('新建文件夹框：标题与按钮都不是红色（isDestructive 写死 true 会在这里红）', () => {
     const html = dialogHtml({ dialog: { kind: 'newFolder', targets: [] } })
-    expect(html).not.toContain('text-red-300')
+    expect(html).not.toContain('text-red-600')
     expect(buttonWithTitle(html, t('op.confirm'))).not.toContain('bg-red-600')
     // 对照组：确实渲染出了新建对话框
     expect(html).toContain(t('op.newFolder.title'))

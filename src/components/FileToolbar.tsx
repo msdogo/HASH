@@ -37,7 +37,7 @@ export function FileToolbar(props: FileToolbarProps) {
   const none = props.selectedCount === 0
   const disabled = !props.ready
   return (
-    <div className="flex items-center gap-0.5 border-b border-neutral-800 px-2 py-1">
+    <div className="flex items-center gap-0.5 border-b border-neutral-300 px-2 py-1">
       <ToolButton icon={<FolderPlus className="h-3.5 w-3.5" />} label={t('op.toolbar.newFolder')} onClick={props.onCreateFolder} disabled={disabled} />
       <ToolButton icon={<Pencil className="h-3.5 w-3.5" />} label={t('op.toolbar.rename')} onClick={props.onRename} disabled={disabled || none || props.selectedCount > 1} />
       <ToolButton icon={<Copy className="h-3.5 w-3.5" />} label={t('op.toolbar.copyTo')} onClick={props.onCopyTo} disabled={disabled || none} />
@@ -49,7 +49,7 @@ export function FileToolbar(props: FileToolbarProps) {
         * **不**受 `none` 约束：没有任何选中项时正是它最该可点的时刻。
         */}
       <ToolButton icon={<ListChecks className="h-3.5 w-3.5" />} label={t('files.toolbar.selectAll')} onClick={props.onSelectAll} disabled={disabled} />
-      <span className="mx-1 h-3 w-px bg-neutral-800" />
+      <span className="mx-1 h-3 w-px bg-neutral-200" />
       <ToolButton
         icon={<Trash2 className="h-3.5 w-3.5" />}
         label={t('op.toolbar.delete')}
@@ -58,7 +58,7 @@ export function FileToolbar(props: FileToolbarProps) {
         danger
       />
       {props.downloadHint !== null && (
-        <span className="ml-2 min-w-0 truncate text-[10px] text-amber-400">{props.downloadHint}</span>
+        <span className="ml-2 min-w-0 truncate text-[10px] text-amber-600">{props.downloadHint}</span>
       )}
     </div>
   )
@@ -85,9 +85,9 @@ function ToolButton(props: {
       className={
         'flex items-center gap-1 rounded px-1.5 py-1 text-[11px] disabled:opacity-30 ' +
         (props.danger
-          ? 'text-red-400 hover:bg-red-950/50'
-          : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100') +
-        (pressed ? ' bg-neutral-800' : '')
+          ? 'text-red-700 hover:bg-red-50'
+          : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900') +
+        (pressed ? ' bg-neutral-200' : '')
       }
     >
       {props.icon}

@@ -86,31 +86,31 @@ export function SettingsPage(props: SettingsPageProps) {
         onClick={props.onBack}
         title={t('settings.back')}
         aria-label={t('settings.back')}
-        className="mb-3 flex items-center gap-1 rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+        className="mb-3 flex items-center gap-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200"
       >
         <ArrowLeft className="h-3 w-3" aria-hidden="true" />
         {t('settings.back')}
       </button>
-      <h2 className="mb-3 text-sm font-semibold text-neutral-200">{t('settings.title')}</h2>
+      <h2 className="mb-3 text-sm font-semibold text-neutral-900">{t('settings.title')}</h2>
 
       {error !== null && (
-        <div className="mb-3 rounded border border-red-900/50 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-300">
+        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] text-red-600">
           {errorText(error)}
         </div>
       )}
 
       {/* ---- 默认下载路径（可写） ---- */}
-      <div className="mb-4 rounded border border-neutral-800" data-testid="settings-download-dir">
-        <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-2">
-          <Download className="h-3.5 w-3.5 shrink-0 text-neutral-400" aria-hidden="true" />
-          <span className="text-xs font-medium text-neutral-200">{t('settings.downloadDir.title')}</span>
+      <div className="mb-4 rounded border border-neutral-300" data-testid="settings-download-dir">
+        <div className="flex items-center gap-2 border-b border-neutral-300 px-3 py-2">
+          <Download className="h-3.5 w-3.5 shrink-0 text-neutral-600" aria-hidden="true" />
+          <span className="text-xs font-medium text-neutral-900">{t('settings.downloadDir.title')}</span>
         </div>
         <div className="flex flex-col gap-2 px-3 py-2.5">
           <p className="text-[11px] leading-snug text-neutral-500">{t('settings.downloadDir.desc')}</p>
           <div className="flex items-center gap-2">
             <FolderOpen className="h-3.5 w-3.5 shrink-0 text-neutral-500" aria-hidden="true" />
             <span
-              className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-300"
+              className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-700"
               title={downloadDir}
             >
               {downloadDir === ''
@@ -123,7 +123,7 @@ export function SettingsPage(props: SettingsPageProps) {
               type="button"
               disabled={loading}
               onClick={() => { void pickDownloadDir() }}
-              className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+              className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
             >
               {t('settings.downloadDir.change')}
             </button>
@@ -132,14 +132,14 @@ export function SettingsPage(props: SettingsPageProps) {
               disabled={loading || isDefault}
               onClick={() => { void resetDownloadDir() }}
               title={t('settings.downloadDir.reset')}
-              className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+              className="flex items-center gap-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
             >
               <RotateCcw className="h-3 w-3" aria-hidden="true" />
               {t('settings.downloadDir.reset')}
             </button>
             {/* 当前是不是默认值：用户点「恢复默认」之前应该知道自己已在默认上 */}
             {data !== null && (
-              <span className="text-[10px] text-neutral-600">
+              <span className="text-[10px] text-neutral-400">
                 {isDefault ? t('settings.downloadDir.defaultHint') : t('settings.downloadDir.customHint')}
               </span>
             )}
@@ -148,17 +148,17 @@ export function SettingsPage(props: SettingsPageProps) {
       </div>
 
       {/* ---- adb 状态（只读） ---- */}
-      <div className="rounded border border-neutral-800" data-testid="settings-adb">
-        <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-2">
-          <Info className="h-3.5 w-3.5 shrink-0 text-neutral-400" aria-hidden="true" />
-          <span className="text-xs font-medium text-neutral-200">{t('settings.adb.title')}</span>
-          <span className="ml-auto text-[10px] text-neutral-600">{t('settings.adb.readonly')}</span>
+      <div className="rounded border border-neutral-300" data-testid="settings-adb">
+        <div className="flex items-center gap-2 border-b border-neutral-300 px-3 py-2">
+          <Info className="h-3.5 w-3.5 shrink-0 text-neutral-600" aria-hidden="true" />
+          <span className="text-xs font-medium text-neutral-900">{t('settings.adb.title')}</span>
+          <span className="ml-auto text-[10px] text-neutral-400">{t('settings.adb.readonly')}</span>
         </div>
         <div className="flex flex-col gap-1 px-3 py-2.5">
           {adb === undefined || adb.state === 'checking' ? (
             <span className="text-[11px] text-neutral-500">{t('settings.adb.checking')}</span>
           ) : adb.state === 'error' ? (
-            <span className="text-[11px] text-red-300">{tf('settings.adb.error', { text: errorText(adb.code) })}</span>
+            <span className="text-[11px] text-red-600">{tf('settings.adb.error', { text: errorText(adb.code) })}</span>
           ) : (
             <>
               <Row label={t('settings.adb.source')} value={sourceLabel(adb.source)} />
@@ -177,7 +177,7 @@ function Row(props: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-baseline gap-2">
       <span className="w-12 shrink-0 text-[11px] text-neutral-500">{props.label}</span>
-      <span className={'min-w-0 flex-1 truncate text-[11px] text-neutral-300' + (props.mono === true ? ' font-mono' : '')} title={props.value}>
+      <span className={'min-w-0 flex-1 truncate text-[11px] text-neutral-700' + (props.mono === true ? ' font-mono' : '')} title={props.value}>
         {props.value}
       </span>
     </div>

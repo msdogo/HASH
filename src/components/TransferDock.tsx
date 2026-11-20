@@ -62,9 +62,9 @@ export function TransferDock() {
   }
 
   return (
-    <footer className="border-t border-neutral-800 bg-neutral-950/40 px-3 py-1.5 text-[11px] text-neutral-400">
+    <footer className="border-t border-neutral-300 bg-neutral-50 px-3 py-1.5 text-[11px] text-neutral-600">
       <div className="flex items-center gap-2">
-        <span className="shrink-0 font-medium text-neutral-300">{t('transfer.title')}</span>
+        <span className="shrink-0 font-medium text-neutral-700">{t('transfer.title')}</span>
         <span className="min-w-0 flex-1 truncate">
           {snapshot.running + snapshot.queued === 0
             ? t('transfer.idle')
@@ -75,7 +75,7 @@ export function TransferDock() {
           disabled={serial === null}
           onClick={() => { void handleUpload() }}
           title={t('transfer.upload')}
-          className="shrink-0 rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-40"
+          className="shrink-0 rounded px-1.5 py-0.5 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-40"
         >
           <ArrowUpFromLine className="h-3 w-3" aria-hidden="true" />
         </button>
@@ -84,14 +84,14 @@ export function TransferDock() {
           disabled={!hasFinishedTransfer(snapshot)}
           onClick={() => { void handleRowAction(clearFinished()) }}
           title={t('transfer.clearFinished')}
-          className="shrink-0 rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-40"
+          className="shrink-0 rounded px-1.5 py-0.5 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-40"
         >
           <Trash2 className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>
 
       {error !== null && (
-        <div className="mt-1 flex items-start gap-1 text-[11px] text-red-300">
+        <div className="mt-1 flex items-start gap-1 text-[11px] text-red-600">
           <Warn className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => { setError(null) }} title={t('files.notice.dismiss')} className="shrink-0">
@@ -138,25 +138,25 @@ function TransferRow(props: {
         ? <span className="shrink-0 text-neutral-500">{t('transfer.unknownTotal')}</span>
         : (
           <span className="flex w-24 shrink-0 items-center gap-1">
-            <span className="h-1 flex-1 overflow-hidden rounded bg-neutral-800">
+            <span className="h-1 flex-1 overflow-hidden rounded bg-neutral-200">
               <span className="block h-full bg-sky-500" style={{ width: percent + '%' }} />
             </span>
             <span className="w-8 shrink-0 text-right tabular-nums">{Math.round(percent)}%</span>
           </span>
         )}
       <span className="shrink-0 text-neutral-500">{t('transfer.status.' + row.status)}</span>
-      {row.overwrote && <span className="shrink-0 text-amber-400" title={t('transfer.overwrote')}>{t('transfer.overwrote')}</span>}
-      {row.pausedOffline && <span className="shrink-0 text-amber-400">{t('transfer.queuedOnOffline')}</span>}
+      {row.overwrote && <span className="shrink-0 text-amber-600" title={t('transfer.overwrote')}>{t('transfer.overwrote')}</span>}
+      {row.pausedOffline && <span className="shrink-0 text-amber-600">{t('transfer.queuedOnOffline')}</span>}
       {row.error !== undefined && (
-        <span className="shrink-0 max-w-40 truncate text-red-300" title={errorText(row.error)}>{errorText(row.error)}</span>
+        <span className="shrink-0 max-w-40 truncate text-red-600" title={errorText(row.error)}>{errorText(row.error)}</span>
       )}
       {row.canCancel && (
-        <button type="button" onClick={onCancel} title={t('transfer.cancel')} className="shrink-0 rounded p-0.5 hover:bg-neutral-800">
+        <button type="button" onClick={onCancel} title={t('transfer.cancel')} className="shrink-0 rounded p-0.5 hover:bg-neutral-200">
           <Ban className="h-3 w-3" aria-hidden="true" />
         </button>
       )}
       {row.canRetry && (
-        <button type="button" onClick={onRetry} title={t('transfer.retry')} className="shrink-0 rounded p-0.5 hover:bg-neutral-800">
+        <button type="button" onClick={onRetry} title={t('transfer.retry')} className="shrink-0 rounded p-0.5 hover:bg-neutral-200">
           <RefreshCw className="h-3 w-3" aria-hidden="true" />
         </button>
       )}

@@ -88,12 +88,12 @@ export function LocalPanel(props: LocalPanelProps) {
 
   if (props.collapsed) {
     return (
-      <div className="flex w-9 shrink-0 flex-col items-center border-l border-neutral-800 py-2">
+      <div className="flex w-9 shrink-0 flex-col items-center border-l border-neutral-300 py-2">
         <button
           type="button"
           onClick={props.onToggleCollapsed}
           title={t('local.title')}
-          className="rounded p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+          className="rounded p-1 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900"
         >
           <FolderOpen className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -105,13 +105,13 @@ export function LocalPanel(props: LocalPanelProps) {
 
   return (
     <aside
-      className="flex shrink-0 flex-col border-l border-neutral-800"
+      className="flex shrink-0 flex-col border-l border-neutral-300"
       style={{ width }}
       data-testid="local-panel"
     >
-      <div className="flex items-center gap-1 border-b border-neutral-800 px-2 py-1.5">
-        <span className="shrink-0 text-[11px] font-medium text-neutral-400">{t('local.title')}</span>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-600" title={data?.cwd ?? ''}>
+      <div className="flex items-center gap-1 border-b border-neutral-300 px-2 py-1.5">
+        <span className="shrink-0 text-[11px] font-medium text-neutral-600">{t('local.title')}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-400" title={data?.cwd ?? ''}>
           {data?.cwd ?? ''}
         </span>
         <button
@@ -119,7 +119,7 @@ export function LocalPanel(props: LocalPanelProps) {
           disabled={data?.parent === null || data === null}
           onClick={() => { if (data !== null && data.parent !== null) void load(data.parent) }}
           title={t('local.up')}
-          className="shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-30"
+          className="shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-30"
         >
           <ArrowUp className="h-3 w-3" aria-hidden="true" />
         </button>
@@ -127,7 +127,7 @@ export function LocalPanel(props: LocalPanelProps) {
           type="button"
           onClick={() => { void load(data?.cwd) }}
           title={t('local.refresh')}
-          className="shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-100"
+          className="shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
         >
           <RefreshCw className={'h-3 w-3 ' + (loading ? 'animate-spin' : '')} aria-hidden="true" />
         </button>
@@ -135,7 +135,7 @@ export function LocalPanel(props: LocalPanelProps) {
           type="button"
           onClick={() => { void pickRoot() }}
           title={t('local.pickRoot')}
-          className="shrink-0 rounded px-1 text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-100"
+          className="shrink-0 rounded px-1 text-[11px] text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
         >
           {t('local.pickRoot')}
         </button>
@@ -143,25 +143,25 @@ export function LocalPanel(props: LocalPanelProps) {
           type="button"
           onClick={props.onToggleCollapsed}
           title={t('local.title')}
-          className="shrink-0 rounded px-1 text-[11px] text-neutral-600 hover:bg-neutral-800 hover:text-neutral-300"
+          className="shrink-0 rounded px-1 text-[11px] text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
         >
           ›
         </button>
       </div>
 
       {/* 起始浏览目录：让用户知道本地栏当前打开的是哪里（R2-1 之后它不再是「范围」） */}
-      <div className="truncate border-b border-neutral-800/60 px-2 py-1 text-[10px] text-neutral-600" title={data?.startDir ?? ''}>
+      <div className="truncate border-b border-neutral-300/70 px-2 py-1 text-[10px] text-neutral-400" title={data?.startDir ?? ''}>
         {data === null ? '' : tf('local.startDir', { dir: data.startDir })}
       </div>
 
       {error !== null && (
-        <div className="border-b border-red-900/50 bg-red-950/30 px-2 py-1 text-[11px] leading-snug text-red-300">
+        <div className="border-b border-red-200 bg-red-50 px-2 py-1 text-[11px] leading-snug text-red-600">
           {errorText(error)}
         </div>
       )}
 
       {notice !== null && (
-        <div className="border-b border-amber-900/50 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-300">
+        <div className="border-b border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
           {notice}
         </div>
       )}
@@ -190,12 +190,12 @@ export function LocalPanel(props: LocalPanelProps) {
               className={
                 'flex items-center gap-1.5 px-2 py-1 text-xs ' +
                 (item.isDir || canPick ? 'cursor-default ' : 'opacity-60 ') +
-                (active ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-300 hover:bg-neutral-800/50')
+                (active ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-700 hover:bg-neutral-200/50')
               }
               title={item.full}
             >
               {item.isDir
-                ? <Folder className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
+                ? <Folder className="h-3.5 w-3.5 shrink-0 text-sky-600" aria-hidden="true" />
                 : item.isLink
                   ? <Link2 className="h-3.5 w-3.5 shrink-0 text-neutral-500" aria-hidden="true" />
                   : <FileText className="h-3.5 w-3.5 shrink-0 text-neutral-500" aria-hidden="true" />}
@@ -205,8 +205,8 @@ export function LocalPanel(props: LocalPanelProps) {
         })}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-neutral-800 px-2 py-1">
-        <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-600">
+      <div className="flex items-center gap-2 border-t border-neutral-300 px-2 py-1">
+        <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-400">
           {path === null ? t('local.selectHint') : (path.split(/[\\/]/).pop() ?? '')}
         </span>
         <button
@@ -218,7 +218,7 @@ export function LocalPanel(props: LocalPanelProps) {
             const name = path.split(/[\\/]/).pop() ?? ''
             props.onUpload(path, name)
           }}
-          className="shrink-0 rounded border border-neutral-700 px-1.5 py-0.5 text-[10px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+          className="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
         >
           ↑ {t('transfer.upload')}
         </button>

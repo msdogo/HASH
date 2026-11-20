@@ -127,7 +127,7 @@ export function FileTable(props: FileTableProps) {
         列头可点排序：只派发 setSort，真正的排序由 FilesPage 的 useMemo 完成（裁决 4）。
         组件里不持有排序结果，也不在渲染里排序。
       */}
-      <div className="flex items-center gap-3 border-b border-neutral-800 px-3 py-1.5 text-[11px] text-neutral-500">
+      <div className="flex items-center gap-3 border-b border-neutral-300 px-3 py-1.5 text-[11px] text-neutral-500">
         <SortHeader label={t('files.column.name')} sortKey="name" current={props.sort} dir={props.sortDir} onSort={props.onSort} className="flex-1 text-left" />
         <SortHeader label={t('files.column.size')} sortKey="size" current={props.sort} dir={props.sortDir} onSort={props.onSort} className="w-24 shrink-0 justify-end" />
         <SortHeader label={t('files.column.mtime')} sortKey="time" current={props.sort} dir={props.sortDir} onSort={props.onSort} className="w-36 shrink-0 justify-end" />
@@ -181,11 +181,11 @@ export function FileTable(props: FileTableProps) {
                       }}
                       className={
                         'flex cursor-default select-none items-center gap-2 px-3 text-sm ' +
-                        (active ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-300 hover:bg-neutral-800/50')
+                        (active ? 'bg-neutral-200 text-neutral-900' : 'text-neutral-700 hover:bg-neutral-200/50')
                       }
                     >
                       {entry.isDir
-                        ? <Folder className="h-4 w-4 shrink-0 text-sky-400" aria-hidden="true" />
+                        ? <Folder className="h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />
                         : <FileText className="h-4 w-4 shrink-0 text-neutral-500" aria-hidden="true" />}
                       <span className="min-w-0 flex-1 truncate" title={entry.name}>
                         {entry.name}
@@ -204,7 +204,7 @@ export function FileTable(props: FileTableProps) {
                       <span className="w-36 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">
                         {formatMtime(entry, props.tzOffsetMinutes) ?? t('files.unknownMeta')}
                       </span>
-                      <span className="w-28 shrink-0 truncate text-right text-[11px] text-neutral-600">
+                      <span className="w-28 shrink-0 truncate text-right text-[11px] text-neutral-400">
                         {!isMetaKnown(entry) || entry.mode === '' ? t('files.unknownMeta') : entry.mode}
                       </span>
                       {entry.isDir && (
@@ -213,7 +213,7 @@ export function FileTable(props: FileTableProps) {
                           onClick={(event) => { event.stopPropagation(); props.onOpen(entry) }}
                           onMouseDown={(event) => { event.stopPropagation() }}
                           title={t('files.open')}
-                          className="ml-1 shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-700 hover:text-neutral-200"
+                          className="ml-1 shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
                         >
                           <ArrowUp className="h-3 w-3 rotate-90" aria-hidden="true" />
                         </button>
@@ -239,11 +239,11 @@ function EmptyState(props: {
   if (props.status === 'error') {
     return (
       <div className="flex flex-col items-start gap-3 p-6 text-sm">
-        <p className="text-red-300">{props.error === null ? '' : errorText(props.error)}</p>
+        <p className="text-red-600">{props.error === null ? '' : errorText(props.error)}</p>
         <button
           type="button"
           onClick={props.onRetry}
-          className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+          className="rounded border border-neutral-300 px-3 py-1 text-xs text-neutral-700 hover:bg-neutral-200"
         >
           {t('files.retry')}
         </button>
@@ -277,7 +277,7 @@ function SortHeader(props: {
       type="button"
       onClick={() => { props.onSort(props.sortKey) }}
       title={t('files.sortHint')}
-      className={'flex items-center gap-0.5 hover:text-neutral-200 ' + props.className + (active ? ' text-neutral-300' : '')}
+      className={'flex items-center gap-0.5 hover:text-neutral-900 ' + props.className + (active ? ' text-neutral-700' : '')}
     >
       <span>{props.label}</span>
       {active && (props.dir === 'asc'
