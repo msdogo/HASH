@@ -136,7 +136,12 @@ const messages: Record<string, string> = {
   'op.rename.title': '重命名',
   'op.copy.title': '复制到目录',
   'op.move.title': '移动到目录',
-  'op.needLocalDir': '请先在本地面板里选择一个目标文件夹',
+  /*
+   * 【R2-2】原文案是「请先在本地面板里选择一个目标文件夹」—— 本地面板已由用户裁决
+   * 不再作为下载目标，文案必须跟着改，否则用户会去本地面板里找一个根本不生效的设置。
+   * 现在这条只在「设置里的下载路径还没读到」时出现（它是异常态，不是常态）。
+   */
+  'op.needLocalDir': '还没读到默认下载路径，请到「设置」里选一个下载文件夹后重试',
   'op.downloaded': '已加入下载队列，可在下方查看进度',
 
   // ---- 本地栏（任务 9 / 裁决 5）----
@@ -201,6 +206,36 @@ const messages: Record<string, string> = {
   // ---- 顶栏页面切换（任务 10）----
   'nav.files': '当前设备',
   'nav.overview': '全部设备',
+  // ---- R2-2：设置页 ----
+  'nav.settings': '设置',
+  'settings.title': '设置',
+  'settings.downloadDir.title': '默认下载路径',
+  'settings.downloadDir.desc': '「下载到本地」把文件存到这里。拖拽到资源管理器时，落点由你松手的位置决定',
+  'settings.downloadDir.current': '当前：{dir}',
+  'settings.downloadDir.defaultHint': '当前就是系统默认的下载目录',
+  'settings.downloadDir.customHint': '当前是自定义目录',
+  'settings.downloadDir.change': '更换',
+  'settings.downloadDir.reset': '恢复默认',
+  'settings.downloadDir.pickTitle': '选择默认下载路径',
+  'settings.downloadDir.empty': '还没有读到下载路径',
+  'settings.downloadDir.loading': '正在读取设置…',
+  'settings.downloadDir.reload': '重新读取',
+  'settings.adb.title': 'adb 状态',
+  'settings.adb.source': '来源',
+  'settings.adb.path': '路径',
+  'settings.adb.version': '版本',
+  'settings.adb.checking': '正在查找 adb…',
+  'settings.adb.error': '无法使用 adb：{text}',
+  'settings.adb.readonly': 'adb 由应用自动定位，不能在这里修改',
+  'settings.adb.source.custom': '自定义（环境变量 ADB_PATH）',
+  'settings.adb.source.env': '环境变量 ADB_PATH',
+  'settings.adb.source.bundled': '内置（随应用打包）',
+  'settings.adb.source.path': '系统 PATH',
+  'settings.adb.source.unknown': '未知',
+  'settings.adb.unknown': '未知',
+  // ---- R2-2：多选可见入口 ----
+  'files.toolbar.selectAll': '全选',
+  'files.selectHint': 'Ctrl 点击加选 · Shift 点击选区间 · Ctrl+A 全选 · Esc 取消选择',
 }
 
 /**

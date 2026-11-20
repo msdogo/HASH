@@ -14,6 +14,7 @@ import {
 } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
 import { makeDownloadHandler } from '@shared/download-flow'
+import { downloadDirForDownload } from '@shared/settings'
 import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { FileTable } from '@/components/FileTable'
@@ -24,6 +25,7 @@ import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
 import { useLocalStore } from '@/store/localStore'
 import { useOpStore } from '@/store/opStore'
+import { useSettingsStore } from '@/store/settingsStore'
 import { useTransferStore } from '@/store/transferStore'
 import { useDragStore } from '@/store/dragStore'
 import { joinEntryPath } from '@shared/file-view'
@@ -96,6 +98,19 @@ export function FilesPage() {
   const dragNotice = useDragStore((state) => state.notice)
   const dragOut = useDragStore((state) => state.dragOut)
   const dismissDragNotice = useDragStore((state) => state.dismissNotice)
+
+  /*
+   * 设置里的默认下载路径（R2-2 用户裁决）。
+   *
+   * 只订阅 data 这一个字段：它只在用户改设置时变化，不会像进度那样把整页拖进重渲染。
+   * 下载目标**不再**取本地面板的 cwd —— 判定集中在 @shared/settings 的
+   * downloadDirForDownload（有专门的优先级用例），组件只负责把结果注入下载流程。
+   */
+  const settingsData = useSettingsStore((state) => state.data)
+  const loadSettings = useSettingsStore((state) => state.load)
+
+  // 首次进入文件页时确保设置已加载：下载目标依赖它，没加载就会出现「没读到路径」的提示
+  useEffect(() => { void loadSettings() }, [loadSettings])
 
   /** 本地面板折叠状态（任务 9：本地双栏可折叠）。 */
   const [localCollapsed, setLocalCollapsed] = useState(false)
@@ -292,11 +307,20 @@ export function FilesPage() {
         serial,
         run: download,
         selectedTargets,
-        // localData 只在渲染里用到 cwd；回调里现取，避免把整个 data 塞进依赖
-        localDir: () => (serial === null ? undefined : useLocalStore.getState().data?.cwd),
+        /*
+         * 【R2-2 用户裁决】普通下载的目标 = 设置里的默认下载路径。
+         *
+         * 修前这里取的是本地面板的当前目录（useLocalStore.getState().data?.cwd），
+         * 于是用户必须先把本地栏切到想要的位置，否则文件会落在一个他不认识的地方。
+         * 现在两件事彻底分开：普通下载看设置，拖拽下载看资源管理器的落点。
+         *
+         * settingsData 来自 store 订阅（渲染期已就位），不需要再 getState() 现取；
+         * 本地面板的 cwd 仍然传进去，只为让「它不参与判定」这条规则可被测试证明。
+         */
+        localDir: () => downloadDirForDownload(settingsData, useLocalStore.getState().data?.cwd),
         notify: setQueueNotice,
       })(),
-    [serial, selectedTargets, download],
+    [serial, selectedTargets, download, settingsData],
   )
 
   /** 上传：本地面板选中的文件 → 设备当前目录（同样走队列，与任务 8 的入口一致）。 */
@@ -386,6 +410,21 @@ export function FilesPage() {
     if (code !== null) setQueueNotice(errorText(code))
   }, [serial, selectedTargets, prepareDelete])
 
+  /*
+   * 全选（R2-2：多选功能早就实现了，但界面上没有任何入口 —— 用户直接问「多选在哪里」）。
+   *
+   * 复用 file-view 里既有的 selectAll action，且**与 Ctrl+A 走同一条**：
+   * 选中范围都是「当前可见条目」（已过滤 + 排序后的 entries），都由 FilesPage 的同一个
+   * useMemo 结果给出。两处各算一份是这类功能最常见的漂移来源
+   * （隐藏项/排序变化后 Ctrl+A 与按钮选到不同的集合）。
+   *
+   * 无选中项时按钮**不禁用**：全选的意义正是「当前什么都没选」。
+   */
+  const handleSelectAll = useCallback(() => {
+    if (serial === null) return
+    dispatch(serial, { type: 'selectAll', names: entries.map((entry) => entry.name) })
+  }, [serial, dispatch, entries])
+
   const handleCopyTo = useCallback(() => {
     const targets = selectedTargets()
     if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
@@ -429,6 +468,7 @@ export function FilesPage() {
         onCopyTo={handleCopyTo}
         onMoveTo={handleMoveTo}
         onDownload={() => { void handleDownload() }}
+        onSelectAll={handleSelectAll}
         downloadHint={queueNotice}
       />
       <div className="flex items-center gap-1 border-b border-neutral-800 pr-2">
@@ -545,6 +585,27 @@ export function FilesPage() {
           onDragStartRow={handleDragStartRow}
         />
       </div>
+
+      {/*
+        * 多选操作提示（R2-2）。
+        *
+        * 修前多选功能完整可用（Shift 区间 / Ctrl 加选 / Ctrl+A / Esc），但界面零提示，
+        * 只有在左下角选中后才有「已选 N 项」—— 用户根本不知道能用。
+        *
+        * 显示条件：**有内容可选的目录**（还没加载完/空目录时不占位）。
+        * 选中后就淡下去（opacity）而不是整条消失：消失会让布局跳动一次，
+        * 而用户正在用这些快捷键时最不该看到的就是界面在跳。
+        */}
+      {entries.length > 0 && (
+        <div
+          className={
+            'border-t border-neutral-800/60 px-3 py-1 text-[10px] text-neutral-600 transition-opacity ' +
+            (current.selected.length > 0 ? 'opacity-60' : 'opacity-100')
+          }
+        >
+          {t('files.selectHint')}
+        </div>
+      )}
 
       <div className="flex items-center gap-3 border-t border-neutral-800 px-3 py-1 text-[11px] text-neutral-500">
         <span>{tf('files.summary', { dirs: summary.dirs, files: summary.files })}</span>

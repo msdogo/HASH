@@ -19,6 +19,7 @@ import { DragOutService } from './drag/service'
 import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
 import { LocalFs } from './fs/local'
+import { createSettingsStore } from './settings/store'
 import { homedir } from 'node:os'
 import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
@@ -109,6 +110,33 @@ const fsOps = new FsOpsService({
 })
 
 const localFs = new LocalFs({ startDir: () => startDir })
+
+/**
+ * 设置存储（R2-2：默认下载路径持久化）。
+ *
+ * ===== 为什么是「懒建」的 getter 而不是模块顶层的 createSettingsStore(...) =====
+ * app.getPath('userData') / app.getPath('downloads') 在 app ready 之前不可靠
+ * （模块顶层求值时 whenReady 还没跑）。而 HandlerDeps 要求 settings 是一个**对象**，
+ * 不能是「还不确定什么时候能建」的东西。用 getter 把求值推迟到第一次真正读设置，
+ * 那时窗口已建、ready 早已发生 —— 这条路径只在 whenReady 之后被调用。
+ *
+ * ===== 为什么路径必须注入 =====
+ * electron-store 依赖 Electron 的 app 对象，直接 `new Store()` 在纯 node 环境下会抛。
+ * 把 filePath / defaultDownloadDir 交给调用方（这里是 app），
+ * electron/settings/store.ts 才能在测试里用临时目录做「写 → 重建 → 读回」的真读写证明。
+ */
+let settingsStore: ReturnType<typeof createSettingsStore> | undefined
+
+/** 取设置存储；尚未初始化时立即建（getPath 在 whenReady 之后恒定可用）。 */
+function settings(): ReturnType<typeof createSettingsStore> {
+  if (settingsStore === undefined) {
+    settingsStore = createSettingsStore({
+      filePath: app.getPath('userData'),
+      defaultDownloadDir: app.getPath('downloads'),
+    })
+  }
+  return settingsStore
+}
 
 /**
  * 批量截图待清理的临时文件（任务 10 / R1）。
@@ -367,6 +395,32 @@ app.whenReady().then(async () => {
               if (picked.canceled || picked.filePaths.length === 0) return ''
               startDir = picked.filePaths[0]
               return startDir
+            },
+            /*
+             * R2-2：设置页的「更换下载路径」。
+             *
+             * 与 pickRoot 的关键差别：**不改 startDir**（本地面板的浏览起点）。
+             * 在设置页换下载路径不该让本地栏跳走；两者只是共用同一个系统对话框。
+             * 默认路径给当前生效的下载目录，用户再次打开时从上次的位置开始。
+             */
+            pickDownloadDir: async () => {
+              const win = BrowserWindow.getAllWindows()[0]
+              if (win === undefined) return ''
+              const current = settings().getDownloadDir()
+              const picked = await dialog.showOpenDialog(win, {
+                title: t('settings.downloadDir.pickTitle'),
+                defaultPath: current,
+                properties: ['openDirectory', 'createDirectory'],
+              })
+              if (picked.canceled || picked.filePaths.length === 0) return ''
+              return picked.filePaths[0]
+            },
+            // 设置页读写的唯一数据源；坏值降级、校验都在 electron/settings/store.ts 里
+            settings: {
+              getDownloadDir: () => settings().getDownloadDir(),
+              getDefaultDownloadDir: () => settings().getDefaultDownloadDir(),
+              setDownloadDir: (dir) => settings().setDownloadDir(dir),
+              resetDownloadDir: () => settings().resetDownloadDir(),
             },
             transfer: transfer.controller,
             batch: batchService,

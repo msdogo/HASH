@@ -514,6 +514,88 @@ describe('任务 8：传输底栏契约（静态断言）', () => {
   })
 })
 
+/*
+ * R2-2：设置页与默认下载路径的**只能静态查**的那几条规则。
+ *
+ * 这里刻意只保留「禁止形态」类断言（不 import node / 不用 as any / 不硬编码中文）——
+ * 它们无法被注释满足，也没有对应的行为用例可以替代（组件里写死一句中文，
+ * 行为测试不会红，因为那句话本来就会出现在 HTML 里）。
+ *
+ * 与设置有关的**行为**（持久化真读写、坏值降级、下载目标优先级）在
+ * tests/settings-store.test.ts / tests/settings-flow.test.ts / tests/settings-ipc.test.ts，
+ * 渲染期在 tests/settings-page.test.tsx。本文件不再放任何 toContain(源码) 断言。
+ */
+describe('R2-2：设置页与下载路径的静态契约', () => {
+  const SETTINGS_SOURCES = [
+    'src/pages/SettingsPage.tsx',
+    'src/store/settingsStore.ts',
+    'src/shared/settings.ts',
+    'electron/settings/store.ts',
+  ]
+
+  it('新增源码不 import 渲染层禁用的 node 模块 / electron，且无 as any', () => {
+    for (const rel of SETTINGS_SOURCES) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/\bas\s+any\b/)
+      expect(source, rel).not.toMatch(/@ts-ignore|@ts-expect-error/)
+    }
+    // 渲染层三件（shared / store / page）不得 import node 内置模块或 electron
+    for (const rel of ['src/pages/SettingsPage.tsx', 'src/store/settingsStore.ts', 'src/shared/settings.ts']) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/from ['"]node:/)
+      expect(source, rel).not.toMatch(/require\(/)
+      expect(source, rel).not.toMatch(/from ['"]electron['"]/)
+    }
+    // 主进程的设置存储反过来**必须**用 electron-store 与 node 的真实文件系统
+    const store = read('electron/settings/store.ts')
+    expect(store).toMatch(/from ['"]electron-store['"]/)
+    expect(store).toMatch(/from ['"]node:fs['"]/)
+  })
+
+  it('设置页与 store 的文案全部走 i18n（无硬编码中文）', () => {
+    for (const rel of ['src/pages/SettingsPage.tsx', 'src/store/settingsStore.ts', 'src/shared/settings.ts']) {
+      const source = read(rel)
+      const noComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const hanInCode = /['"`>][^'"`<]*[\u4e00-\u9fff][^'"`<]*['"`<]/.test(noComments)
+      expect(hanInCode, rel).toBe(false)
+    }
+  })
+
+  it('下载目标的判定不碰本地面板的 store（本地面板不再作为下载目标）', () => {
+    // 这条查的是**禁止形态**：shared 的下载目标判定与设置 store 都不得 import localStore /
+    // 不得读 useLocalStore 的 data.cwd —— 一旦有人把「回退到本地面板目录」加回来，
+    // 这里与 tests/settings-flow.test.ts 的优先级用例会同时红。
+    for (const rel of ['src/shared/settings.ts', 'src/store/settingsStore.ts']) {
+      const source = read(rel)
+      expect(source, rel).not.toMatch(/localStore/)
+      expect(source, rel).not.toMatch(/useLocalStore/)
+    }
+    // 设置页不得自己拼默认下载路径（必须来自主进程的 getDefaultDownloadDir / reset）
+    const page = read('src/pages/SettingsPage.tsx')
+    expect(page).not.toMatch(/Downloads['"`]/)
+  })
+
+  /*
+   * 【如实记录门禁边界】FilesPage 里那一行注入（localDir: () => downloadDirForDownload(...)）
+   * 是**点击时才执行**的组件接线，本工程无 jsdom、只做 SSR 渲染，
+   * 实测把它换回「本地面板 cwd」后全量仍然全绿 —— 与项目里已记录的
+   * N10 / I-3 属于同一类「组件内调用点无法观测」的缺口。
+   *
+   * 所以这里保留一条**禁止形态**断言（查的是「某种写法不存在」，注释无法满足它，
+   * 因为匹配前先把注释剥掉）：FilesPage 的 localDir 注入不得直接读 useLocalStore。
+   * 判定本身仍在 src/shared/settings.ts（tests/settings-flow.test.ts 有优先级用例），
+   * 这条只负责拦住「接线被改回旧行为」这一种退化。
+   */
+  it('FilesPage 的下载目标注入不得直接读本地面板 store（禁止形态）', () => {
+    const page = read('src/pages/FilesPage.tsx')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    expect(page).toMatch(/localDir:\s*\(\)\s*=>\s*downloadDirForDownload\(/)
+    // 反向：localDir 的箭头函数体内不得出现 useLocalStore
+    expect(page).not.toMatch(/localDir:\s*\(\)\s*=>\s*[^,\n]*useLocalStore/)
+  })
+})
+
 describe('任务 7 审查轮 1：修复项的静态契约', () => {
   it('C1：FilesPage 不在 handleOpen/handleJump 里清空列表（导航只登记目标）', () => {
     const page = read('src/pages/FilesPage.tsx')

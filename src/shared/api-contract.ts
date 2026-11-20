@@ -4,6 +4,7 @@ import type { TransferSnapshot, TransferTask } from './transfer'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from './file-ops'
 import type { BatchRunData } from './batch'
 import type { DragOutFailure, DragOutProgress } from './drag'
+import type { SettingsData } from './settings'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -168,6 +169,45 @@ export type LocalListInput = z.infer<typeof LOCAL_LIST_INPUT>
 /** local:pick-root 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
 export const LOCAL_PICK_ROOT_INPUT = z.unknown()
 
+/* ============ R2-2：设置（默认下载路径） ============ */
+
+/**
+ * settings:get 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。
+ *
+ * 为什么不是 settings:get({ key })：设置页现在只展示「默认下载路径 + adb 状态」，
+ * 后者每次都要现取（adb 自检可能还在跑），按 key 取会让界面自己拼一份不一致的快照。
+ * 整份返回才有唯一的一份真值。
+ */
+export const SETTINGS_GET_INPUT = z.unknown()
+
+/**
+ * settings:set-download-dir 入参。
+ *
+ * 为什么**不**做一个通用的 settings:set({ patch })：
+ * 用户裁决「设置页目前只加默认下载路径」，通用 patch 会让「再塞一个字段」变成零成本，
+ * 而每个字段的校验规则其实不同（这是路径，将来可能是开关或枚举）。
+ * 一个通道一件事，校验就永远精确。
+ *
+ * min(1)：空串没有「用默认目录」的合理含义 —— 想回默认应该点「恢复默认」，
+ * 那是**动作用户明确点出来的**，而不是一个空值的隐式副作用。
+ */
+export const SETTINGS_SET_DOWNLOAD_DIR_INPUT = z.object({
+  downloadDir: z.string().min(1),
+})
+export type SettingsSetDownloadDirInput = z.infer<typeof SETTINGS_SET_DOWNLOAD_DIR_INPUT>
+
+/**
+ * settings:pick-download-dir 入参（无意义载荷，统一走 unknown）。
+ *
+ * 为什么**不复用** local:pick-root：那个通道的副作用是把本地面板的起始浏览目录
+ * 改成新选的目录（main.ts 里的 `startDir = ...`）。在设置页换个下载路径
+ * 不该顺手把本地栏跳走 —— 那是两件不同的事，只是都会弹同一个系统对话框。
+ */
+export const SETTINGS_PICK_DOWNLOAD_DIR_INPUT = z.unknown()
+
+/** settings:reset-download-dir 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
+export const SETTINGS_RESET_DOWNLOAD_DIR_INPUT = z.unknown()
+
 /* ============ 任务 10：批量操作（全设备总览页） ============ */
 
 /**
@@ -242,6 +282,7 @@ export type { TransferSnapshot, TransferTask } from './transfer'
 export type { DragOutFailure, DragOutProgress } from './drag'
 export type { FsOpData, FsRemoveFactsData, LocalListData, LocalItem } from './file-ops'
 export type { BatchItemResult, BatchRunData } from './batch'
+export type { SettingsAdb, SettingsData } from './settings'
 
 /* ============ 唯一 API 接口（I3：编译期强制的唯一事实源） ============ */
 
@@ -307,6 +348,32 @@ export interface DshApi {
     list(payload: LocalListInput): Promise<IpcResult<LocalListData>>
     /** 让用户挑选本地栏的起始浏览目录（不是访问边界）；取消返回空串（不是错误）。 */
     pickRoot(): Promise<IpcResult<string>>
+  }
+  /* ---- R2-2：设置（默认下载路径 + adb 只读状态） ---- */
+  settings: {
+    /**
+     * 取一份设置快照：生效中的默认下载路径、本机默认下载目录、adb 只读状态。
+     *
+     * downloadDir 一定是**可用值**（主进程已在读取时把坏值降级为本机「下载」目录），
+     * 所以「普通下载」直接拿它当目标 —— 见 src/shared/settings.ts 的 downloadTargetOf。
+     */
+    get(): Promise<IpcResult<SettingsData>>
+    /**
+     * 写默认下载路径。
+     *
+     * 非法值（非绝对路径 / 目录不存在）返回错误码而不是静默回退：
+     * 这是用户的显式动作，必须能区分「改成了」与「没改成」。
+     */
+    setDownloadDir(payload: SettingsSetDownloadDirInput): Promise<IpcResult<SettingsData>>
+    /**
+     * 弹出目录选择框挑默认下载路径；取消返回空串（不是错误）。
+     *
+     * 与 local:pick-root 分开：那个通道会顺带改本地面板的起始浏览目录，
+     * 在设置页换下载路径不该让本地栏跳走。
+     */
+    pickDownloadDir(): Promise<IpcResult<string>>
+    /** 恢复默认（写回本机「下载」目录）。 */
+    resetDownloadDir(): Promise<IpcResult<SettingsData>>
   }
   transfer: {
     /** 加入传输队列（上传或下载）。 */

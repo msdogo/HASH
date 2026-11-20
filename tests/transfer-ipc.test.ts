@@ -6,6 +6,7 @@ import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { E_BAD_ARGS, E_NO_SERIAL } from '../src/shared/errors'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeSettings } from './fake-settings'
 
 /*
  * 传输 IPC 层（任务 8）。
@@ -69,6 +70,9 @@ function harness(over: Partial<HandlerDeps> = {}, hasDevice = true): Harness {
     },
     local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
+    // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
+    settings: fakeSettings(),
+    pickDownloadDir: async () => '',
     // 本文件只测传输：批量给空壳，只为满足 HandlerDeps（批量有 tests/batch-*.test.ts）
     batch: fakeBatch(),
     drag: fakeDrag(),

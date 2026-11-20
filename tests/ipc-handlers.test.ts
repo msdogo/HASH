@@ -15,6 +15,7 @@ import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeSettings } from './fake-settings'
 
 /* ============ 假 ipcMain：捕获注册表，直接调用 handler ============ */
 
@@ -206,6 +207,9 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     ops: fakeOps(),
     local: fakeLocal(),
     pickRoot: async () => '',
+    // R2-2：设置（默认下载路径）。本文件不测设置本身（tests/settings-*.test.ts），空壳只满足 HandlerDeps
+    settings: fakeSettings(),
+    pickDownloadDir: async () => '',
     batch: fakeBatch(),
     drag: fakeDrag(),
     ...over,

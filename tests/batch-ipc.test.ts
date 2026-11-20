@@ -4,6 +4,7 @@ import { registerHandlers, type BatchController, type HandlerDeps, type IpcMainL
 import { DeviceManager } from '../electron/devices/manager'
 import type { BatchRunData } from '../src/shared/batch'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS } from '../src/shared/errors'
+import { fakeSettings } from './fake-settings'
 
 /*
  * 批量 IPC 层（任务 10）。
@@ -81,6 +82,9 @@ function harness(options: { adbPath?: string; hasDevices?: boolean; over?: Parti
     },
     local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
+    // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
+    settings: fakeSettings(),
+    pickDownloadDir: async () => '',
     transfer: {
       enqueue: async () => { throw new Error('not used') },
       cancel: () => false,

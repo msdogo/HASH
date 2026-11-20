@@ -13,6 +13,7 @@ import type {
   FsRemoveFactsInput,
   FsRenameInput,
   LocalListInput,
+  SettingsSetDownloadDirInput,
   TransferEnqueueInput,
   TransferIdInput,
 } from '../src/shared/api-contract'
@@ -20,6 +21,7 @@ import type { BatchRunData } from '../src/shared/batch'
 import type { DragOutFailure, DragOutProgress } from '../src/shared/drag'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from '../src/shared/file-ops'
+import type { SettingsData } from '../src/shared/settings'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 
 /**
@@ -124,6 +126,25 @@ export function buildApi(deps: PreloadDeps): DshApi {
        */
       pickRoot: (): Promise<IpcResult<string>> =>
         deps.invoke(CH.LOCAL_PICK_ROOT, null) as Promise<IpcResult<string>>,
+    },
+    settings: {
+      /** 取设置快照（默认下载路径 + 本机默认目录 + adb 只读状态）。 */
+      get: (): Promise<IpcResult<SettingsData>> =>
+        deps.invoke(CH.SETTINGS_GET, null) as Promise<IpcResult<SettingsData>>,
+      /** 写默认下载路径（非法值返回错误码，不静默回退）。 */
+      setDownloadDir: (payload: SettingsSetDownloadDirInput): Promise<IpcResult<SettingsData>> =>
+        deps.invoke(CH.SETTINGS_SET_DOWNLOAD_DIR, payload) as Promise<IpcResult<SettingsData>>,
+      /**
+       * 挑一个目录作为默认下载路径；取消返回空串。
+       *
+       * 显式传 null 与 pickRoot 同理：不带载荷时主进程收到 undefined，
+       * 会被 preflight 判成 E_BAD_ARGS（任务 9 真机踩过一次，这里不再重犯）。
+       */
+      pickDownloadDir: (): Promise<IpcResult<string>> =>
+        deps.invoke(CH.SETTINGS_PICK_DOWNLOAD_DIR, null) as Promise<IpcResult<string>>,
+      /** 恢复默认下载路径。 */
+      resetDownloadDir: (): Promise<IpcResult<SettingsData>> =>
+        deps.invoke(CH.SETTINGS_RESET_DOWNLOAD_DIR, null) as Promise<IpcResult<SettingsData>>,
     },
     transfer: {
       /** 加入传输队列。 */

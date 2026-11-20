@@ -7,6 +7,7 @@ import { DRAG_OUT_INPUT } from '../src/shared/api-contract'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeSettings } from './fake-settings'
 
 /*
  * 拖拽的 IPC 层（简报 C）。
@@ -70,6 +71,9 @@ function harness(over: Partial<HandlerDeps> = {}, options: { hasDevice?: boolean
     },
     local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
     pickRoot: async () => '',
+    // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
+    settings: fakeSettings(),
+    pickDownloadDir: async () => '',
     batch: fakeBatch(),
     transfer: {
       enqueue: async () => task(),
@@ -186,6 +190,9 @@ describe('transfer:begin-drag-out 的前置检查', () => {
         },
         local: { list: async () => ({ cwd: 'C:/', parent: null, items: [], startDir: 'C:/' }) },
         pickRoot: async () => '',
+        // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
+        settings: fakeSettings(),
+        pickDownloadDir: async () => '',
         batch: fakeBatch(),
         transfer: {
           enqueue: async () => task(), cancel: () => false, retry: () => false, get: () => undefined,

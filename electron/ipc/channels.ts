@@ -59,6 +59,16 @@ export const CH = {
   /** invoke：让用户挑选本地栏的起始浏览目录（系统目录选择框；不是访问边界）。 */
   LOCAL_PICK_ROOT: 'local:pick-root',
 
+  /* ===== R2-2：设置（默认下载路径持久化） ===== */
+  /** invoke：取设置快照（默认下载路径 + adb 只读状态）。 */
+  SETTINGS_GET: 'settings:get',
+  /** invoke：写默认下载路径（zod 校验 + 主进程路径闸门）。 */
+  SETTINGS_SET_DOWNLOAD_DIR: 'settings:set-download-dir',
+  /** invoke：弹出目录选择框挑默认下载路径（取消返回空串，不改本地栏）。 */
+  SETTINGS_PICK_DOWNLOAD_DIR: 'settings:pick-download-dir',
+  /** invoke：恢复默认下载路径（写回系统「下载」目录）。 */
+  SETTINGS_RESET_DOWNLOAD_DIR: 'settings:reset-download-dir',
+
   /* ===== 任务 10：批量操作（全设备总览页） ===== */
   /** invoke：批量截图（每台设备各存一张 png 到用户选的目录）。 */
   BATCH_SCREENSHOT: 'batch:screenshot',
@@ -89,6 +99,11 @@ export const INVOKE_CHANNELS = [
   CH.FS_MOVE,
   CH.LOCAL_LIST,
   CH.LOCAL_PICK_ROOT,
+  // R2-2：设置（默认下载路径）
+  CH.SETTINGS_GET,
+  CH.SETTINGS_SET_DOWNLOAD_DIR,
+  CH.SETTINGS_PICK_DOWNLOAD_DIR,
+  CH.SETTINGS_RESET_DOWNLOAD_DIR,
   CH.TRANSFER_ENQUEUE,
   CH.TRANSFER_CANCEL,
   CH.TRANSFER_RETRY,

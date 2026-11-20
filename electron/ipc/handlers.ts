@@ -11,11 +11,16 @@ import {
   FS_RENAME_INPUT,
   LOCAL_LIST_INPUT,
   LOCAL_PICK_ROOT_INPUT,
+  SETTINGS_GET_INPUT,
+  SETTINGS_PICK_DOWNLOAD_DIR_INPUT,
+  SETTINGS_RESET_DOWNLOAD_DIR_INPUT,
+  SETTINGS_SET_DOWNLOAD_DIR_INPUT,
   TRANSFER_CLEAR_INPUT,
   TRANSFER_ENQUEUE_INPUT,
   TRANSFER_ID_INPUT,
 } from '../../src/shared/api-contract'
 import type { BatchRunData } from '../../src/shared/batch'
+import { toSettingsAdb, type SettingsData } from '../../src/shared/settings'
 import type { FsOpData, FsRemoveFactsData, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
@@ -91,6 +96,22 @@ export interface HandlerDeps {
    * 并有专门的行为测试。这样 IPC 测试不需要 Electron、也不需要真 adb。
    */
   drag: DragController
+  /**
+   * 设置（R2-2：默认下载路径的持久化）。
+   *
+   * 只依赖接口而不是 electron-store 本身：electron-store 依赖 Electron 的 app 对象，
+   * 在纯 node 的测试环境里 import 即炸（见 electron/settings/store.ts 的注入式设计）。
+   * 这正是「持久化必须用真读写证明」能在 node 里跑起来的原因。
+   */
+  settings: SettingsController
+  /**
+   * 让用户挑一个目录作为默认下载路径。
+   *
+   * 与 pickRoot 分开注入：pickRoot 会顺带把本地面板的起始浏览目录改掉，
+   * 而「在设置页换下载路径」不该让本地栏跳走 —— 两件事只是共用系统对话框。
+   * 取消返回空串（与 pickRoot / pickFiles 同一约定）。
+   */
+  pickDownloadDir: () => Promise<string>
   /** 目录列举实现（默认 listDirDetailed；测试可注入）。 */
   fs: {
     list: (client: ShellRunner, adbPath: string, dir: string) => Promise<{
@@ -146,6 +167,23 @@ export interface FileOpsController {
   remove(serial: string, targets: readonly string[]): Promise<FsOpData>
   copy(serial: string, sources: readonly string[], dstDir: string | undefined): Promise<FsOpData>
   move(serial: string, sources: readonly string[], dstDir: string | undefined): Promise<FsOpData>
+}
+
+/**
+ * 设置对 IPC 层暴露的最小面（electron/settings/store.ts 的 SettingsStore 满足它）。
+ *
+ * 四个方法 = 三个动作 + 一个读取。**写接口返回写入后的值**，而不是 void：
+ * IPC 层要把整份 SettingsData 回给渲染层，界面不必再发一次 get 才知道结果。
+ */
+export interface SettingsController {
+  /** 当前生效的默认下载路径（坏值已在实现里降级）。 */
+  getDownloadDir(): string
+  /** 本机「下载」目录（默认值）。 */
+  getDefaultDownloadDir(): string
+  /** 写默认下载路径；非法值抛 E_INVALID_PATH / E_NOT_FOUND。返回实际写入的值。 */
+  setDownloadDir(dir: string): string
+  /** 恢复默认；返回实际写入的值。 */
+  resetDownloadDir(): string
 }
 
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
@@ -394,6 +432,84 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     try {
       // 取消选择返回空串（不是错误）：与 transfer:pick-files 的「取消 = 空数组」一致
       return { ok: true, data: await deps.pickRoot() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ 设置（R2-2：默认下载路径持久化） ============ */
+
+  /**
+   * 一份设置快照。
+   *
+   * downloadDir 由 SettingsController 保证「可用」：坏值已经在读取时降级成系统「下载」
+   * 目录。所以界面拿到的就是可以直接用于下载的路径，不必自己再判一次。
+   *
+   * adb 状态只读 —— 用户裁决「设置页只加默认下载路径」，adb 只展示不给改。
+   */
+  const settingsSnapshot = (): SettingsData => ({
+    downloadDir: deps.settings.getDownloadDir(),
+    defaultDownloadDir: deps.settings.getDefaultDownloadDir(),
+    adb: toSettingsAdb(deps.adbState()),
+  })
+
+  handle(CH.SETTINGS_GET, (_event, payload): IpcResult<SettingsData> => {
+    const parsed = preflight<unknown>(payload, SETTINGS_GET_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: settingsSnapshot() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 写默认下载路径。
+   *
+   * 校验有三层，缺一不可：
+   *   1. zod：必须是非空字符串（空串不是「用默认」，想回默认请点「恢复默认」）；
+   *   2. SettingsController：绝对路径 + 目录真实存在（抛 E_INVALID_PATH / E_NOT_FOUND）；
+   *   3. try/catch 收敛成错误码 —— 与其它通道同一条原则：绝不把异常穿过 ipcMain.handle。
+   *
+   * 失败时**不写**任何东西：用户看到错误码就知道没改成，不会出现「界面显示已改、
+   * 实际还是旧值」的分叉。
+   */
+  handle(CH.SETTINGS_SET_DOWNLOAD_DIR, (_event, payload): IpcResult<SettingsData> => {
+    const parsed = preflight<{ downloadDir: string }>(payload, SETTINGS_SET_DOWNLOAD_DIR_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      deps.settings.setDownloadDir(parsed.data.downloadDir)
+      return { ok: true, data: settingsSnapshot() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 挑一个目录作为默认下载路径。
+   *
+   * 取消返回空串（不是错误）—— 与 local:pick-root / transfer:pick-files 同一约定。
+   * 注意这里**不**落盘：选完只是把路径交回渲染层，由它再调 set-download-dir。
+   * 两件事分开的理由：用户可能在选择框里选完又反悔（改主意不点保存），
+   * 而「弹框」不应该等于「已写入」。
+   */
+  handle(CH.SETTINGS_PICK_DOWNLOAD_DIR, async (_event, payload): Promise<IpcResult<string>> => {
+    const parsed = preflight<unknown>(payload, SETTINGS_PICK_DOWNLOAD_DIR_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.pickDownloadDir() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /** 恢复默认下载路径（= 系统「下载」目录）。 */
+  handle(CH.SETTINGS_RESET_DOWNLOAD_DIR, (_event, payload): IpcResult<SettingsData> => {
+    const parsed = preflight<unknown>(payload, SETTINGS_RESET_DOWNLOAD_DIR_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      deps.settings.resetDownloadDir()
+      return { ok: true, data: settingsSnapshot() }
     } catch (err) {
       return fail(toErrorCode(err))
     }

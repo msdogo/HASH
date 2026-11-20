@@ -2,6 +2,7 @@ import { useDeviceStore } from '@/store/deviceStore'
 import { useFileStore } from '@/store/fileStore'
 import { useLocalStore } from '@/store/localStore'
 import { useOpStore } from '@/store/opStore'
+import { useSettingsStore } from '@/store/settingsStore'
 
 /**
  * 开发期调试钩子（仅在 dev 构建里生效，生产构建被 import.meta.env.DEV 常量折叠掉）。
@@ -24,6 +25,9 @@ export function exposeStoresForDebug(): void {
     // （否则「下载到本地」这条入口只能靠肉眼看底栏，无法断言本地目标路径）
     local: useLocalStore,
     op: useOpStore,
+    // R2-2：设置（默认下载路径）。手工验证要能读到「下载目标到底是哪个目录」——
+    // 否则这条用户裁决只能靠肉眼看文件落在哪，无法断言。
+    settings: useSettingsStore,
   }
 }
 
@@ -35,6 +39,7 @@ declare global {
       file: typeof useFileStore
       local: typeof useLocalStore
       op: typeof useOpStore
+      settings: typeof useSettingsStore
     }
   }
 }

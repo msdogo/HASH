@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine } from 'lucide-react'
+import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine, ListChecks } from 'lucide-react'
 import { t } from '@shared/i18n'
 
 /**
@@ -22,6 +22,13 @@ export interface FileToolbarProps {
   onMoveTo: () => void
   /** 裁决 7：下载入口（任务 8 遗留 I4）。 */
   onDownload: () => void
+  /**
+   * 全选（R2-2：多选功能一直没有可见入口）。
+   *
+   * 它**不**按 selectedCount 禁用 —— 全选的意义就是「当前没有选中」，
+   * 禁用它等于把这条唯一的显式入口在最有用的时刻关掉。
+   */
+  onSelectAll: () => void
   /** 下载提示（没有本地目标目录时的说明）。 */
   downloadHint: string | null
 }
@@ -37,6 +44,11 @@ export function FileToolbar(props: FileToolbarProps) {
       <ToolButton icon={<MoveRight className="h-3.5 w-3.5" />} label={t('op.toolbar.moveTo')} onClick={props.onMoveTo} disabled={disabled || none} />
       {/* 下载入口：任务 8 有队列能力但没界面入口（I4），这里补上 */}
       <ToolButton icon={<ArrowDownToLine className="h-3.5 w-3.5" />} label={t('op.toolbar.download')} onClick={props.onDownload} disabled={disabled || none} />
+      {/*
+        * 全选（R2-2）。刻意只受 `disabled`（没有可用目录/没有设备）约束，
+        * **不**受 `none` 约束：没有任何选中项时正是它最该可点的时刻。
+        */}
+      <ToolButton icon={<ListChecks className="h-3.5 w-3.5" />} label={t('files.toolbar.selectAll')} onClick={props.onSelectAll} disabled={disabled} />
       <span className="mx-1 h-3 w-px bg-neutral-800" />
       <ToolButton
         icon={<Trash2 className="h-3.5 w-3.5" />}
