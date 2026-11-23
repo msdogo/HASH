@@ -8,8 +8,8 @@ import { ERROR_CODES, type ErrorCode } from './errors'
  */
 
 const messages: Record<string, string> = {
-  'app.name': 'ADB 文件管家',
-  'app.starting': 'ADB 文件管家启动中…',
+  'app.name': 'HASH',
+  'app.starting': 'HASH 启动中…',
 
   'devices.title': '设备',
   'devices.empty': '尚未发现设备，请用 USB 连接手机并开启 USB 调试',

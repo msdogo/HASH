@@ -1,6 +1,6 @@
 {
-  "appId": "com.local.adbfilemanager",
-  "productName": "ADB 文件管家",
+  "appId": "com.msdogo.hash",
+  "productName": "HASH",
   "directories": {
     "output": "release"
   },
@@ -29,9 +29,9 @@
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
-    "shortcutName": "ADB 文件管家"
+    "shortcutName": "HASH"
   },
   "portable": {
-    "artifactName": "ADB-File-Manager-${version}-portable.${ext}"
+    "artifactName": "${productName}-${version}-portable.${ext}"
   }
 }

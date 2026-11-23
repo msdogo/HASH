@@ -53,8 +53,11 @@ describe('i18n 基础能力', () => {
   })
 
   it('设备栏文案已注册', () => {
+    // app.name 是产品名（英文品牌），不是中文文案 —— 不参与下面的「必须含汉字」循环，
+    // 单独断言它已注册且非空，避免把「改名成英文」误判成「文案缺失」。
+    expect(t('app.name')).not.toBe('app.name')
+    expect(t('app.name').trim().length).toBeGreaterThan(0)
     for (const key of [
-      'app.name',
       'devices.title',
       'devices.empty',
       'devices.all',
