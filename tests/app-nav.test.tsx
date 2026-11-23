@@ -22,6 +22,7 @@ import type { SettingsData } from '../src/shared/settings'
 const SETTINGS: SettingsData = {
   downloadDir: 'D:/Downloads/adbfm',
   defaultDownloadDir: 'C:/Users/me/Downloads',
+  appVersion: '9.9.9-fixture',
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/platform-tools/adb.exe', version: '1.0.41' },
 }
 

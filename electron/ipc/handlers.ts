@@ -184,6 +184,15 @@ export interface SettingsController {
   setDownloadDir(dir: string): string
   /** 恢复默认；返回实际写入的值。 */
   resetDownloadDir(): string
+  /**
+   * 应用版本号（R7）。
+   *
+   * 单独一个方法而不是塞进 SettingsStore：版本既不落盘也不可写，
+   * 与「默认下载路径的持久化」没有关系。具体实现由 main.ts 注入
+   * （`() => app.getVersion()`），这样 IPC 层只依赖一个字符串来源，
+   * 测试可以直接喂假值证明「版本是透传的，不是写死的」。
+   */
+  getAppVersion(): string
 }
 
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
@@ -446,10 +455,14 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
    * 目录。所以界面拿到的就是可以直接用于下载的路径，不必自己再判一次。
    *
    * adb 状态只读 —— 用户裁决「设置页只加默认下载路径」，adb 只展示不给改。
+   *
+   * appVersion（R7）也在这里取：三个通道（get / set / reset）回的都是同一份快照，
+   * 「关于」那块显示的版本与读设置那一次同源，不会一页里出现两个版本。
    */
   const settingsSnapshot = (): SettingsData => ({
     downloadDir: deps.settings.getDownloadDir(),
     defaultDownloadDir: deps.settings.getDefaultDownloadDir(),
+    appVersion: deps.settings.getAppVersion(),
     adb: toSettingsAdb(deps.adbState()),
   })
 

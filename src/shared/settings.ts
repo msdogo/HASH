@@ -51,6 +51,19 @@ export interface SettingsData {
   downloadDir: string
   /** 本机「下载」目录 —— 「恢复默认」按钮写回的値，也用来判断当前是不是默认值。 */
   defaultDownloadDir: string
+  /**
+   * 应用自己的版本号（R7）。
+   *
+   * 唯一来源是主进程的 `app.getVersion()`（与 package.json 的 version 同源）。
+   * 渲染层**不得硬编码**（发版时容易只改一处，界面就显示旧版本），
+   * 也**不得** import package.json（见 electron-builder.json 的 files：渲染产物只有
+   * dist/ 与 dist-electron/，vite 会把 import 进来的 package.json 内容在**构建期**
+   * 内联进 bundle —— 那等于把版本号拍进产物，与直接写常量是同一种失效方式）。
+   * 发版只改 package.json 一处，主进程读完经 IPC 送过来，这里自动跟着走。
+   *
+   * 理论上不会为空串；为空时界面显示占位符而不是空白（见 SettingsPage 的「关于」）。
+   */
+  appVersion: string
   /** adb 的只读状态（不给改）。 */
   adb: SettingsAdb
 }

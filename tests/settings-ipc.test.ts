@@ -129,6 +129,50 @@ describe('R2-2 settings:get 返回一份完整快照', () => {
   })
 })
 
+describe('R7 版本号：settingsSnapshot 的 appVersion 来自控制器的 getAppVersion', () => {
+  /*
+   * 这一组证明的是**行为**：版本号是「控制器的返回值」透传出来的，而不是 IPC 层
+   * 自己写了一个常量。所以每个用例都换不同的版本值 —— 若实现里写死 '0.1.0'
+   * （package.json 的真实版本），第一条就会红。
+   */
+  it('settings:get 返回的 appVersion 逐字等于控制器给的值', async () => {
+    const h = harness({}, { settings: fakeSettings({ appVersion: '9.9.9' }) })
+    const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: true; data: SettingsData }
+    expect(result.ok).toBe(true)
+    expect(result.data.appVersion).toBe('9.9.9')
+    // 反向：真实版本号不得凭空出现在快照里（说明取的是注入值，不是 package.json）
+    expect(result.data.appVersion).not.toBe('0.1.0')
+  })
+
+  it('换一个版本值，快照跟着变（不是写死的常量）', async () => {
+    for (const version of ['0.1.0', '2.3.4-beta.7', '10.0.0']) {
+      const h = harness({}, { settings: fakeSettings({ appVersion: version }) })
+      const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: true; data: SettingsData }
+      expect(result.data.appVersion, version).toBe(version)
+    }
+  })
+
+  it('set / reset 之后返回的快照同样带版本号（界面上不会突然少一行）', async () => {
+    const h = harness({}, { settings: fakeSettings({ appVersion: '9.9.9' }) })
+    const set = await h.invoke(CH.SETTINGS_SET_DOWNLOAD_DIR, { downloadDir: 'D:/new/downloads' }) as { ok: true; data: SettingsData }
+    expect(set.data.appVersion).toBe('9.9.9')
+    const reset = await h.invoke(CH.SETTINGS_RESET_DOWNLOAD_DIR, null) as { ok: true; data: SettingsData }
+    expect(reset.data.appVersion).toBe('9.9.9')
+    // 两个通道各自重新拼了一份快照 —— 每次都是真的问了控制器，不是缓存第一次的值
+    expect(h.settings.calls.filter((call) => call.method === 'getAppVersion').length).toBe(2)
+  })
+
+  it('取版本抛异常时收敛成错误码，不把异常穿过 IPC', async () => {
+    const broken = fakeSettings()
+    const h = harness({
+      settings: { ...broken, getAppVersion: () => { throw new Error(E_NOT_FOUND) } },
+    })
+    const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: false; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe(E_NOT_FOUND)
+  })
+})
+
 describe('R2-2 settings:set-download-dir 的校验与透传', () => {
   it('合法入参逐字透传给控制器，并返回写入后的快照', async () => {
     const h = harness()

@@ -231,6 +231,14 @@ const messages: Record<string, string> = {
   'settings.adb.source.path': '系统 PATH',
   'settings.adb.source.unknown': '未知',
   'settings.adb.unknown': '未知',
+  /*
+   * R7：「关于」—— 应用自己的版本号。
+   * 版本号本身来自主进程 app.getVersion()（不是文案），这里只有标题与标签；
+   * unknown 是空值占位符 —— 与其留一行空白像坏了，不如明确说「没取到」。
+   */
+  'settings.about.title': '关于',
+  'settings.about.version': '版本',
+  'settings.about.unknown': '—',
   // ---- R2-2：多选可见入口 ----
   'files.toolbar.selectAll': '全选',
   'files.selectHint': 'Ctrl 点击加选 · Shift 点击选区间 · Ctrl+A 全选 · Esc 取消选择',

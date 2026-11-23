@@ -73,6 +73,8 @@ export function SettingsPage(props: SettingsPageProps) {
   const downloadDir = data?.downloadDir ?? ''
   const isDefault = data !== null && downloadDir === data.defaultDownloadDir
   const adb = data?.adb
+  // R7：版本号只来自主进程（app.getVersion()），本页不猜、也不硬编码
+  const appVersion = data?.appVersion ?? ''
 
   return (
     <section className="min-h-0 flex-1 overflow-auto p-4" data-testid="settings-page">
@@ -166,6 +168,28 @@ export function SettingsPage(props: SettingsPageProps) {
               <Row label={t('settings.adb.version')} value={adb.version} mono />
             </>
           )}
+        </div>
+      </div>
+
+      {/*
+        * ---- 关于（只读）：应用自己的版本号（R7） ----
+        * 样式与上面两块完全一致（同一个 Row 组件 + 同一张边框卡片），不新造一套。
+        * 值只来自 SettingsData.appVersion（主进程 app.getVersion()）——
+        * 这里既不写死 '0.1.0'，也不 import package.json（那会把版本号在构建期
+        * 内联进 bundle，与写常量同样会「发版忘改 → 显示旧版本」）。
+        * 空串理论上不会出现；出现了就显示占位符，避免那行看着像坏了。
+        */}
+      <div className="mt-4 rounded border border-neutral-300" data-testid="settings-about">
+        <div className="flex items-center gap-2 border-b border-neutral-300 px-3 py-2">
+          <Info className="h-3.5 w-3.5 shrink-0 text-neutral-600" aria-hidden="true" />
+          <span className="text-xs font-medium text-neutral-900">{t('settings.about.title')}</span>
+        </div>
+        <div className="flex flex-col gap-1 px-3 py-2.5">
+          <Row
+            label={t('settings.about.version')}
+            value={appVersion === '' ? t('settings.about.unknown') : appVersion}
+            mono
+          />
         </div>
       </div>
     </section>

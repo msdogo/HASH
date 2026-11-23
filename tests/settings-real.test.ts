@@ -119,6 +119,8 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
     const target = downloadDirForDownload({
       downloadDir: reloaded.getDownloadDir(),
       defaultDownloadDir: reloaded.getDefaultDownloadDir(),
+      // R7：下载判定不看版本号，只是把 SettingsData 补齐
+      appVersion: '9.9.9-fixture',
       adb: { state: 'checking' },
     })
     expect(target).toBe(settingsDir)
@@ -180,6 +182,8 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
       const target = downloadDirForDownload({
         downloadDir: store.getDownloadDir(),
         defaultDownloadDir: store.getDefaultDownloadDir(),
+        // R7：下载判定不看版本号，只是把 SettingsData 补齐
+        appVersion: '9.9.9-fixture',
         adb: { state: 'checking' },
       })
       expect(target).toBe(defaultDir)

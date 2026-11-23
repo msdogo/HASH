@@ -421,6 +421,21 @@ app.whenReady().then(async () => {
               getDefaultDownloadDir: () => settings().getDefaultDownloadDir(),
               setDownloadDir: (dir) => settings().setDownloadDir(dir),
               resetDownloadDir: () => settings().resetDownloadDir(),
+              /*
+               * R7：应用版本号 —— 设置页「关于」显示的就是它。
+               *
+               * ===== 为什么直接在这里调 app.getVersion()，而不走上面的懒建 settings() =====
+               * 懒建（main.ts:128-139）的唯一理由是 app.getPath('userData' / 'downloads')
+               * 在 app ready 之前不可靠。app.getVersion() 不读任何路径：它取的是打包时
+               * 的 package.json / 可执行文件元数据，模块顶层调用也是对的 —— 那条不成立的理由
+               * 不能顺带套在它身上。
+               *
+               * 反过来，塞进 createSettingsStore 会让「设置存储」多一个与持久化无关的
+               * 版本依赖（版本既不落盘也不可写），并迫使 settings-store 的每个测试
+               * 都去构造一个版本号。放在注入处 = 版本只有主进程一个来源，
+               * 渲染层拿到的永远是 app.getVersion() 的返回值，发版只改 package.json。
+               */
+              getAppVersion: () => app.getVersion(),
             },
             transfer: transfer.controller,
             batch: batchService,

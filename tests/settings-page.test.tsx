@@ -24,6 +24,8 @@ import type { SettingsData } from '../src/shared/settings'
 const SETTINGS: SettingsData = {
   downloadDir: 'D:/Downloads/adbfm',
   defaultDownloadDir: 'C:/Users/me/Downloads',
+  // R7：故意不是 package.json 里的真实版本，这样「渲染的是 appVersion 而不是写死的 0.1.0」才可证
+  appVersion: '7.42.13',
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/resources/platform-tools/adb.exe', version: '1.0.41' },
 }
 
@@ -119,7 +121,17 @@ describe('R2-2 设置页：adb 状态（只读）', () => {
   it('还在自检时显示「正在查找 adb…」，同时不显示路径/版本行', () => {
     const html = settingsHtml({ data: { ...SETTINGS, adb: { state: 'checking' } } })
     expect(html).toContain(t('settings.adb.checking'))
-    expect(html).not.toContain(t('settings.adb.version'))
+    /*
+     * R7 起「版本」这个标签也出现在「关于」块里，所以这里把范围收窄到 adb 那块
+     * （从 settings-adb 到 settings-about）—— 判定本身反而更准：
+     * 若自检未完成时 adb 块仍渲染了版本行，这条照样红。
+     */
+    const adbSection = html.slice(
+      html.indexOf('data-testid="settings-adb"'),
+      html.indexOf('data-testid="settings-about"'),
+    )
+    expect(adbSection).not.toContain(t('settings.adb.version'))
+    expect(adbSection).not.toContain(t('settings.adb.path'))
   })
 
   it('自检失败时显示中文错误文案', () => {
@@ -134,6 +146,55 @@ describe('R2-2 设置页：adb 状态（只读）', () => {
     const adbSection = html.slice(html.indexOf('data-testid="settings-adb"'))
     expect(adbSection).not.toMatch(/<input|<textarea|<select/)
     expect(html).toContain(t('settings.adb.readonly'))
+  })
+})
+
+describe('R7 设置页：关于（应用版本号）', () => {
+  /*
+   * 断言的是**具体的版本号值**，不是「有『版本』两个字」——
+   * 后者把值改成空串也照样绿（本项目已吃过 15 次这类假护栏的亏）。
+   * SETTINGS.appVersion 刻意取 7.42.13（既不是 package.json 的 0.1.0，也不是常见版本号），
+   * 于是「渲染的是 appVersion 而不是写死的常量」这件事真的可证。
+   */
+  it('渲染出 appVersion 的具体值，且「关于」标题与「版本」标签来自 i18n', () => {
+    const html = settingsHtml({ data: SETTINGS })
+    expect(html).toContain('data-testid="settings-about"')
+    expect(html).toContain('7.42.13')
+    expect(html).toContain(t('settings.about.title'))
+    expect(html).toContain(t('settings.about.version'))
+  })
+
+  it('换一个版本值，渲染结果跟着变（不是写死的常量）', () => {
+    const other = settingsHtml({ data: { ...SETTINGS, appVersion: '3.1.4-rc.2' } })
+    expect(other).toContain('3.1.4-rc.2')
+    expect(other).not.toContain('7.42.13')
+    // package.json 的真实版本也只是一个可能的取值，不是写死的答案
+    expect(settingsHtml({ data: { ...SETTINGS, appVersion: '0.1.0' } })).toContain('0.1.0')
+  })
+
+  it('appVersion 为空串时显示占位符而不是空白（那行看着不像坏了）', () => {
+    const html = settingsHtml({ data: { ...SETTINGS, appVersion: '' } })
+    expect(html).toContain(t('settings.about.unknown'))
+    expect(html).not.toContain('7.42.13')
+    // 占位符渲染在「版本」这一行的值位置，不是页面别处冒出来的一句话
+    const about = html.slice(html.indexOf('data-testid="settings-about"'))
+    expect(about).toContain(t('settings.about.version'))
+    expect(about).toContain(t('settings.about.unknown'))
+  })
+
+  it('还没读到设置时也不显示假版本号（显示占位符，且没有可编辑输入框）', () => {
+    const html = settingsHtml({ data: null, loading: true })
+    expect(html).toContain('data-testid="settings-about"')
+    expect(html).toContain(t('settings.about.unknown'))
+    expect(html).not.toContain('7.42.13')
+    expect(html.slice(html.indexOf('data-testid="settings-about"'))).not.toMatch(/<input|<textarea|<select/)
+  })
+
+  it('版本值用等宽字体（与 adb 的路径/版本同一套 Row 样式）', () => {
+    const html = settingsHtml({ data: SETTINGS })
+    const about = html.slice(html.indexOf('data-testid="settings-about"'))
+    // 值所在的那个 span 带 font-mono —— 与 adb 那两行 mono 值同款
+    expect(about).toMatch(/class="[^"]*font-mono[^"]*"[^>]*>7\.42\.13</)
   })
 })
 
