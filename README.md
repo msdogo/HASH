@@ -56,7 +56,3 @@ npm run bump -- 0.3.0     # 手动指定
 npm test
 npx tsc -b --force
 ```
-
-## 未实现
-
-设备端递归搜索、内置终端、logcat、root 模式、跨设备直传、应用管理、无线配对。
