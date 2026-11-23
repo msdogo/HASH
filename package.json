@@ -1,6 +1,6 @@
 {
   "name": "adb-file-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "main": "dist-electron/main.js",
   "type": "module",
@@ -10,7 +10,9 @@
     "test": "vitest run",
     "fetch-platform-tools": "node scripts/fetch-platform-tools.mjs",
     "assert-platform-tools": "node scripts/assert-platform-tools.mjs",
-    "dist": "npm run fetch-platform-tools && npm run assert-platform-tools && npm run build && electron-builder"
+    "bump": "node scripts/bump-version.mjs",
+    "assert-version": "node scripts/assert-version.mjs",
+    "dist": "npm run fetch-platform-tools && npm run assert-platform-tools && npm run assert-version && npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

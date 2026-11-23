@@ -4,6 +4,8 @@ dist-electron/
 release/
 resources/platform-tools/
 .superpowers/
+# 版本号机制的本机状态（上次 bump 的 commit / 上次打包的版本），不入库
+build-info.json
 *.log
 *.tsbuildinfo
 # 假 adb 是测试替身：源码随仓库走（保证用例可复现），编译产物不入库
