@@ -14,8 +14,13 @@ import {
   formatSize,
   isDotEntry,
   isHiddenName,
+  emptyReason,
+  isSearchClearKey,
+  isSearchFocusKey,
   keyToSelectionAction,
   makeSelectAllHandler,
+  matchesQuery,
+  searchSummary,
   rangeNames,
   selectModeOf,
   isMetaKnown,
@@ -144,20 +149,20 @@ describe('裁决 5：点目录与隐藏文件', () => {
 
   it('后端真的返回了 . 与 .. 时，前端也必须过滤掉（不显示怪条目）', () => {
     const entries = [entry({ name: '.' }), entry({ name: '..' }), entry({ name: 'a.txt' })]
-    expect(names(filterEntries(entries, { showHidden: true }))).toEqual(['a.txt'])
-    expect(names(filterEntries(entries, { showHidden: false }))).toEqual(['a.txt'])
+    expect(names(filterEntries(entries, { showHidden: true, query: '' }))).toEqual(['a.txt'])
+    expect(names(filterEntries(entries, { showHidden: false, query: '' }))).toEqual(['a.txt'])
   })
 
   it('隐藏文件默认不显示，开关打开后显示', () => {
     const entries = [entry({ name: '.nomedia' }), entry({ name: 'a.txt' }), entry({ name: '.thumbnails', isDir: true })]
-    expect(names(filterEntries(entries, { showHidden: false }))).toEqual(['a.txt'])
-    expect(names(filterEntries(entries, { showHidden: true }))).toEqual(['.nomedia', 'a.txt', '.thumbnails'])
+    expect(names(filterEntries(entries, { showHidden: false, query: '' }))).toEqual(['a.txt'])
+    expect(names(filterEntries(entries, { showHidden: true, query: '' }))).toEqual(['.nomedia', 'a.txt', '.thumbnails'])
   })
 
   it('过滤不修改入参数组', () => {
     const entries = [entry({ name: '.' }), entry({ name: '.x' }), entry({ name: 'a' })]
     const before = names(entries)
-    filterEntries(entries, { showHidden: false })
+    filterEntries(entries, { showHidden: false, query: '' })
     expect(names(entries)).toEqual(before)
   })
 })
@@ -360,7 +365,7 @@ describe('裁决 4：万级条目排序性能', () => {
     let best = Number.POSITIVE_INFINITY
     for (let i = 0; i < PERF_RUNS; i++) {
       const start = performance.now()
-      const sorted = sortEntries(filterEntries(list, { showHidden: false }), 'time', 'asc')
+      const sorted = sortEntries(filterEntries(list, { showHidden: false, query: '' }), 'time', 'asc')
       const elapsed = performance.now() - start
       expect(sorted.length).toBeGreaterThan(0)
       if (elapsed < best) best = elapsed
@@ -768,8 +773,8 @@ describe('viewFromPartial：分片默认值', () => {
 
   it('visibleEntries 能吃 viewFromPartial 的结果（首帧不会炸 entries is not iterable）', () => {
     const view = viewFromPartial({ cwd: '/sdcard' })
-    expect(() => visibleEntries(view.entries, { showHidden: false, sort: view.sort, sortDir: view.sortDir })).not.toThrow()
-    expect(visibleEntries(view.entries, { showHidden: false, sort: 'name', sortDir: 'asc' })).toEqual([])
+    expect(() => visibleEntries(view.entries, { showHidden: false, query: '', sort: view.sort, sortDir: view.sortDir })).not.toThrow()
+    expect(visibleEntries(view.entries, { showHidden: false, query: '', sort: 'name', sortDir: 'asc' })).toEqual([])
   })
 })
 
@@ -1792,6 +1797,360 @@ describe('多选增强：Ctrl/Cmd+A 与 Esc 的按键映射（纯函数）', () 
     for (const key of ['Backspace', 'F5', 'Enter', 'ArrowDown']) {
       expect(keyToSelectionAction({ key }), key).toEqual({ kind: 'none' })
     }
+  })
+})
+
+/* ============ R6：当前目录文件名搜索（零 adb 调用，只过滤已加载的条目） ============ */
+
+describe('R6 matchesQuery：不区分大小写的子串匹配', () => {
+  /*
+   * 表驱动：一条 rule 一条断言，改错规则（例如误上正则、漏了大小写归一、
+   * 把 trim 后的空串当成「匹配空名字」）都会在这里逐条变红。
+   */
+  const cases: Array<{ case: string; name: string; query: string; hit: boolean }> = [
+    { case: '空串 = 无过滤（全命中）', name: 'route-001.kmz', query: '', hit: true },
+    { case: '纯空白 = 无过滤（不能拿空串去 includes）', name: 'route-001.kmz', query: '   ', hit: true },
+    { case: '首尾空白的搜索词按 trim 后比较', name: 'route-001.kmz', query: '  route  ', hit: true },
+    { case: '子串命中（不是前缀匹配）', name: 'route-001.kmz', query: 'ute-0', hit: true },
+    { case: '大小写混合：小写搜索词命中大写文件名', name: 'ROUTE-001.KMZ', query: 'route', hit: true },
+    { case: '大小写混合：大写搜索词命中小写文件名', name: 'route-001.kmz', query: 'KMZ', hit: true },
+    { case: '不匹配', name: 'route-001.kmz', query: 'video', hit: false },
+    { case: '中文文件名（子串）', name: '路线-北京-001.kmz', query: '北京', hit: true },
+    { case: '中文文件名（不匹配）', name: '路线-北京-001.kmz', query: '上海', hit: false },
+    { case: '带空格的文件名（词内空格是普通字符）', name: 'trip to paris.kmz', query: 'to paris', hit: true },
+    { case: '带空格的文件名（搜索词前导空格被 trim 掉）', name: 'trip to paris.kmz', query: ' paris', hit: true },
+    { case: '整名匹配', name: 'a.kmz', query: 'a.kmz', hit: true },
+    { case: '点号是普通字符而不是正则通配（a.kmz 不该命中 abkmz）', name: 'abkmz', query: 'a.kmz', hit: false },
+    { case: '星号是普通字符而不是通配符（*.kmz 不该命中 a.kmz）', name: 'a.kmz', query: '*.kmz', hit: false },
+    { case: '只敲一个空格不是「搜索空名字」', name: '', query: ' ', hit: true },
+  ]
+
+  for (const c of cases) {
+    it(c.case + '：' + JSON.stringify(c.query) + ' vs ' + JSON.stringify(c.name), () => {
+      expect(matchesQuery(c.name, c.query)).toBe(c.hit)
+    })
+  }
+})
+
+describe('R6 filterEntries：搜索词与隐藏开关的四种组合', () => {
+  const entries = [
+    entry({ name: 'route-北京.kmz' }),
+    entry({ name: 'route-上海.kmz' }),
+    entry({ name: '.route-hidden.kmz' }),
+    entry({ name: 'video.mp4' }),
+    entry({ name: '.' }),
+    entry({ name: '..' }),
+  ]
+
+  it('showHidden=false + 无搜索：只剩非隐藏项，点目录仍然被滤掉', () => {
+    expect(names(filterEntries(entries, { showHidden: false, query: '' }))).toEqual([
+      'route-北京.kmz',
+      'route-上海.kmz',
+      'video.mp4',
+    ])
+  })
+
+  it('showHidden=true + 无搜索：隐藏项出现，但 . / .. 永远不出现', () => {
+    expect(names(filterEntries(entries, { showHidden: true, query: '' }))).toEqual([
+      'route-北京.kmz',
+      'route-上海.kmz',
+      '.route-hidden.kmz',
+      'video.mp4',
+    ])
+  })
+
+  it('showHidden=false + 有搜索：搜索词只在可见项里筛（隐藏项不得借搜索复活）', () => {
+    expect(names(filterEntries(entries, { showHidden: false, query: 'route' }))).toEqual([
+      'route-北京.kmz',
+      'route-上海.kmz',
+    ])
+  })
+
+  it('showHidden=true + 有搜索：隐藏项若能命中则出现', () => {
+    expect(names(filterEntries(entries, { showHidden: true, query: 'route' }))).toEqual([
+      'route-北京.kmz',
+      'route-上海.kmz',
+      '.route-hidden.kmz',
+    ])
+  })
+
+  it('搜索词挡掉全部条目时返回空数组（不是返回全部）', () => {
+    expect(filterEntries(entries, { showHidden: true, query: 'nosuchfile' })).toEqual([])
+  })
+
+  it('过滤不修改入参数组（与搜索词一起也一样）', () => {
+    const before = names(entries)
+    filterEntries(entries, { showHidden: true, query: 'route' })
+    expect(names(entries)).toEqual(before)
+  })
+})
+
+describe('R6 visibleEntries：query 与 sort 组合后顺序仍然正确', () => {
+  const entries = [
+    entry({ name: 'route-10.kmz', mtime: 300 }),
+    entry({ name: 'route-2.kmz', mtime: 100 }),
+    entry({ name: 'route-1.kmz', mtime: 200 }),
+    entry({ name: 'index.html', mtime: 50 }),
+  ]
+
+  it('按名称升序：数字按自然序（route-2 在 route-10 之前），无关条目被滤掉', () => {
+    expect(names(visibleEntries(entries, { showHidden: false, query: 'route', sort: 'name', sortDir: 'asc' }))).toEqual([
+      'route-1.kmz',
+      'route-2.kmz',
+      'route-10.kmz',
+    ])
+  })
+
+  it('按名称降序：过滤不影响方向', () => {
+    expect(names(visibleEntries(entries, { showHidden: false, query: 'route', sort: 'name', sortDir: 'desc' }))).toEqual([
+      'route-10.kmz',
+      'route-2.kmz',
+      'route-1.kmz',
+    ])
+  })
+
+  it('按时间升序：只对命中的三条排序', () => {
+    expect(names(visibleEntries(entries, { showHidden: false, query: 'route', sort: 'time', sortDir: 'asc' }))).toEqual([
+      'route-2.kmz',
+      'route-1.kmz',
+      'route-10.kmz',
+    ])
+  })
+
+  it('query 为空串时与原行为逐字一致（搜索是纯增量，不改旧语义）', () => {
+    const withEmpty = visibleEntries(entries, { showHidden: false, query: '', sort: 'name', sortDir: 'asc' })
+    const legacy = visibleEntries(entries, { showHidden: false, query: '   ', sort: 'name', sortDir: 'asc' })
+    expect(names(withEmpty)).toEqual(['index.html', 'route-1.kmz', 'route-2.kmz', 'route-10.kmz'])
+    expect(names(legacy)).toEqual(names(withEmpty))
+  })
+
+  it('目录仍恒定在文件之前（过滤不破坏分组权重）', () => {
+    const mixed = [
+      entry({ name: 'route-file.kmz' }),
+      entry({ name: 'route-dir', isDir: true }),
+    ]
+    expect(names(visibleEntries(mixed, { showHidden: false, query: 'route', sort: 'name', sortDir: 'asc' }))).toEqual([
+      'route-dir',
+      'route-file.kmz',
+    ])
+  })
+})
+
+describe('R6 searchSummary：底部「匹配 N / 共 M」的数字', () => {
+  const entries = [
+    entry({ name: 'route-1.kmz' }),
+    entry({ name: 'route-2.kmz' }),
+    entry({ name: 'video.mp4' }),
+    entry({ name: '.hidden.kmz' }),
+  ]
+
+  it('没有搜索词 → 不显示（返回 null，底栏保持原样）', () => {
+    expect(searchSummary(entries, { showHidden: false, query: '' })).toBeNull()
+    expect(searchSummary(entries, { showHidden: false, query: '  ' })).toBeNull()
+  })
+
+  it('部分命中 → 给出 matched / total（total 不含隐藏项，与用户核对得上）', () => {
+    expect(searchSummary(entries, { showHidden: false, query: 'route' })).toEqual({ matched: 2, total: 3 })
+  })
+
+  it('全部命中 → 不显示（再挂一条「匹配 3 / 共 3」只是噪声）', () => {
+    // 三个可见项都含 '.'，所以「共 3 / 匹配 3」，没有信息量
+    expect(searchSummary(entries, { showHidden: false, query: '.' })).toBeNull()
+    expect(searchSummary([entry({ name: 'a.kmz' }), entry({ name: 'b.kmz' })], { showHidden: false, query: 'kmz' })).toBeNull()
+  })
+
+  it('一条都不命中 → 0 / M（用户能看出「是过滤，不是目录空了」）', () => {
+    expect(searchSummary(entries, { showHidden: false, query: 'nosuch' })).toEqual({ matched: 0, total: 3 })
+  })
+
+  it('打开隐藏文件开关后分母跟着变（统计与列表同源）', () => {
+    expect(searchSummary(entries, { showHidden: true, query: 'route' })).toEqual({ matched: 2, total: 4 })
+    expect(searchSummary(entries, { showHidden: true, query: 'hidden' })).toEqual({ matched: 1, total: 4 })
+  })
+})
+
+describe('R6 emptyReason：空列表的四种解释', () => {
+  it('出错优先于一切', () => {
+    expect(emptyReason({ status: 'error', total: 0, hiddenFiltered: false, query: 'x' })).toBe('error')
+  })
+
+  it('加载中是「正在读取」而不是「空目录」', () => {
+    expect(emptyReason({ status: 'loading', total: 0, hiddenFiltered: false, query: '' })).toBe('loading')
+    expect(emptyReason({ status: 'idle', total: 0, hiddenFiltered: false, query: '' })).toBe('loading')
+  })
+
+  it('有内容但被搜索词全筛掉 → query（这条是「文件丢了」错觉的唯一防线）', () => {
+    expect(emptyReason({ status: 'ready', total: 2977, hiddenFiltered: false, query: 'route-9999' })).toBe('query')
+  })
+
+  it('目录本身就空时不算被筛掉（total=0 说「空目录」才是事实）', () => {
+    expect(emptyReason({ status: 'ready', total: 0, hiddenFiltered: false, query: 'route' })).toBe('empty')
+  })
+
+  it('只有隐藏项且没搜索 → hidden（提示去看显示隐藏文件）', () => {
+    expect(emptyReason({ status: 'ready', total: 0, hiddenFiltered: true, query: '' })).toBe('hidden')
+  })
+
+  it('真空目录 → empty', () => {
+    expect(emptyReason({ status: 'ready', total: 0, hiddenFiltered: false, query: '' })).toBe('empty')
+  })
+})
+
+describe('R6 reducer：setQuery 与「换目录必须清空 query」', () => {
+  it('setQuery 写入过滤词；同一个值再派发一次返回同一个 state 引用（不白重渲染）', () => {
+    const view = reduce(loadedView(), { type: 'setQuery', value: 'a.j' })
+    expect(view.query).toBe('a.j')
+    expect(reduce(view, { type: 'setQuery', value: 'a.j' })).toBe(view)
+  })
+
+  it('setQuery 不 trim：用户正在输入的中间态（末尾空格）必须原样回显', () => {
+    expect(reduce(createFileView(), { type: 'setQuery', value: 'route ' }).query).toBe('route ')
+  })
+
+  it('setQuery 不动条目 / 选中 / 滚动（搜索是纯视图过滤）', () => {
+    const before = loadedView()
+    const after = reduce(before, { type: 'setQuery', value: 'zzz' })
+    expect(names(after.entries)).toEqual(names(before.entries))
+    expect(after.selected).toEqual(before.selected)
+    expect(after.scrollTop).toBe(before.scrollTop)
+  })
+
+  it('换目录成功后 query 必须清空（否则新目录看起来是空的，用户以为文件不存在）', () => {
+    const searched = reduce(loadedView(), { type: 'setQuery', value: 'route' })
+    const moved = reduce(
+      searched,
+      { type: 'navigate', cwd: '/sdcard/Download' },
+      { type: 'resolve', generation: searched.generation + 1, data: listData({ dir: '/sdcard/Download', entries: [entry({ name: 'b.zip' })] }) },
+    )
+    expect(moved.cwd).toBe('/sdcard/Download')
+    expect(moved.query).toBe('')
+  })
+
+  it('同目录刷新（resolve 的 dir 没变）保留 query —— 刷新不该毁掉用户的搜索结果', () => {
+    const searched = reduce(loadedView(), { type: 'setQuery', value: 'route' })
+    const refreshed = reduce(
+      searched,
+      { type: 'beginLoad' },
+      { type: 'resolve', generation: searched.generation + 1, data: listData({ dir: '/sdcard/DCIM', entries: [entry({ name: 'a.jpg' })] }) },
+    )
+    expect(refreshed.query).toBe('route')
+  })
+
+  it('跳转失败时 query 原样保留（打错一个字母不该顺手清掉搜索）', () => {
+    const searched = reduce(loadedView(), { type: 'setQuery', value: 'route' })
+    const failed = reduce(
+      searched,
+      { type: 'navigate', cwd: '/nope' },
+      { type: 'fail', generation: searched.generation + 1, code: 'E_NOT_FOUND' },
+    )
+    expect(failed.cwd).toBe('/sdcard/DCIM')
+    expect(failed.query).toBe('route')
+  })
+
+  it('createFileView 的初始 query 是空串', () => {
+    expect(createFileView().query).toBe('')
+  })
+
+  it('viewFromPartial 会补上 query；缺的回落空串', () => {
+    expect(viewFromPartial({ query: 'route' }).query).toBe('route')
+    expect(viewFromPartial({ cwd: '/sdcard' }).query).toBe('')
+  })
+
+  it('两台设备的过滤词互不影响（按 serial 分片）', () => {
+    let views: FileViews = {}
+    views = fileViewsReducer(views, { serial: 'A', type: 'setQuery', value: 'route' })
+    views = fileViewsReducer(views, { serial: 'B', type: 'setQuery', value: 'video' })
+    expect(views.A.query).toBe('route')
+    expect(views.B.query).toBe('video')
+  })
+})
+
+describe('R6 区间选择按【过滤后】的展示顺序取段', () => {
+  it('Shift 点击只选到用户看得见的那几行（不是 entries 原始顺序里的一大段）', () => {
+    let view = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/KMZ' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/KMZ',
+          entries: [
+            entry({ name: 'a-route.kmz' }),
+            /*
+             * 关键：b-note.txt 在【排序后】恰好夹在两条命中的 route 之间。
+             * 若 displayOrder 忘了带搜索词，Shift 区间会把它一起选进去 ——
+             * 用户看到的是两行，选中的却是三项（这是本用例唯一要拦住的错法）。
+             */
+            entry({ name: 'b-note.txt' }),
+            entry({ name: 'c-route.kmz' }),
+          ],
+        }),
+      },
+      { type: 'setQuery', value: 'route' },
+    )
+    view = fileViewReducer(view, { type: 'select', name: 'a-route.kmz', mode: 'replace' })
+    view = fileViewReducer(view, { type: 'select', name: 'c-route.kmz', mode: 'range' })
+    expect(view.selected).toEqual(['a-route.kmz', 'c-route.kmz'])
+    // 反向：把同一份 entries 去掉搜索词后，区间确实会连中间那个一起选（证明上面不是空转）
+    const unfiltered = reduce(
+      createFileView(),
+      { type: 'navigate', cwd: '/sdcard/KMZ' },
+      {
+        type: 'resolve',
+        generation: 1,
+        data: listData({
+          dir: '/sdcard/KMZ',
+          entries: [
+            entry({ name: 'a-route.kmz' }),
+            entry({ name: 'b-note.txt' }),
+            entry({ name: 'c-route.kmz' }),
+          ],
+        }),
+      },
+    )
+    const control = fileViewReducer(
+      fileViewReducer(unfiltered, { type: 'select', name: 'a-route.kmz', mode: 'replace' }),
+      { type: 'select', name: 'c-route.kmz', mode: 'range' },
+    )
+    expect(control.selected).toEqual(['a-route.kmz', 'b-note.txt', 'c-route.kmz'])
+  })
+})
+
+describe('R6 键盘快捷键判定（无 jsdom 工程里，接线无门禁，判定必须纯函数可测）', () => {
+  it('Ctrl+F / Cmd+F 都要聚焦搜索框（大小写两种都认）', () => {
+    expect(isSearchFocusKey({ key: 'f', ctrlKey: true })).toBe(true)
+    expect(isSearchFocusKey({ key: 'F', ctrlKey: true })).toBe(true)
+    expect(isSearchFocusKey({ key: 'f', metaKey: true })).toBe(true)
+    expect(isSearchFocusKey({ key: 'F', metaKey: true })).toBe(true)
+  })
+
+  it('不带修饰键的 f 只是普通输入，不能抢焦点', () => {
+    expect(isSearchFocusKey({ key: 'f' })).toBe(false)
+    expect(isSearchFocusKey({ key: 'F' })).toBe(false)
+  })
+
+  it('其他 Ctrl 组合不触发（Ctrl+A / Ctrl+C / Ctrl+V 必须留给原有功能）', () => {
+    for (const key of ['a', 'c', 'v', 'x', 'z', 'F5', 'Escape']) {
+      expect(isSearchFocusKey({ key, ctrlKey: true }), key).toBe(false)
+    }
+  })
+
+  it('焦点已在输入框里时不抢（地址栏编辑到一半不能被 Ctrl+F 打断）', () => {
+    expect(isSearchFocusKey({ key: 'f', ctrlKey: true, target: { tagName: 'INPUT' } })).toBe(false)
+    expect(isSearchFocusKey({ key: 'f', ctrlKey: true, target: { tagName: 'TEXTAREA' } })).toBe(false)
+  })
+
+  it('焦点在普通容器（列表 / 行）上时正常触发', () => {
+    expect(isSearchFocusKey({ key: 'f', ctrlKey: true, target: { tagName: 'DIV' } })).toBe(true)
+    expect(isSearchFocusKey({ key: 'f', ctrlKey: true, target: null })).toBe(true)
+  })
+
+  it('搜索框里的 Esc 判为「清空」；其他键不误伤', () => {
+    expect(isSearchClearKey('Escape')).toBe(true)
+    expect(isSearchClearKey('Esc')).toBe(true)
+    expect(isSearchClearKey('Enter')).toBe(false)
+    expect(isSearchClearKey('f')).toBe(false)
   })
 })
 

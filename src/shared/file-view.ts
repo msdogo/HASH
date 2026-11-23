@@ -113,10 +113,35 @@ export function isHiddenName(name: string): boolean {
 export interface FilterOptions {
   /** 是否显示隐藏项；默认关闭。 */
   showHidden: boolean
+  /**
+   * 文件名过滤词（R6：当前目录搜索）。**必填**，无过滤时传空串。
+   *
+   * 为什么必填而不是可选：displayOrder（区间选择）与 FilesPage 的列表
+   * 用的是同一份 visibleEntries —— 只要有一处漏传，区间选择就会选到用户
+   * 根本看不见的行。可选参数会让这种漏传静默通过，必填能在编译期拦住。
+   */
+  query: string
 }
 
 /**
- * 过滤掉 . / .. 与（可选的）隐藏项。
+ * 文件名是否命中搜索词（R6）。
+ *
+ * 规则只有一条：**不区分大小写的子串包含**（includes），trim 后为空 = 不命中任何过滤。
+ * 刻意不做通配符 / 正则：输入框里出现 * 或 . 时用户会以为支持语法，
+ * 写错了还静默得到空列表 —— 那比「找不到就找不到」更难排查。
+ *
+ * 为什么 trim 后为空返回 true（而不是拿空串去 includes 一遍）：
+ * 空串 includes 恒真，看起来结果一样，但语义完全不同 ——
+ * 用户只敲了一个空格时，那是「还没想好搜什么」，不是「搜索空名字」。
+ */
+export function matchesQuery(name: string, query: string): boolean {
+  const needle = query.trim()
+  if (needle === '') return true
+  return name.toLowerCase().includes(needle.toLowerCase())
+}
+
+/**
+ * 过滤掉 . / .. 与（可选的）隐藏项，再按搜索词过滤文件名（R6）。
  * 无论后端是否返回点目录，这里都会拦住 —— 用户不该在手机文件列表里看到 '.'
  * （而且那个条目根本点不开，点进去就是死循环）。
  */
@@ -125,6 +150,7 @@ export function filterEntries(entries: readonly FileEntry[], options: FilterOpti
   for (const entry of entries) {
     if (isDotEntry(entry.name)) continue
     if (!options.showHidden && isHiddenName(entry.name)) continue
+    if (!matchesQuery(entry.name, options.query)) continue
     out.push(entry)
   }
   return out
@@ -291,6 +317,31 @@ export function summarizeEntries(entries: readonly FileEntry[]): {
   return { dirs, files: entries.length - dirs, total: entries.length }
 }
 
+/**
+ * 搜索生效时「匹配 N / 共 M」的数字（R6），不需要显示时返回 null。
+ *
+ * 为什么必须有它：搜索生效后底部统计只统计【过滤后】的条目（用户看到几行就统计几行），
+ * 于是 2977 个 route-*.kmz 过滤成 12 个时，底栏会说「12 个文件」——
+ * 用户会以为另外 2965 个文件不见了。旁挂一条「匹配 12 / 共 2977」才能自证「是过滤，不是丢失」。
+ *
+ * 判定放在这里而不是组件里：本工程无 jsdom，组件里的条件渲染观测不到。
+ * 这里的三个返回分支都有表驱动用例（未搜索 / 全命中 / 部分命中）。
+ *
+ * 注意 total 用的是【不含搜索词】的基础过滤结果（同样尊重隐藏文件开关）——
+ * 拿 entries.length 当分母会把被隐藏项也数进去，那个数字用户核对不上。
+ */
+export function searchSummary(
+  entries: readonly FileEntry[],
+  options: FilterOptions,
+): { matched: number; total: number } | null {
+  if (options.query.trim() === '') return null
+  const total = filterEntries(entries, { showHidden: options.showHidden, query: '' }).length
+  const matched = filterEntries(entries, options).length
+  // 全部命中时底栏已经是一条准确的信息，再加一个「匹配 N / 共 N」只是噪声
+  if (matched >= total) return null
+  return { matched, total }
+}
+
 /* ============ I4：条目点击后的导航目标（链接目录与防环） ============ */
 
 /**
@@ -374,6 +425,38 @@ export function navKeyCommand(key: string, cwd: string): NavKeyCommand {
 export function isOpenKey(key: string): boolean {
   return key === 'Enter'
 }
+
+/* ============ R6：搜索框快捷键 ============ */
+
+/**
+ * Ctrl+F / Cmd+F 是否应当把焦点送进搜索框。
+ *
+ * 两条规则，各有理由：
+ * 1. **焦点在输入控件里时不抢**：地址栏里按 Ctrl+F 若把焦点抢走，用户正在编辑的路径
+ *    会被丢下（且 macOS 上 Cmd+F 在很多输入框里是「查找」语义，抢走更莫名其妙）。
+ *    搜索框自身也是 INPUT —— 所以已经在里面时自然不再重复聚焦。
+ * 2. 只认 Ctrl/Cmd + F（大小写两种都认，CapsLock 下也要生效）。
+ *
+ * 为什么抽成纯函数：本工程无 jsdom，组件里 window.addEventListener 的回调
+ * 在 SSR 下永远不执行 —— 写在组件里就是零门禁（本项目已吃过 15 次假护栏）。
+ * 抽出来之后「哪些按键该聚焦」有真正可复现的断言，组件只负责转发。
+ */
+export function isSearchFocusKey(event: {
+  key: string
+  ctrlKey?: boolean
+  metaKey?: boolean
+  target?: unknown
+}): boolean {
+  const tagName = tagNameOf(event.target)
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA') return false
+  if (event.ctrlKey !== true && event.metaKey !== true) return false
+  return event.key === 'f' || event.key === 'F'
+}
+
+/** 搜索框里的 Esc：清空过滤词并失焦（R6）。与「Esc 清空选中项」是两套语义。 */
+export function isSearchClearKey(key: string): boolean {
+  return key === 'Escape' || key === 'Esc'
+}
 /* ============ 降级提示（裁决 3） ============ */
 
 /** fs:list 里与「提示条」相关的字段（与 shared/types 的 FsListData 对齐）。 */
@@ -434,6 +517,17 @@ export interface FileViewState {
   sort: SortKey
   sortDir: SortDir
   showHidden: boolean
+  /**
+   * 文件名过滤词（R6：当前目录搜索）。
+   *
+   * 为什么放在 view state 里而不是组件 local state：这个工程的每台设备都有独立分片
+   * （切设备回来各自恢复）。搜索词跟「排序 / 隐藏开关」是同一类【视图偏好】，
+   * 放组件里会在切设备时凭空消失，用户会以为“刚才搜过的目录什么都没有”。
+   *
+   * 但跨【目录】不保留：换目录时必须清空（见 resolve 分支），
+   * 否则用户进了新目录看到空列表，会以为文件不存在。
+   */
+  query: string
   /** 最近一次成功列举的条目（原始顺序；展示顺序由 visibleEntries 算）。 */
   entries: FileEntry[]
   status: ViewStatus
@@ -519,6 +613,40 @@ export interface ListResultData {
   usedFallback: boolean
   exitCode: number | null
   tzOffsetMinutes: number
+}
+
+/* ============ R6：空列表的四种解释 ============ */
+
+/** 列表为空时该给用户哪句话。 */
+export type EmptyReason = 'error' | 'loading' | 'query' | 'hidden' | 'empty'
+
+export interface EmptyReasonInput {
+  status: ViewStatus
+  /** 基础条目数（未经搜索词过滤，但含隐藏项）。 */
+  total: number
+  /** 是否过滤掉了隐藏项。 */
+  hiddenFiltered: boolean
+  query: string
+}
+
+/**
+ * 列表为空时，到底是「加载中 / 出错 / 被搜索词筛掉了 / 只有隐藏项 / 真空目录」。
+ *
+ * 为什么要分这么细：搜索生效后，一个满目录会变成空列表 ——
+ * 若这时还显示「这个目录是空的」，用户会直接以为文件没了（这正是简报里
+ * 「换目录必须清空 query」那条担心的同一种误导，只是发生在同一目录内）。
+ *
+ * 优先级：出错 > 加载中 > 被搜索筛掉 > 只有隐藏项 > 真空目录。
+ * 「被搜索筛掉」必须排在「只有隐藏项」之前：用户既然敲了搜索词，
+ * 他最需要知道的是「没有匹配」，而不是「去打开显示隐藏文件」。
+ * 但目录本身就一条都没有时（total === 0）不算筛掉 —— 那时「空目录」才是事实。
+ */
+export function emptyReason(input: EmptyReasonInput): EmptyReason {
+  if (input.status === 'error') return 'error'
+  if (input.status === 'loading' || input.status === 'idle') return 'loading'
+  if (input.total > 0 && input.query.trim() !== '') return 'query'
+  if (input.hiddenFiltered) return 'hidden'
+  return 'empty'
 }
 
 /* ============ 多选（问题 2）：三态选中 + 区间 + 全选 ============ */
@@ -645,6 +773,8 @@ export type FileViewAction =
   /** 列头点击排序：同列切升降，换列回到升序。 */
   | { type: 'setSort'; sort: SortKey }
   | { type: 'setShowHidden'; value: boolean }
+  /** 改搜索词（R6）。空串 = 取消过滤；不 trim —— 用户正在输入的中间态必须原样回显。 */
+  | { type: 'setQuery'; value: string }
   /**
    * 点选条目。mode 是这次点击的语义（由修饰键决定，见 selectModeOf）：
    * - replace：普通点击，只选它；anchor 移到它；
@@ -677,6 +807,7 @@ export function createFileView(): FileViewState {
     sort: 'name',
     sortDir: 'asc',
     showHidden: false,
+    query: '',
     entries: [],
     status: 'idle',
     error: null,
@@ -719,6 +850,9 @@ function appendLinkTrail(trail: readonly string[], from: string, to: string): st
 function displayOrder(state: FileViewState): string[] {
   return visibleEntries(state.entries, {
     showHidden: state.showHidden,
+    // 【R6】必须是同一份过滤规则：Shift 区间选择若按未过滤的顺序取段，
+    // 用户看到的 3 行会选出 12 个看不见的条目。
+    query: state.query,
     sort: state.sort,
     sortDir: state.sortDir,
   }).map((entry) => entry.name)
@@ -818,6 +952,18 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         // 防环又变回死代码（这正是审查轮 2 / N2 报的问题）。
         selected: sameDir ? intersectSelected(state.selected, data.entries) : [],
         anchor: sameDir ? nextAnchor : null,
+        /*
+         * 【R6】换目录必须清空搜索词。
+         *
+         * 这是本功能最容易漏的一条：用户在 /sdcard/TJH/Pilot/KMZ 里搜 route-12，
+         * 点进子目录后列表还是被同一条过滤词筛着 —— 他看到的空目录会让他以为
+         * “这个目录里没有文件”。搜索是【当前目录内】的过滤，目录一变就没有意义。
+         *
+         * 为什么在这里（resolve）而不是 navigate：navigate 只是登记目标，
+         * 跳转失败（目录不存在/无权限）时用户还停在原目录，那条过滤词必须原样保留 ——
+         * 在 navigate 里清会让“手打错一个字母”顺手毁掉用户的搜索结果。
+         */
+        query: sameDir ? state.query : '',
         scrollTop: sameDir ? state.scrollTop : 0,
         // 【M1】跟随成功才提交轨迹与跳数（失败路径见 fail 分支：直接丢弃 pendingLink）
         linkTrail: state.pendingLink === null
@@ -864,6 +1010,9 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
     }
     case 'setShowHidden':
       return state.showHidden === action.value ? state : { ...state, showHidden: action.value }
+    case 'setQuery':
+      // 引用不变 = 不重渲染：每次按键都会 dispatch，值没变就绝不能换 state
+      return state.query === action.value ? state : { ...state, query: action.value }
     case 'select': {
       // replace：只选它，anchor 落到它身上
       if (action.mode === 'replace') {
@@ -995,6 +1144,7 @@ export function viewFromPartial(partial: Partial<FileViewSlice> | undefined): Fi
     sort: partial?.sort ?? base.sort,
     sortDir: partial?.sortDir ?? base.sortDir,
     showHidden: partial?.showHidden ?? base.showHidden,
+    query: partial?.query ?? base.query,
     entries: partial?.entries ?? base.entries,
     status: partial?.status ?? base.status,
     error: partial?.error === undefined ? base.error : partial.error,

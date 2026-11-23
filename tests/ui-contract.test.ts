@@ -820,6 +820,65 @@ describe('简报 R5：自动消失与右键菜单的静态契约', () => {
   })
 })
 
+/* ============ R6：搜索框接线契约（行为门禁见 tests/file-view.test.ts） ============ */
+
+describe('简报 R6：当前目录搜索的接线契约', () => {
+  /*
+   * 这一组是**接线层**的静态契约，不是搜索行为的门禁 ——
+   * 行为（大小写/子串/trim/换目录清空）全部由 tests/file-view.test.ts 的纯函数用例守。
+   *
+   * 为什么接线还要单独钉一次：下面的片段发生在组件里，
+   * 本工程无 jsdom、SSR 只跑一次 render 不跑事件，把它们删掉**全量测试仍会全绿**。
+   * 断言前一律剥掉注释（注释里写「query: current.query」不算满足），
+   * 所以这至少能拦住「把参数默默删掉」这一类退化 —— 拦不住的那部分如实登记进 r6-search-report.md。
+   */
+  const strip = (source: string): string =>
+    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it('FilesPage 把 query 透传给 visibleEntries（过滤 + 排序的唯一实现）', () => {
+    const page = strip(read('src/pages/FilesPage.tsx'))
+    const call = page.slice(page.indexOf('visibleEntries('))
+    expect(call.slice(0, 400)).toContain('query: current.query')
+  })
+
+  it('FilesPage 把 query 与 setQuery 接到工具条上（搜索框不是摆设）', () => {
+    const page = strip(read('src/pages/FilesPage.tsx'))
+    expect(page).toContain('query={current.query}')
+    expect(page).toContain("type: 'setQuery'")
+  })
+
+  it('FilesPage 订阅了 query 字段（不订阅就等于永远拿默认值）', () => {
+    const page = strip(read('src/pages/FilesPage.tsx'))
+    expect(page).toContain('query: state.views[serial]?.query')
+  })
+
+  it('FileToolbar 的快捷键判定来自 shared 纯函数（组件里不许再写一套 key 判断）', () => {
+    const toolbar = strip(read('src/components/FileToolbar.tsx'))
+    expect(toolbar).toContain('isSearchFocusKey')
+    expect(toolbar).toContain('isSearchClearKey')
+    // 禁止形态：组件里直接比较 ctrlKey/metaKey 就是第二套判定（与纯函数必然漂移）
+    expect(toolbar).not.toMatch(/ctrlKey\s*===/)
+    expect(toolbar).not.toMatch(/metaKey\s*===/)
+    expect(toolbar).not.toMatch(/event\.key\s*===\s*'f'/)
+  })
+
+  it('FileTable 的空状态由 emptyReason 决定（不是残留的 hiddenFiltered 布尔量）', () => {
+    const table = strip(read('src/components/FileTable.tsx'))
+    expect(table).toContain('emptyReason')
+    expect(table).not.toContain('hiddenFiltered')
+  })
+
+  it('搜索框只在工具条内（不新开一行、不影响地址栏那一排按钮）', () => {
+    const toolbar = strip(read('src/components/FileToolbar.tsx'))
+    // 右端对齐：搜索框靠 ml-auto 推到右侧，左侧按钮顺序一个字都没动
+    expect(toolbar).toContain('ml-auto')
+    const page = strip(read('src/pages/FilesPage.tsx'))
+    // 地址栏行仍然只有「显示隐藏文件」与「刷新」两个按钮（搜索框不许挤到这里）
+    expect(page).toContain("t('files.showHidden')")
+    expect(page).toContain("t('files.refresh')")
+  })
+})
+
 describe('简报 R4：文件行焦点的静态契约（真单测见 tests/file-row.test.ts）', () => {
   /*
    * 【事项 3 的门禁分工】class 的**内容**由 tests/file-row.test.ts 直接断言返回值

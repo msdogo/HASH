@@ -57,6 +57,11 @@ const messages: Record<string, string> = {
   'files.linkUnresolved': '无法进入这个快捷方式：没有可用的目标路径',
   'files.linkCycle': '这个快捷方式指向自己或已访问过的目录，已停止跟随',
   'files.scrollToTop': '回到顶部',
+  // ---- R6：当前目录文件名搜索（零 adb 调用，只过滤已加载的条目）----
+  'files.searchPlaceholder': '搜索当前目录文件名',
+  'files.searchClear': '清除搜索',
+  'files.emptyQuery': '没有匹配的文件',
+  'files.summaryMatch': '匹配 {matched} / 共 {total}',
 
   // ---- 传输（任务 8）----
   'transfer.title': '传输',

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Folder, FileText, Link2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
-import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, selectModeOf, type SelectMode, type SortDir, type SortKey } from '@shared/file-view'
+import { ROW_HEIGHT, formatMtime, formatSize, isMetaKnown, isOpenKey, selectModeOf, type EmptyReason, type SelectMode, type SortDir, type SortKey } from '@shared/file-view'
 import { rowClassName } from '@shared/file-row'
 import { isPrimaryPointerButton } from '@shared/context-menu'
 import { errorText, t, tf } from '@shared/i18n'
@@ -30,8 +30,14 @@ export interface FileTableProps {
   status: 'idle' | 'loading' | 'ready' | 'error'
   /** 整页错误码（零条目 + 失败）。 */
   error: string | null
-  /** 是否有隐藏项被过滤掉（用于空目录提示更准确）。 */
-  hiddenFiltered: boolean
+  /**
+   * 列表为空时的原因（R6 把「被搜索词筛掉」也收了进来）。
+   *
+   * 修前这里是一个 hiddenFiltered 布尔量，只能区分「空目录 / 只有隐藏项」。
+   * 搜索生效后一个满目录也会变成空列表 —— 那时必须说「没有匹配的文件」，
+   * 否则用户会以为文件丢了。四种原因由 @shared/file-view 的 emptyReason 判定（有表驱动用例）。
+   */
+  emptyReason: EmptyReason
   /** 恢复滚动位置用的 key（serial + cwd + ready）；变化时才回填一次。 */
   restoreKey: string
   /** 在恢复 key 变化处读取要回填的 scrollTop。 */
@@ -159,7 +165,7 @@ export function FileTable(props: FileTableProps) {
       >
         {
           props.entries.length === 0
-            ? <EmptyState status={props.status} error={props.error} hiddenFiltered={props.hiddenFiltered} onRetry={props.onRetry} />
+            ? <EmptyState reason={props.emptyReason} error={props.error} onRetry={props.onRetry} />
             : (
               <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
                 {items.map((item) => {
@@ -263,14 +269,13 @@ export function FileTable(props: FileTableProps) {
   )
 }
 
-/** 空列表时的三种解释：加载中 / 空目录 / 整页错误（裁决 3）。 */
+/** 空列表时的解释：加载中 / 空目录 / 只有隐藏项 / 被搜索筛掉 / 整页错误（裁决 3 + R6）。 */
 function EmptyState(props: {
-  status: FileTableProps['status']
+  reason: EmptyReason
   error: string | null
-  hiddenFiltered: boolean
   onRetry: () => void
 }) {
-  if (props.status === 'error') {
+  if (props.reason === 'error') {
     return (
       <div className="flex flex-col items-start gap-3 p-6 text-sm">
         <p className="text-red-600">{props.error === null ? '' : errorText(props.error)}</p>
@@ -284,12 +289,20 @@ function EmptyState(props: {
       </div>
     )
   }
-  if (props.status === 'loading' || props.status === 'idle') {
+  if (props.reason === 'loading') {
     return <p className="p-6 text-sm text-neutral-500">{t('files.loading')}</p>
+  }
+  /*
+   * R6：被搜索词筛掉时明确说「没有匹配」。
+   * 这一条不能省 —— 否则用户搜一个不存在的名字，看到的是「这个目录是空的」，
+   * 而「空」是事实判断，会直接把他往「文件丢了」的方向带。
+   */
+  if (props.reason === 'query') {
+    return <p className="p-6 text-sm text-neutral-500">{t('files.emptyQuery')}</p>
   }
   return (
     <p className="p-6 text-sm text-neutral-500">
-      {props.hiddenFiltered ? t('files.emptyHidden') : t('files.empty')}
+      {props.reason === 'hidden' ? t('files.emptyHidden') : t('files.empty')}
     </p>
   )
 }

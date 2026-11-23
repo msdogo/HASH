@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { DeviceRail, pickRailData } from '../src/components/DeviceRail'
 import { OpDialogHost, pickDialogState, type OpDialogProps } from '../src/components/OpDialog'
 import { ContextMenu } from '../src/components/ContextMenu'
+import { FileTable } from '../src/components/FileTable'
 import type { OpDialog } from '../src/shared/op-view'
 import { menuItemsFor } from '../src/shared/context-menu'
 import { errorText, t, tf } from '../src/shared/i18n'
@@ -389,6 +390,82 @@ describe('【R5-2】右键菜单真的渲染出用户裁决的菜单项（渲染
     const html = menuHtml(2)
     const tags = html.match(/<button\b[^>]*>/g) ?? []
     for (const tag of tags) expect(isDisabled(tag)).toBe(false)
+  })
+})
+
+/* ============ R6：空列表四种解释的渲染期门禁（判定见 tests/file-view.test.ts） ============ */
+
+/*
+ * 判定本身（emptyReason）是纯函数，有表驱动用例。这里证明的是**用户真能看见那句话**：
+ * 修前 FileTable 只认一个 hiddenFiltered 布尔量，一个满目录被搜索词筛空时
+ * 显示的是「这个目录是空的」—— 用户会直接以为文件丢了。
+ *
+ * 仍然没有门禁的部分（如实登记，见 r6-search-report.md）：
+ *   - 搜索框的 onChange / 清除按钮的 onClick 是否真的派发了 setQuery（SSR 不跑事件回调）；
+ *   - Ctrl+F 的 window keydown 监听（在 useEffect 里，SSR 不跑 effect）；
+ *   - Esc 清空后 input.blur() 的真实焦点行为。
+ * 判定已抽成 isSearchFocusKey / isSearchClearKey / matchesQuery，行为由纯函数用例守。
+ */
+function tableHtml(over: { reason: 'error' | 'loading' | 'query' | 'hidden' | 'empty'; error?: string | null }): string {
+  return renderToStaticMarkup(React.createElement(FileTable, {
+    entries: [],
+    selected: [],
+    tzOffsetMinutes: 0,
+    status: 'ready',
+    error: over.error ?? null,
+    emptyReason: over.reason,
+    restoreKey: 'SERIAL\u0001/sdcard\u0001ready',
+    getRestoreScrollTop: () => 0,
+    onScrollTop: () => undefined,
+    onOpen: () => undefined,
+    onSelect: () => undefined,
+    onRetry: () => undefined,
+    sort: 'name',
+    sortDir: 'asc',
+    onSort: () => undefined,
+    onKeyNav: () => undefined,
+    onDragOver: () => undefined,
+    onDrop: () => undefined,
+    onDragStartRow: () => undefined,
+    onContextMenuRow: () => undefined,
+  }))
+}
+
+describe('【R6】空列表必须说清是「没有匹配」还是「目录空了」', () => {
+  it('被搜索词筛掉 → 渲染「没有匹配的文件」，不是「这个目录是空的」', () => {
+    const html = tableHtml({ reason: 'query' })
+    expect(html).toContain(t('files.emptyQuery'))
+    expect(html).not.toContain(t('files.empty'))
+    expect(t('files.emptyQuery')).toBe('没有匹配的文件')
+  })
+
+  it('真空目录 → 渲染「这个目录是空的」', () => {
+    const html = tableHtml({ reason: 'empty' })
+    expect(html).toContain(t('files.empty'))
+    expect(html).not.toContain(t('files.emptyQuery'))
+  })
+
+  it('只有隐藏项 → 提示去看「显示隐藏文件」（不能被 search 文案顶掉）', () => {
+    const html = tableHtml({ reason: 'hidden' })
+    expect(html).toContain(t('files.emptyHidden'))
+  })
+
+  it('加载中 → 「正在读取目录…」，既不显示空目录也不显示没有匹配', () => {
+    const html = tableHtml({ reason: 'loading' })
+    expect(html).toContain(t('files.loading'))
+    expect(html).not.toContain(t('files.empty'))
+    expect(html).not.toContain(t('files.emptyQuery'))
+  })
+
+  it('整页错误 → 显示错误码人话与重试按钮', () => {
+    const html = tableHtml({ reason: 'error', error: 'E_NOT_FOUND' })
+    expect(html).toContain(errorText('E_NOT_FOUND'))
+    expect(html).toContain(t('files.retry'))
+  })
+
+  it('对照：四种非错误文案两两不同（防止全渲染成同一句而上面几条空转）', () => {
+    const texts = [tableHtml({ reason: 'empty' }), tableHtml({ reason: 'query' }), tableHtml({ reason: 'hidden' }), tableHtml({ reason: 'loading' })]
+    expect(new Set(texts).size).toBe(4)
   })
 })
 

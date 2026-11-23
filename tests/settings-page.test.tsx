@@ -158,7 +158,7 @@ describe('R2-2 设置页：结构与文案契约', () => {
 
 /* ============ 多选可见入口：工具条上的「全选」 ============ */
 
-function toolbarHtml(over: Partial<{ selectedCount: number; ready: boolean }> = {}): string {
+function toolbarHtml(over: Partial<{ selectedCount: number; ready: boolean; query: string }> = {}): string {
   const props: React.ComponentProps<typeof FileToolbar> = {
     selectedCount: over.selectedCount ?? 0,
     ready: over.ready ?? true,
@@ -170,6 +170,8 @@ function toolbarHtml(over: Partial<{ selectedCount: number; ready: boolean }> = 
     onDownload: () => undefined,
     onSelectAll: () => undefined,
     downloadHint: null,
+    query: over.query ?? '',
+    onQueryChange: () => undefined,
   }
   return renderToStaticMarkup(React.createElement(FileToolbar, props))
 }
@@ -208,3 +210,54 @@ describe('R2-2 多选入口：工具条「全选」按钮', () => {
     expect(t('files.selectHint')).toContain('Shift')
   })
 })
+
+/* ============ R6：工具条右端的搜索框（渲染期门禁） ============ */
+
+describe('R6 搜索框：渲染期可见性（行为门禁见 tests/file-view.test.ts）', () => {
+  /*
+   * 这里只证明「用户看得见什么」：输入框在、placeholder 是中文文案、清除按钮只在有内容时出现。
+   * 真正的搜索行为（大小写/子串/trim/换目录清空）全部由 tests/file-view.test.ts 的纯函数用例守 ——
+   * 本工程无 jsdom，输入框的 onChange 在 SSR 下永远不触发，拿它当行为门禁就是假护栏。
+   */
+  it('渲染出搜索输入框，placeholder 走 i18n（不是裸 key）', () => {
+    const html = toolbarHtml()
+    expect(html).toContain('placeholder="' + t('files.searchPlaceholder') + '"')
+    expect(t('files.searchPlaceholder')).toBe('搜索当前目录文件名')
+  })
+
+  it('输入框带 aria-label（无 title 的元素也要能被辅助技术叫出名字）', () => {
+    expect(toolbarHtml()).toContain('aria-label="' + t('files.searchPlaceholder') + '"')
+  })
+
+  it('搜索框为空时不渲染清除按钮（空输入框配一个叉号是无信息的装饰）', () => {
+    const html = toolbarHtml()
+    expect(html).toContain(t('files.searchPlaceholder'))
+    expect(html).not.toContain('title="' + t('files.searchClear') + '"')
+  })
+
+  it('有搜索词时清除按钮出现，且带 title 与 aria-label', () => {
+    const html = toolbarHtml({ query: 'route' })
+    expect(html).toContain('title="' + t('files.searchClear') + '"')
+    expect(html).toContain('aria-label="' + t('files.searchClear') + '"')
+    // 受控：当前过滤词必须真的回填进 value（否则用户看不到自己在搜什么）
+    expect(html).toContain('value="route"')
+  })
+
+  it('搜索框不因「没有选中项」而禁用（它不是对选中项的操作）', () => {
+    const html = toolbarHtml({ selectedCount: 0, ready: false })
+    const inputTags = html.match(/<input\b[^>]*>/g) ?? []
+    expect(inputTags).toHaveLength(1)
+    const only = inputTags[0] ?? ''
+    expect(only).not.toBe('')
+    expect(/\sdisabled=""/.test(only)).toBe(false)
+  })
+
+  it('搜索框在工具条上、与「全选」等按钮同一条（不新增行）', () => {
+    const html = toolbarHtml()
+    // 同一段 HTML 里既有按钮也有输入框，且只有一条工具条容器
+    expect(html).toContain(t('files.toolbar.selectAll'))
+    expect((html.match(/<input\b/g) ?? [])).toHaveLength(1)
+    expect((html.match(/border-b/g) ?? []).length).toBeGreaterThan(0)
+  })
+})
+

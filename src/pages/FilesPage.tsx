@@ -3,11 +3,13 @@ import { useShallow } from 'zustand/react/shallow'
 import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
+  emptyReason,
   isHiddenName,
   keyToSelectionAction,
   makeSelectAllHandler,
   navKeyCommand,
   openTarget,
+  searchSummary,
   summarizeEntries,
   viewFromPartial,
   visibleEntries,
@@ -65,6 +67,7 @@ export function FilesPage() {
             sort: state.views[serial]?.sort,
             sortDir: state.views[serial]?.sortDir,
             showHidden: state.views[serial]?.showHidden,
+            query: state.views[serial]?.query,
             entries: state.views[serial]?.entries,
             status: state.views[serial]?.status,
             error: state.views[serial]?.error,
@@ -172,10 +175,12 @@ export function FilesPage() {
     () =>
       visibleEntries(current.entries, {
         showHidden: current.showHidden,
+        // R6：搜索是【当前目录内】的过滤，零 adb 调用 —— 只筛已加载的 entries
+        query: current.query,
         sort: current.sort,
         sortDir: current.sortDir,
       }),
-    [current.entries, current.showHidden, current.sort, current.sortDir],
+    [current.entries, current.showHidden, current.query, current.sort, current.sortDir],
   )
 
   // 空目录提示要区分「真的空」与「只有隐藏项」（隐藏项默认不显示，裁决 5）
@@ -185,6 +190,27 @@ export function FilesPage() {
   )
 
   const summary = useMemo(() => summarizeEntries(entries), [entries])
+
+  /*
+   * R6：搜索生效时，底栏的统计只数「过滤后」的条目（用户看到几行就统计几行）。
+   * 旁挂一条「匹配 N / 共 M」，让用户知道是搜索筛掉的、不是文件丢了 ——
+   * 2977 个 route-*.kmz 过滤成 12 个时，没有这句话就是一次「文件去哪了」的惊吓。
+   */
+  const matchLine = useMemo(
+    () => searchSummary(current.entries, { showHidden: current.showHidden, query: current.query }),
+    [current.entries, current.showHidden, current.query],
+  )
+
+  /*
+   * R6：空列表要说清是哪一种「空」（加载中 / 出错 / 被搜掉 / 只有隐藏项 / 真空）。
+   * 判定在 @shared/file-view 的 emptyReason（表驱动用例），组件只负责渲染。
+   */
+  const empty = emptyReason({
+    status: current.status,
+    total: current.entries.length,
+    hiddenFiltered,
+    query: current.query,
+  })
 
   /*
    * 链接轨迹与跳数（防环，N2 / M1c）：**点击时直接从 store 现取**，不缓存、不订阅。
@@ -597,6 +623,9 @@ export function FilesPage() {
         onDownload={() => { void handleDownload() }}
         onSelectAll={handleSelectAll}
         downloadHint={queueNotice}
+        /* R6：搜索框在工具条右端（不新增行高）。过滤词进 store 分片，切设备各记各的。 */
+        query={current.query}
+        onQueryChange={(value) => { dispatch(serial, { type: 'setQuery', value }) }}
       />
       <div className="flex items-center gap-1 border-b border-neutral-300 pr-2">
         <div className="min-w-0 flex-1">
@@ -696,7 +725,7 @@ export function FilesPage() {
           tzOffsetMinutes={current.tzOffsetMinutes}
           status={current.status}
           error={current.error}
-          hiddenFiltered={hiddenFiltered}
+          emptyReason={empty}
           restoreKey={restoreKey}
           getRestoreScrollTop={getRestoreScrollTop}
           onScrollTop={onScrollTop}
@@ -737,6 +766,16 @@ export function FilesPage() {
 
       <div className="flex items-center gap-3 border-t border-neutral-300 px-3 py-1 text-[11px] text-neutral-500">
         <span>{tf('files.summary', { dirs: summary.dirs, files: summary.files })}</span>
+        {/*
+          * R6：搜索筛掉了一部分时，明说「匹配 N / 共 M」。
+          * 底栏的统计只数过滤后的条目（用户看到几行就统计几行），没有这一句，
+          * 2977 个文件变成 12 个时用户会以为另外 2965 个不见了。
+          */}
+        {matchLine !== null && (
+          <span className="text-neutral-600">
+            {tf('files.summaryMatch', { matched: matchLine.matched, total: matchLine.total })}
+          </span>
+        )}
         {current.selected.length > 0 && (
           <span className="text-neutral-600">{tf('files.selected', { count: current.selected.length })}</span>
         )}
