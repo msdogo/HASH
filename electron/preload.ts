@@ -13,6 +13,8 @@ import type {
   FsRemoveFactsInput,
   FsRenameInput,
   LocalListInput,
+  SettingsGetDeviceCwdInput,
+  SettingsSetDeviceCwdInput,
   SettingsSetDownloadDirInput,
   TransferEnqueueInput,
   TransferIdInput,
@@ -145,6 +147,19 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 恢复默认下载路径。 */
       resetDownloadDir: (): Promise<IpcResult<SettingsData>> =>
         deps.invoke(CH.SETTINGS_RESET_DOWNLOAD_DIR, null) as Promise<IpcResult<SettingsData>>,
+      /* ---- R9：按设备记住上次停留的目录 ---- */
+      /** 读该设备上次停留的目录；空串 = 没有记录（不是错误）。 */
+      getDeviceCwd: (payload: SettingsGetDeviceCwdInput): Promise<IpcResult<string>> =>
+        deps.invoke(CH.SETTINGS_GET_DEVICE_CWD, payload) as Promise<IpcResult<string>>,
+      /**
+       * 记住该设备停留的目录。
+       *
+       * 渲染层是 fire-and-forget 地调它（不 await）。契约里保留 Promise，
+       * 是因为 IPC 本来就异步；「不 await」的决定在调用点（src/shared/cwd-memo.ts
+       * 的 remember 返回 void），不是靠这里把返回值抹掉来暗示。
+       */
+      setDeviceCwd: (payload: SettingsSetDeviceCwdInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.SETTINGS_SET_DEVICE_CWD, payload) as Promise<IpcResult<void>>,
     },
     transfer: {
       /** 加入传输队列。 */

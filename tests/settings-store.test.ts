@@ -242,3 +242,170 @@ describe('R2-2 注入式设计：存储位置由调用方决定', () => {
     expect(existsSync(path.join(storeDir, 'settings.json'))).toBe(true)
   })
 })
+
+/*
+ * ============ R9：按设备序列号记住上次停留的目录 ============
+ *
+ * 与 R2-2 同一套证明标准：**真读写**（写 → 重建 store → 读回），不是源码文本断言。
+ * 设备目录记录最怕两种坏法，两种都在这里钉住：
+ *   1. 写不进去（重建后读回 undefined）；
+ *   2. 一台设备的记录污染另一台（读回串味）。
+ *
+ * 有一条**刻意没测**：「目录在设备上是否还存在」。那要发 adb，是渲染层的职责
+ * （见 src/shared/cwd-memo.ts 的 resolveRestoreCwd）。存储层只碰本机设置文件。
+ */
+describe('R9 设备目录记忆：写 → 重建 store → 读回', () => {
+  it('写一台设备 → 落盘 → 重建后读回同一个值', () => {
+    const first = open()
+    expect(first.getDeviceCwd('SERIAL-A')).toBeUndefined()
+
+    first.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+
+    // 磁盘上真的写进去了（解析出来的值就是它，不是「文本里出现过」）
+    const parsed: unknown = JSON.parse(readRaw())
+    expect(parsed).toMatchObject({ deviceCwds: { 'SERIAL-A': '/sdcard/DCIM' } })
+
+    // 重建（模拟重启应用）：这才是「记住」的定义
+    expect(open().getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+  })
+
+  it('多设备互不污染：写 A 与 B，各自读回自己的目录', () => {
+    const store = open()
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    store.setDeviceCwd('SERIAL-B', '/sdcard/Download')
+
+    const reloaded = open()
+    expect(reloaded.getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+    expect(reloaded.getDeviceCwd('SERIAL-B')).toBe('/sdcard/Download')
+    // 第三台没写过：必须是没有记录，不能借到别人的
+    expect(reloaded.getDeviceCwd('SERIAL-C')).toBeUndefined()
+  })
+
+  it('同一 serial 覆盖写入 → 读到最新值，且不影响其它设备', () => {
+    const store = open()
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    store.setDeviceCwd('SERIAL-B', '/sdcard/Download')
+    store.setDeviceCwd('SERIAL-A', '/sdcard/Movies')
+
+    const reloaded = open()
+    expect(reloaded.getDeviceCwd('SERIAL-A')).toBe('/sdcard/Movies')
+    expect(reloaded.getDeviceCwd('SERIAL-B')).toBe('/sdcard/Download')
+  })
+
+  it('不设数量上限（用户裁决）：写 40 台设备，全部记得住', () => {
+    const store = open()
+    for (let i = 0; i < 40; i++) store.setDeviceCwd('SERIAL-' + i, '/sdcard/dir' + i)
+
+    const reloaded = open()
+    for (let i = 0; i < 40; i++) expect(reloaded.getDeviceCwd('SERIAL-' + i), String(i)).toBe('/sdcard/dir' + i)
+  })
+
+  it('写入时去掉首尾空白', () => {
+    const store = open()
+    store.setDeviceCwd('  SERIAL-A  ', '  /sdcard/DCIM  ')
+    const reloaded = open()
+    expect(reloaded.getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+    expect(reloaded.getDeviceCwd('  SERIAL-A  ')).toBe('/sdcard/DCIM')
+  })
+
+  it('与下载路径共存：写设备目录不影响 downloadDir，反之亦然', () => {
+    const store = open()
+    store.setDownloadDir(customDir)
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    store.setDeviceCwd('SERIAL-A', '/sdcard/Movies')
+
+    const reloaded = open()
+    expect(reloaded.getDownloadDir()).toBe(customDir)
+    expect(reloaded.getDeviceCwd('SERIAL-A')).toBe('/sdcard/Movies')
+  })
+})
+
+describe('R9 设备目录记忆：坏值与拒绝写入（不抛、不降级成垃圾记录）', () => {
+  it('相对路径记录 → 读回 undefined，并只告警一次', () => {
+    writeRaw(JSON.stringify({ deviceCwds: { 'SERIAL-A': 'sdcard/DCIM' } }))
+    const store = open()
+    expect(store.getDeviceCwd('SERIAL-A')).toBeUndefined()
+    expect(store.getDeviceCwd('SERIAL-A')).toBeUndefined()
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('SERIAL-A')
+  })
+
+  it('空串记录 → 读回 undefined（不当成「停在根目录」）', () => {
+    writeRaw(JSON.stringify({ deviceCwds: { 'SERIAL-A': '' } }))
+    expect(open().getDeviceCwd('SERIAL-A')).toBeUndefined()
+  })
+
+  it('非字符串记录（数字 / null / 对象）→ 读回 undefined，不抛', () => {
+    for (const bad of [123, null, { dir: '/sdcard' }, ['/sdcard']]) {
+      warnings.length = 0
+      writeRaw(JSON.stringify({ deviceCwds: { 'SERIAL-A': bad } }))
+      const store = open()
+      expect(() => store.getDeviceCwd('SERIAL-A')).not.toThrow()
+      expect(store.getDeviceCwd('SERIAL-A'), JSON.stringify(bad)).toBeUndefined()
+    }
+  })
+
+  it('整个 deviceCwds 不是对象（字符串 / 数组）→ 读回 undefined，不抛', () => {
+    for (const bad of ['nope', 42, ['/sdcard'], null]) {
+      warnings.length = 0
+      writeRaw(JSON.stringify({ deviceCwds: bad }))
+      const store = open()
+      expect(() => store.getDeviceCwd('SERIAL-A')).not.toThrow()
+      expect(store.getDeviceCwd('SERIAL-A'), JSON.stringify(bad)).toBeUndefined()
+    }
+  })
+
+  it('整个文件是坏 JSON → 设备目录读回 undefined，不抛（其它设置也照旧降级）', () => {
+    writeRaw('{ this is not json')
+    const store = open()
+    expect(() => store.getDeviceCwd('SERIAL-A')).not.toThrow()
+    expect(store.getDeviceCwd('SERIAL-A')).toBeUndefined()
+    expect(store.getDownloadDir()).toBe(defaultDir)
+  })
+
+  it('坏值之后仍能写入（降级不是把存储永久弄坏）', () => {
+    writeRaw(JSON.stringify({ deviceCwds: { 'SERIAL-A': 'relative/bad' } }))
+    const store = open()
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    expect(open().getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+  })
+
+  it('空 serial → 拒绝写入（设备没序列号时不该产生垃圾键）', () => {
+    const store = open()
+    store.setDeviceCwd('', '/sdcard/DCIM')
+    store.setDeviceCwd('   ', '/sdcard/DCIM')
+    /*
+     * 拒绝得彻底：整个存储文件都还没有（一次真实写入都没发生）。
+     * 若实现改成「写一个空表」，这里会红 —— 那也是垃圾写入（首次连设备就产生 settings.json）。
+     */
+    expect(existsSync(path.join(storeDir, SETTINGS_FILE_NAME + '.json'))).toBe(false)
+    // 紧接着一次**合法**写入仍然照常工作（拒绝不是把写入通道堵死）
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    expect(open().getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+    const raw = JSON.parse(readRaw()) as { deviceCwds?: Record<string, string> }
+    expect(Object.keys(raw.deviceCwds ?? {})).toEqual(['SERIAL-A'])
+  })
+
+  it('空 cwd / 非绝对路径 cwd → 拒绝写入，已有记录保持不变', () => {
+    const store = open()
+    store.setDeviceCwd('SERIAL-A', '/sdcard/DCIM')
+    store.setDeviceCwd('SERIAL-A', '   ')
+    store.setDeviceCwd('SERIAL-A', 'sdcard/Download')
+
+    expect(open().getDeviceCwd('SERIAL-A')).toBe('/sdcard/DCIM')
+  })
+
+  it('拒绝写入只 warn，不抛（写盘失败不该影响浏览）', () => {
+    const store = open()
+    expect(() => store.setDeviceCwd('', '/sdcard/DCIM')).not.toThrow()
+    expect(() => store.setDeviceCwd('SERIAL-A', '')).not.toThrow()
+    expect(() => store.setDeviceCwd('SERIAL-A', 'not/absolute')).not.toThrow()
+  })
+
+  it('没写过任何设备时读任意 serial 都是 undefined，且不产生告警（「没记过」不是坏值）', () => {
+    const store = open()
+    expect(store.getDeviceCwd('SERIAL-A')).toBeUndefined()
+    expect(warnings).toEqual([])
+  })
+})
+

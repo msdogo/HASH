@@ -436,6 +436,9 @@ app.whenReady().then(async () => {
                * 渲染层拿到的永远是 app.getVersion() 的返回值，发版只改 package.json。
                */
               getAppVersion: () => app.getVersion(),
+              // R9：按设备序列号记住上次停留的目录
+              getDeviceCwd: (serial) => settings().getDeviceCwd(serial),
+              setDeviceCwd: (serial, cwd) => { settings().setDeviceCwd(serial, cwd) },
             },
             transfer: transfer.controller,
             batch: batchService,

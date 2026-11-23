@@ -69,6 +69,17 @@ export const CH = {
   /** invoke：恢复默认下载路径（写回系统「下载」目录）。 */
   SETTINGS_RESET_DOWNLOAD_DIR: 'settings:reset-download-dir',
 
+  /* ===== R9：按设备序列号记住上次停留的目录 ===== */
+  /**
+   * invoke：读某台设备上次停留的目录（入参 serial）。
+   *
+   * 没有记录时返回空串而不是错误：**「从没记过」不是故障**，
+   * 用错误码会让渲染层在首次使用时就走一遍错误处理。
+   */
+  SETTINGS_GET_DEVICE_CWD: 'settings:get-device-cwd',
+  /** invoke：记住某台设备停留的目录（入参 serial + cwd）。 */
+  SETTINGS_SET_DEVICE_CWD: 'settings:set-device-cwd',
+
   /* ===== 任务 10：批量操作（全设备总览页） ===== */
   /** invoke：批量截图（每台设备各存一张 png 到用户选的目录）。 */
   BATCH_SCREENSHOT: 'batch:screenshot',
@@ -104,6 +115,9 @@ export const INVOKE_CHANNELS = [
   CH.SETTINGS_SET_DOWNLOAD_DIR,
   CH.SETTINGS_PICK_DOWNLOAD_DIR,
   CH.SETTINGS_RESET_DOWNLOAD_DIR,
+  // R9：按设备记住上次停留的目录
+  CH.SETTINGS_GET_DEVICE_CWD,
+  CH.SETTINGS_SET_DEVICE_CWD,
   CH.TRANSFER_ENQUEUE,
   CH.TRANSFER_CANCEL,
   CH.TRANSFER_RETRY,

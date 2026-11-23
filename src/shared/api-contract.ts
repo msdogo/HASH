@@ -208,6 +208,32 @@ export const SETTINGS_PICK_DOWNLOAD_DIR_INPUT = z.unknown()
 /** settings:reset-download-dir 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
 export const SETTINGS_RESET_DOWNLOAD_DIR_INPUT = z.unknown()
 
+/* ===== R9：按设备序列号记住上次停留的目录 ===== */
+
+/**
+ * settings:get-device-cwd 入参。
+ *
+ * serial 必须非空：空串代表「设备没有序列号」，那种情况下压根不该有记录
+ * （存储层也拒绝写入空 key）。在这里就拒掉，省得下游每一步都判一次空串。
+ */
+export const SETTINGS_GET_DEVICE_CWD_INPUT = z.object({
+  serial: z.string().min(1),
+})
+export type SettingsGetDeviceCwdInput = z.infer<typeof SETTINGS_GET_DEVICE_CWD_INPUT>
+
+/**
+ * settings:set-device-cwd 入参。
+ *
+ * 两个字段都 min(1)：空 serial 会产生垃圾键，空 cwd 没有语义。
+ * 这里**不**校验 cwd 是不是绝对路径、是不是以 / 开头 —— 那是主进程存储层的职责
+ * （它还要兼容 Windows 风格路径），校验规则只能有一个来源（src/shared/settings.ts）。
+ */
+export const SETTINGS_SET_DEVICE_CWD_INPUT = z.object({
+  serial: z.string().min(1),
+  cwd: z.string().min(1),
+})
+export type SettingsSetDeviceCwdInput = z.infer<typeof SETTINGS_SET_DEVICE_CWD_INPUT>
+
 /* ============ 任务 10：批量操作（全设备总览页） ============ */
 
 /**
@@ -374,6 +400,21 @@ export interface DshApi {
     pickDownloadDir(): Promise<IpcResult<string>>
     /** 恢复默认（写回本机「下载」目录）。 */
     resetDownloadDir(): Promise<IpcResult<SettingsData>>
+    /* ---- R9：按设备记住上次停留的目录 ---- */
+    /**
+     * 读某台设备上次停留的目录。
+     *
+     * 返回**空串**表示没有记录（首次使用 / 记录是坏值被降级）——
+     * 不是错误：目录记忆是可选能力，「没记过」是它的正常初始状态。
+     */
+    getDeviceCwd(payload: SettingsGetDeviceCwdInput): Promise<IpcResult<string>>
+    /**
+     * 记住某台设备停留的目录。
+     *
+     * **调用方不要 await**（裁决 A：每次成功进入目录就写，fire-and-forget）：
+     * 目录记忆是便利功能，它的写盘延迟不该进入用户的浏览路径。
+     */
+    setDeviceCwd(payload: SettingsSetDeviceCwdInput): Promise<IpcResult<void>>
   }
   transfer: {
     /** 加入传输队列（上传或下载）。 */

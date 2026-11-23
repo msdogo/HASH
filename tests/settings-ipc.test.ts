@@ -224,6 +224,86 @@ describe('R2-2 settings:pick-download-dir 只挑不写', () => {
   })
 })
 
+/* ============ R9：按设备记住上次停留的目录 ============ */
+
+describe('R9 settings:get-device-cwd / settings:set-device-cwd', () => {
+  it('两个通道值逐字一致，且都注册成 handle', () => {
+    expect(CH.SETTINGS_GET_DEVICE_CWD).toBe('settings:get-device-cwd')
+    expect(CH.SETTINGS_SET_DEVICE_CWD).toBe('settings:set-device-cwd')
+    const h = harness()
+    expect(h.channels).toContain(CH.SETTINGS_GET_DEVICE_CWD)
+    expect(h.channels).toContain(CH.SETTINGS_SET_DEVICE_CWD)
+  })
+
+  it('get：有记录时把控制器的值原样交回渲染层', async () => {
+    const h = harness({}, { settings: fakeSettings({ deviceCwds: { 'SERIAL-A': '/sdcard/DCIM' } }) })
+    const result = await h.invoke(CH.SETTINGS_GET_DEVICE_CWD, { serial: 'SERIAL-A' }) as { ok: true; data: string }
+    expect(result).toEqual({ ok: true, data: '/sdcard/DCIM' })
+    // serial 必须逐字透传给控制器（不是从别处猜的）
+    expect(h.settings.calls).toContainEqual({ method: 'getDeviceCwd', args: ['SERIAL-A'] })
+  })
+
+  it('get：没有记录时返回空串而不是错误（「没记过」是正常初始状态）', async () => {
+    const h = harness({}, { settings: fakeSettings({ deviceCwds: {} }) })
+    const result = await h.invoke(CH.SETTINGS_GET_DEVICE_CWD, { serial: 'SERIAL-NEW' }) as { ok: true; data: string }
+    expect(result).toEqual({ ok: true, data: '' })
+  })
+
+  it('get：空 serial / 缺字段 / 类型错 → E_BAD_ARGS，且不调用控制器', async () => {
+    for (const payload of [{ serial: '' }, {}, { serial: 1 }, null, undefined]) {
+      const h = harness()
+      const result = await h.invoke(CH.SETTINGS_GET_DEVICE_CWD, payload) as { ok: false; error: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe(E_BAD_ARGS)
+      expect(h.settings.calls.filter((call) => call.method === 'getDeviceCwd')).toEqual([])
+    }
+  })
+
+  it('set：合法入参逐字透传给控制器（serial 与 cwd 都不许改写）', async () => {
+    const h = harness()
+    const result = await h.invoke(CH.SETTINGS_SET_DEVICE_CWD, { serial: 'SERIAL-A', cwd: '/sdcard/DCIM/Camera' })
+    expect(result).toEqual({ ok: true, data: undefined })
+    expect(h.settings.calls).toContainEqual({ method: 'setDeviceCwd', args: ['SERIAL-A', '/sdcard/DCIM/Camera'] })
+  })
+
+  it('set → get 走同一条链路：写进去的目录能读回来（不是两个各自独立的口子）', async () => {
+    const h = harness()
+    await h.invoke(CH.SETTINGS_SET_DEVICE_CWD, { serial: 'SERIAL-A', cwd: '/sdcard/Movies' })
+    const read = await h.invoke(CH.SETTINGS_GET_DEVICE_CWD, { serial: 'SERIAL-A' }) as { ok: true; data: string }
+    expect(read.data).toBe('/sdcard/Movies')
+  })
+
+  it('set：空 serial / 空 cwd / 缺字段 → E_BAD_ARGS，且不调用控制器（不会写坏值）', async () => {
+    for (const payload of [{ serial: '', cwd: '/sdcard' }, { serial: 'S', cwd: '' }, { serial: 'S' }, {}, null]) {
+      const h = harness()
+      const result = await h.invoke(CH.SETTINGS_SET_DEVICE_CWD, payload) as { ok: false; error: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe(E_BAD_ARGS)
+      expect(h.settings.calls.filter((call) => call.method === 'setDeviceCwd')).toEqual([])
+    }
+  })
+
+  it('set：控制器抛异常时收敛成错误码，不把异常穿过 IPC', async () => {
+    const broken = fakeSettings()
+    const h = harness({
+      settings: { ...broken, setDeviceCwd: () => { throw new Error(E_NOT_FOUND) } },
+    })
+    const result = await h.invoke(CH.SETTINGS_SET_DEVICE_CWD, { serial: 'S', cwd: '/sdcard' }) as { ok: false; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe(E_NOT_FOUND)
+  })
+
+  it('get：控制器抛异常时收敛成错误码', async () => {
+    const broken = fakeSettings()
+    const h = harness({
+      settings: { ...broken, getDeviceCwd: () => { throw new Error(E_NOT_FOUND) } },
+    })
+    const result = await h.invoke(CH.SETTINGS_GET_DEVICE_CWD, { serial: 'S' }) as { ok: false; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe(E_NOT_FOUND)
+  })
+})
+
 describe('R2-2 settings:reset-download-dir 走控制器的 reset', () => {
   it('调用 reset 而不是渲染层自己拼默认路径，且返回默认值', async () => {
     const h = harness({}, { settings: fakeSettings({ downloadDir: 'D:/custom', defaultDownloadDir: 'C:/Users/me/Downloads' }) })

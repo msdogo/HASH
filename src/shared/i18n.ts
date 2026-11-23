@@ -42,6 +42,14 @@ const messages: Record<string, string> = {
   'files.notice.degraded': '部分条目无法读取（{count} 项），已尽力显示',
   'files.notice.exitCode': '该目录有部分内容因权限不足未能读取，已显示读到的条目',
   'files.notice.dismiss': '关闭提示',
+  /*
+   * R9：恢复上次目录失败的**中性**提示（裁决 B：这不是错误）。
+   *
+   * 措辞刻意不出现「失败 / 错误 / 无法」这类词：那个目录可能只是被用户自己删掉了，
+   * 设备一点问题都没有。说清「发生了什么 + 现在在哪」就够了。
+   */
+  'files.cwdFallback': '上次停留的目录已不可用，已回到 /sdcard',
+  'files.cwdFallbackDismiss': '知道了',
   'files.column.name': '名称',
   'files.column.size': '大小',
   'files.column.mtime': '修改时间',

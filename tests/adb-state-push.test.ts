@@ -158,6 +158,9 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
           resetDownloadDir: () => 'C:/Users/me/Downloads',
           // R7：本文件不测版本，空壳只为满足 SettingsController
           getAppVersion: () => '0.0.0-stub',
+          // R9：本文件不测目录记忆，空壳只为满足 SettingsController
+          getDeviceCwd: () => undefined,
+          setDeviceCwd: () => undefined,
         },
         pickDownloadDir: async () => '',
         // 本文件不测批量：空壳只为满足 HandlerDeps（批量有 tests/batch-*.test.ts）

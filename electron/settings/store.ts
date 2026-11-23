@@ -50,6 +50,26 @@ export interface SettingsStore {
   setDownloadDir(dir: string): string
   /** 恢复默认：等价于 setDownloadDir(defaultDownloadDir)。 */
   resetDownloadDir(): string
+  /**
+   * 该设备上次停留的目录（R9）。
+   *
+   * 没有记录、或记录是坏值（空串 / 非绝对路径 / 不是字符串）时返回 `undefined`，
+   * 并且坏值只 warn 一次 —— 与 getDownloadDir 同一条降级范式：
+   * 一条坏记录不该让应用起不来，它本来只是一条「便利记忆」。
+   *
+   * 【分层边界】这里**不**校验「目录在设备上是否还存在」：那要发一条 adb 命令，
+   * 是渲染层恢复时才有的能力。硬塞进存储层会让「设置持久化」依赖设备在线，
+   * 而且与这个类「只碰本机设置文件」的职责冲突。
+   */
+  getDeviceCwd(serial: string): string | undefined
+  /**
+   * 记住某台设备停留的目录（R9：每次成功进入目录都会调用）。
+   *
+   * 空 serial（设备没序列号）与空 cwd 一律**拒绝写入**：前者会产生一串垃圾键，
+   * 后者没有语义。拒绝是静默的（只 warn）—— 这是便利功能，
+   * 写不进去不该让浏览中断。
+   */
+  setDeviceCwd(serial: string, cwd: string): void
   /** 存储文件路径（诊断 / 报告用，不参与判定）。 */
   storagePath(): string
 }
@@ -78,11 +98,20 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
    * 实测（node 环境，electron-store 12.0.0）：坏 JSON → get 返回 undefined，
    * 随后一次 set 会把文件重写成合法 JSON。所以「坏值」与「坏文件」走同一条降级路径。
    */
-  const store = new Store<{ downloadDir?: string }>({
+  const store = new Store<{ downloadDir?: string; deviceCwds?: Record<string, string> }>({
     cwd: deps.filePath,
     name: SETTINGS_FILE_NAME,
     clearInvalidConfig: true,
-    schema: { downloadDir: { type: 'string' } },
+    /*
+     * deviceCwds（R9）：serial → 该设备上次停留的目录。
+     *
+     * schema 只能声明到「顶层是个对象」这一层 —— electron-store 12 的 schema 走 ajv，
+     * 对**嵌套 record 的内部字段**没有任何校验能力（键是设备序列号，事先不可能枚举）。
+     * 所以每个值必须由下面的 getDeviceCwd 自己验（是字符串 / 非空 / 绝对路径）。
+     * 这里声明 type: 'object' 只为拦住「整个值不是对象」这种形态，
+     * 免得一个手改坏的文件让 electron-store 在读取时抛出去。
+     */
+    schema: { downloadDir: { type: 'string' }, deviceCwds: { type: 'object' } },
   })
 
   /** 已告警过的原因（同一条坏值只吵一次）。 */
@@ -122,11 +151,83 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
     return trimmed
   }
 
+  /**
+   * 读设备目录表；整体坏值（不是对象 / 是数组）当作空表，并只告警一次。
+   *
+   * 为什么返回 undefined 而不是空对象：调用方要能区分「没有这张表」
+   * 与「有表但这次查不到这个 serial」—— 前者一律没有记录，
+   * 后者可能是坏值（要告警）。语义分开后 warnOnce 的键才不会互相污染。
+   */
+  const readDeviceCwds = (): Record<string, string> | undefined => {
+    const raw = store.get('deviceCwds')
+    if (raw === undefined) return undefined
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      warnOnce(
+        'device-cwds:not-object',
+        '[settings] 设备目录记录不是对象：' + JSON.stringify(raw) + '，已忽略全部设备目录',
+      )
+      return undefined
+    }
+    return raw
+  }
+
+  const getDeviceCwd = (serial: string): string | undefined => {
+    const key = serial.trim()
+    // 没有序列号的设备不可能是记录来源（setDeviceCwd 也拒绝写），直接当作没有
+    if (key === '') return undefined
+    const map = readDeviceCwds()
+    if (map === undefined) return undefined
+    const stored: unknown = map[key]
+    if (stored === undefined) return undefined
+    if (typeof stored !== 'string') {
+      warnOnce(
+        'device-cwd:not-string:' + key,
+        '[settings] 设备 ' + key + ' 的目录记录不是字符串：' + JSON.stringify(stored) + '，已忽略',
+      )
+      return undefined
+    }
+    if (stored === '') {
+      warnOnce('device-cwd:empty:' + key, '[settings] 设备 ' + key + ' 的目录记录是空串，已忽略')
+      return undefined
+    }
+    if (!isAbsolutePath(stored)) {
+      warnOnce(
+        'device-cwd:not-absolute:' + key,
+        '[settings] 设备 ' + key + ' 的目录记录不是绝对路径：' + JSON.stringify(stored) + '，已忽略',
+      )
+      return undefined
+    }
+    return stored
+  }
+
+  const setDeviceCwd = (serial: string, cwd: string): void => {
+    const key = serial.trim()
+    const value = cwd.trim()
+    // 设备没序列号：不产生垃圾键（也不告警 —— 无线调试短暂无序列号时会走到这里）
+    if (key === '') return
+    if (value === '') {
+      warnOnce('device-cwd:set-empty:' + key, '[settings] 拒绝把空目录记为设备 ' + key + ' 的上次目录')
+      return
+    }
+    if (!isAbsolutePath(value)) {
+      warnOnce(
+        'device-cwd:set-not-absolute:' + key,
+        '[settings] 拒绝把非绝对路径记为设备 ' + key + ' 的上次目录：' + JSON.stringify(value),
+      )
+      return
+    }
+    // 读-改-写：保留其它设备的记录（裁决：key = 序列号，不设数量上限，永不淘汰）
+    const map = readDeviceCwds() ?? {}
+    store.set('deviceCwds', { ...map, [key]: value })
+  }
+
   return {
     getDownloadDir,
     getDefaultDownloadDir: () => deps.defaultDownloadDir,
     setDownloadDir,
     resetDownloadDir: () => setDownloadDir(deps.defaultDownloadDir),
+    getDeviceCwd,
+    setDeviceCwd,
     storagePath: () => store.path,
   }
 }

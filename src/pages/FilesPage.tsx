@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Eye, EyeOff, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
+import { Eye, EyeOff, Info, RefreshCw, X, AlertTriangle as Warn } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import {
   emptyReason,
@@ -16,6 +16,7 @@ import {
   type SelectMode,
 } from '@shared/file-view'
 import { errorText, t, tf } from '@shared/i18n'
+import { createCwdMemo, createCwdRestore, openedAt } from '@shared/cwd-memo'
 import { makeDownloadHandler } from '@shared/download-flow'
 import { downloadDirForDownload } from '@shared/settings'
 import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
@@ -84,7 +85,6 @@ export function FilesPage() {
   const dispatch = useFileStore((state) => state.dispatch)
   const openDir = useFileStore((state) => state.openDir)
   const refresh = useFileStore((state) => state.refresh)
-  const load = useFileStore((state) => state.load)
   const syncDevices = useFileStore((state) => state.syncDevices)
 
   /*
@@ -157,17 +157,75 @@ export function FilesPage() {
   const deviceSerials = useMemo(() => devices.map((device) => device.serial), [devices])
   useEffect(() => { syncDevices(deviceSerials) }, [deviceSerials, syncDevices])
 
-  // 首次进入（设备切换）时建分片并加载；
+  /*
+   * R9：按设备记住「上次停留的目录」。
+   *
+   * 两个注入式流程（判断全在 @shared/cwd-memo，组件只接 window.api / store）：
+   *   - restore：设备上线时把记忆的目录接回来；打不开就回退 /sdcard 并给中性提示；
+   *   - memo：每次**成功**进入目录后写盘（裁决 A），fire-and-forget（不 await）。
+   *
+   * 为什么用 useMemo 而不是模块级单例：两个工厂都捕获了 window.api / dispatch，
+   * 而 window.api 在测试里会被替换（与本项目 dragStore 踩过的坑同类）。
+   */
+  const cwdMemo = useMemo(
+    () => createCwdMemo({
+      write: (targetSerial, cwd) => window.api.settings.setDeviceCwd({ serial: targetSerial, cwd }),
+    }),
+    [],
+  )
+
+  const cwdRestore = useMemo(
+    () => createCwdRestore({
+      readStored: async (targetSerial) => {
+        const result = await window.api.settings.getDeviceCwd({ serial: targetSerial })
+        // 空串 = 没有记录（不是错误），其余错误同样降级成「没有记录」
+        return result.ok && result.data !== '' ? result.data : undefined
+      },
+      seed: (targetSerial, cwd) => { dispatch(targetSerial, { type: 'seedCwd', cwd }) },
+      openDir: async (targetSerial, dir) => {
+        await openDir(targetSerial, dir)
+        const state = useFileStore.getState().views[targetSerial]
+        // 成败判定抽成纯函数 openedAt（表驱动用例）：openDir 只回 Promise<void>，
+        // 真实结果落在分片上（loadedOnce / status / cwd 三者同时成立才算进去了）
+        return openedAt(state, dir)
+      },
+      markFallback: (targetSerial) => { dispatch(targetSerial, { type: 'cwdFallback' }) },
+      /*
+       * 分片已经上过真实目录（切设备回来 / 掉线重连推送）：只刷新，不按记忆值跳转。
+       * 记忆写盘也在那时更新过，这个值永远不比用户当前位置新。
+       */
+      isLoaded: (targetSerial) => useFileStore.getState().views[targetSerial]?.loadedOnce ?? false,
+      reload: (targetSerial) => { void refresh(targetSerial) },
+    }),
+    [dispatch, openDir, refresh],
+  )
+
+  // 首次进入（设备切换）时建分片，并**经恢复流程**加载（记忆的目录 / 回退 / 提示都在里面）。
   // 同一目录的重复加载由协调器按 serial+dir 去重，StrictMode 双执行也不会发两次 adb 命令
   useEffect(() => {
     if (serial === null) return
     ensure(serial)
-    void load(serial)
-  }, [serial, ensure, load])
+    void cwdRestore.restore(serial)
+  }, [serial, ensure, cwdRestore])
 
   // 订阅到的是「字段不全」的对象（刻意不订阅 scrollTop），必须补齐。
   // 返回类型是 FileViewSlice：写 current.generation 会直接编译报错（审查轮 1 的提示项）
   const current = viewFromPartial(view ?? undefined)
+
+  /*
+   * R9 / 裁决 A：进入目录**成功后**立刻记下它（不防抖、不等退出）。
+   *
+   * 依赖里用 current.cwd 与 current.status：只有 ready 才是「真的进去了」
+   * （C1：失败时 cwd 不前移，所以也不会把打不开的目录写进记忆）。
+   *
+   * 写盘是 fire-and-forget —— cwdMemo.remember 返回 void（没有可 await 的东西），
+   * 失败只 warn。目录记忆是便利功能，它不该让浏览等一次 IPC。
+   */
+  useEffect(() => {
+    if (serial === null) return
+    if (current.status !== 'ready') return
+    cwdMemo.remember(serial, current.cwd)
+  }, [serial, current.status, current.cwd, cwdMemo])
 
   // 裁决 4：过滤 + 排序只在这里算一次，且依赖明确。
   // 绝不能放进渲染路径里每次重算 —— 万级条目下滚动会直接掉帧。
@@ -685,6 +743,28 @@ export function FilesPage() {
             type="button"
             onClick={dismissDragNotice}
             className="shrink-0 rounded p-0.5 text-amber-600/70 hover:bg-amber-100 hover:text-amber-800"
+          >
+            <X className="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      {/*
+        * R9 / 裁决 B：上次停留的目录已不可用，已回到 /sdcard。
+        *
+        * 配色刻意用**中性灰**而不是错误红 / 警告琥珀：这不是故障 ——
+        * 那个目录可能只是被用户自己删了，设备好好的。用红色会让用户以为设备出问题。
+        * 文案也不含「失败」字样（见 i18n 的 files.cwdFallback）。
+        */}
+      {current.cwdFallback && (
+        <div className="flex items-start gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1.5 text-[11px] leading-snug text-neutral-600">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span className="flex-1">{t('files.cwdFallback')}</span>
+          <button
+            type="button"
+            onClick={() => { dispatch(serial, { type: 'dismissCwdFallback' }) }}
+            title={t('files.cwdFallbackDismiss')}
+            className="shrink-0 rounded p-0.5 text-neutral-500/70 hover:bg-neutral-200 hover:text-neutral-700"
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>

@@ -11,9 +11,11 @@ import {
   FS_RENAME_INPUT,
   LOCAL_LIST_INPUT,
   LOCAL_PICK_ROOT_INPUT,
+  SETTINGS_GET_DEVICE_CWD_INPUT,
   SETTINGS_GET_INPUT,
   SETTINGS_PICK_DOWNLOAD_DIR_INPUT,
   SETTINGS_RESET_DOWNLOAD_DIR_INPUT,
+  SETTINGS_SET_DEVICE_CWD_INPUT,
   SETTINGS_SET_DOWNLOAD_DIR_INPUT,
   TRANSFER_CLEAR_INPUT,
   TRANSFER_ENQUEUE_INPUT,
@@ -193,6 +195,22 @@ export interface SettingsController {
    * 测试可以直接喂假值证明「版本是透传的，不是写死的」。
    */
   getAppVersion(): string
+  /**
+   * 该设备上次停留的目录（R9）；没有记录 / 记录是坏值 → undefined。
+   *
+   * 返回 undefined 而不是空串：**「没记过」与「记了个空串」必须区分** ——
+   * 后者是坏值（存储层会告警并降级），前者是正常初始状态。
+   * 转成 IPC 友好的空串由 handler 那一层做。
+   */
+  getDeviceCwd(serial: string): string | undefined
+  /**
+   * 记住某台设备停留的目录（R9）。
+   *
+   * void 而不是返回写入后的值：这个动作没有需要回给界面的结果
+   * （界面本来就知道自己进了哪个目录），返回值只会诱使调用方去 await 它。
+   * 非法入参（空 serial / 空 cwd / 非绝对路径）在存储层被静默拒绝 + warn。
+   */
+  setDeviceCwd(serial: string, cwd: string): void
 }
 
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
@@ -523,6 +541,46 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     try {
       deps.settings.resetDownloadDir()
       return { ok: true, data: settingsSnapshot() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ R9：按设备记住上次停留的目录 ============ */
+
+  /**
+   * 读某台设备上次停留的目录。
+   *
+   * 三个决定：
+   * 1. **没有记录返回空串，不是错误**。「从没记过」是目录记忆的正常初始状态，
+   *    用错误码会让首次使用的用户走一遍错误处理（甚至弹提示）。
+   * 2. **不检查设备是否在线**：这个通道一次 adb 都不发，它只读本机设置文件。
+   *    渲染层的恢复流程拿到记录后才去列举，那时才需要设备在线。
+   * 3. 存储层的坏值已在读取时降级成 undefined，这里只做 undefined → '' 的转换。
+   */
+  handle(CH.SETTINGS_GET_DEVICE_CWD, (_event, payload): IpcResult<string> => {
+    const parsed = preflight<{ serial: string }>(payload, SETTINGS_GET_DEVICE_CWD_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: deps.settings.getDeviceCwd(parsed.data.serial) ?? '' }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 记住某台设备停留的目录。
+   *
+   * 渲染层是 **fire-and-forget** 地调它（不 await），所以这里的失败不会变成
+   * 用户的错误提示；但通道本身仍然守「绝不把异常穿过 ipcMain.handle」这条铁律，
+   * 否则会留下一个未处理的 rejection。
+   */
+  handle(CH.SETTINGS_SET_DEVICE_CWD, (_event, payload): IpcResult<void> => {
+    const parsed = preflight<{ serial: string; cwd: string }>(payload, SETTINGS_SET_DEVICE_CWD_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      deps.settings.setDeviceCwd(parsed.data.serial, parsed.data.cwd)
+      return { ok: true, data: undefined }
     } catch (err) {
       return fail(toErrorCode(err))
     }

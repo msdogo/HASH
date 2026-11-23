@@ -588,6 +588,18 @@ export interface FileViewState {
   pendingLink: { from: string; to: string } | null
   /** 是否已经成功加载过至少一次（区分「首次就失败=整页错误」与「有内容时失败=行内提示」）。 */
   loadedOnce: boolean
+  /**
+   * R9：恢复「上次停留的目录」时没打开成功，已回退到 DEFAULT_CWD。
+   *
+   * 为什么是一个独立字段而不是塞进 notice / error：
+   *   - 它【不是错误】（裁决 B）：目标目录可能只是被用户删掉了，设备本身好好的。
+   *     用 error 会让整页进错误态、弹出重试按钮，用户会以为设备连不上。
+   *   - 也不能复用 notice：notice 由【本次列举结果】算出（降级 / 退出码），
+   *     而这条提示描述的是「上一次会话的记忆已经过期」，两者来源不同、生命周期不同
+   *     （这条只在恢复那一刻产生一次，刷新不该把它算出来）。
+   * 所以单独一个布尔量，配一条中性提示条（neutral 配色，不是红色/琥珀色）。
+   */
+  cwdFallback: boolean
 }
 
 /**
@@ -798,11 +810,37 @@ export type FileViewAction =
   /** 行内错误（地址栏非法输入 / 链接无法进入）：只写提示，不动当前目录。 */
   | { type: 'addressError'; code: string }
   | { type: 'dismissNotice' }
+  /**
+   * R9：标记「上次停留的目录已不可用，已回退到默认目录」。
+   *
+   * 由恢复流程在**回退列举成功之后**派发（resolve 不会清掉它，
+   * 因为回退列举本身也要走一次 resolve）。
+   */
+  | { type: 'cwdFallback' }
+  /** 关掉那条回退提示（中性提示条上的 X）。 */
+  | { type: 'dismissCwdFallback' }
+  /**
+   * R9：把「打算去的目录」先写进视图（恢复流程用）。
+   *
+   * 与 navigate 的区别：navigate 会置 loading、推进 generation、发请求；
+   * 这里**只改 cwd 字符串**，让面包屑在第一帧就显示真实目标（否则会先闪一下 /sdcard），
+   * 请求仍由随后的 openDir 发。
+   *
+   * 硬约束：**已经成功加载过一次的分片一概不动**。用户的导航历史永远比记忆值新 ——
+   * 设备重连推送触发恢复时若照抄记录，会把正在浏览的用户弹回旧目录。
+   */
+  | { type: 'seedCwd'; cwd: string }
 
-/** 每台设备的默认视图。 */
-export function createFileView(): FileViewState {
+/**
+ * 每台设备的默认视图。
+ *
+ * @param initialCwd 初始目录（R9：设备上次停留的目录）。缺省 = DEFAULT_CWD。
+ *   刻意**只接受一个字符串**、不在这里读任何存储：本文件是 shared 纯逻辑，
+ *   必须保持可被渲染层与主进程同时编译、且不碰 window.api / electron。
+ */
+export function createFileView(initialCwd?: string): FileViewState {
   return {
-    cwd: DEFAULT_CWD,
+    cwd: initialCwd ?? DEFAULT_CWD,
     pendingCwd: null,
     sort: 'name',
     sortDir: 'asc',
@@ -823,6 +861,7 @@ export function createFileView(): FileViewState {
     linkHops: 0,
     pendingLink: null,
     loadedOnce: false,
+    cwdFallback: false,
   }
 }
 
@@ -908,6 +947,12 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
         pendingLink: following ? { from: normalizePath(state.cwd), to: target } : null,
         linkTrail: following ? state.linkTrail : [],
         linkHops: following ? state.linkHops : 0,
+        /*
+         * R9：用户主动导航 = 那条「上次的目录失效了」的提示已经过期。
+         * 恢复流程里也会经 navigate 跳到 /sdcard（回退那一步），
+         * 但提示是在 restore 返回之后才派发的，所以不会被这里顺手抹掉。
+         */
+        cwdFallback: false,
       }
     }
     case 'beginLoad':
@@ -1060,6 +1105,16 @@ export function fileViewReducer(state: FileViewState, action: FileViewAction): F
       return { ...state, addressError: action.code }
     case 'dismissNotice':
       return state.noticeDismissed ? state : { ...state, noticeDismissed: true }
+    case 'seedCwd': {
+      // 已经上过真实目录：用户的当前位置不作数，记忆值不许覆盖它
+      if (state.loadedOnce) return state
+      const seeded = normalizePath(action.cwd)
+      return seeded === state.cwd ? state : { ...state, cwd: seeded }
+    }
+    case 'cwdFallback':
+      return state.cwdFallback ? state : { ...state, cwdFallback: true }
+    case 'dismissCwdFallback':
+      return state.cwdFallback ? { ...state, cwdFallback: false } : state
     default:
       return state
   }
@@ -1135,8 +1190,11 @@ export function viewOf(views: FileViews, serial: string): FileViewState {
  * 的字段**不在返回类型里**，后来者若写 current.generation 会直接编译报错，
  * 而不是静默拿到 0 去做错的竞态判断。
  */
-export function viewFromPartial(partial: Partial<FileViewSlice> | undefined): FileViewSlice {
-  const base = createFileView()
+export function viewFromPartial(
+  partial: Partial<FileViewSlice> | undefined,
+  initialCwd?: string,
+): FileViewSlice {
+  const base = createFileView(initialCwd)
   // 逐个字段合并，而不是 Object.assign：null 也是「有值」（error/notice 的合法取值），
   // 必须保留；只有 undefined 才回落默认值。
   return {
@@ -1155,6 +1213,7 @@ export function viewFromPartial(partial: Partial<FileViewSlice> | undefined): Fi
     selected: partial?.selected ?? base.selected,
     anchor: partial?.anchor === undefined ? base.anchor : partial.anchor,
     loadedOnce: partial?.loadedOnce ?? base.loadedOnce,
+    cwdFallback: partial?.cwdFallback ?? base.cwdFallback,
   }
 }
 

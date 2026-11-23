@@ -15,6 +15,8 @@ import type { SettingsData } from '../src/shared/settings'
 export function fakeSettings(over: {
   downloadDir?: string
   defaultDownloadDir?: string
+  /** R9：预置的设备目录记录（serial → cwd）。 */
+  deviceCwds?: Record<string, string>
   /** 写入时抛出的错误码（模拟非法路径 / 目录不存在）。 */
   setError?: string
   resetError?: string
@@ -27,6 +29,8 @@ export function fakeSettings(over: {
   appVersion?: string
 } = {}): SettingsController & { calls: Array<{ method: string; args: unknown[] }> } {
   const calls: Array<{ method: string; args: unknown[] }> = []
+  // R9：设备目录表（fake 只做「存进去读出来」，不做校验 —— 校验是存储层的被测对象）
+  const deviceCwds: Record<string, string> = { ...(over.deviceCwds ?? {}) }
   let current = over.downloadDir ?? 'C:/Users/me/Downloads'
   const defaultDir = over.defaultDownloadDir ?? 'C:/Users/me/Downloads'
   const appVersion = over.appVersion ?? '9.9.9-fixture'
@@ -46,6 +50,14 @@ export function fakeSettings(over: {
       if (over.resetError !== undefined) throw new Error(over.resetError)
       current = defaultDir
       return defaultDir
+    },
+    getDeviceCwd: (serial) => {
+      calls.push({ method: 'getDeviceCwd', args: [serial] })
+      return deviceCwds[serial]
+    },
+    setDeviceCwd: (serial, cwd) => {
+      calls.push({ method: 'setDeviceCwd', args: [serial, cwd] })
+      deviceCwds[serial] = cwd
     },
   }
 }
