@@ -93,6 +93,13 @@ const messages: Record<string, string> = {
   'transfer.status.canceled': '已取消',
   'transfer.unknownTotal': '大小未知',
   'transfer.overwrote': '已覆盖同名文件',
+  /*
+   * R10：双击下载前预检到「同名且大小相同」→ 不下载，只提示。
+   *
+   * 措辞刻意不带错误感：这不是失败，是**已经到位了** —— 用户要的那份文件就在那里。
+   * 也不用「跳过」这种过程词开头，先说结论（文件已存在），再说处理（没有重复下载）。
+   */
+  'transfer.existsSkipped': '文件已存在，未重复下载',
   'transfer.summary': '{running} 个传输中 · {queued} 个排队',
   'transfer.queuedOnOffline': '设备离线，等待重连',
   'transfer.noDevice': '请先选择设备',

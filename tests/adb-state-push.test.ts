@@ -3,6 +3,7 @@ import { DeviceManager } from '../electron/devices/manager'
 import { AdbTracking } from '../electron/app/sessions'
 import { createDeviceChangeHub } from '../electron/ipc/throttle'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
+import { fakeLocalController } from './fake-local'
 
 function silentChild(): unknown {
   return {
@@ -148,7 +149,7 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
           copy: async () => ({ results: [] }),
           move: async () => ({ results: [] }),
         },
-        local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
+        local: fakeLocalController('C:/Users/me'),
         pickRoot: async () => '',
         // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
         settings: {

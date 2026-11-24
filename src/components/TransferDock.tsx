@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, Ban, RefreshCw, Trash2, X, AlertTriangle as Warn } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Ban, Info, RefreshCw, Trash2, X, AlertTriangle as Warn } from 'lucide-react'
 import { canRetry, type TransferSnapshot, type TransferTask } from '@shared/transfer'
 import { dockRows, hasFinishedTransfer } from '@shared/transfer-view'
 import { errorText, t, tf } from '@shared/i18n'
@@ -14,8 +14,22 @@ import { useFileStore } from '@/store/fileStore'
  * 所有判断（排序、能不能取消/重试、进度展示态）都在 @shared/transfer-view 与
  * @shared/transfer 的纯函数里，那些有单测；这里不写任何业务判断。
  */
-export function TransferDock() {
+/**
+ * 渲染期注入（与 DeviceRail / OverviewPage / App 的 initial 同一手法）。
+ *
+ * 为什么需要：本工程没有 jsdom，SSR 只跑一次 render、拿不到事件，
+ * 而「R10 的提示到底有没有显示在传输栏」正是这条功能唯一可见的证据。
+ * 生产不传 → 读 store，行为逐字不变。
+ */
+export interface TransferDockProps {
+  initial?: { notice?: string | null }
+}
+
+export function TransferDock(props: TransferDockProps = {}) {
   const snapshot = useTransferStore((state) => state.snapshot)
+  const noticeFromStore = useTransferStore((state) => state.notice)
+  const setNotice = useTransferStore((state) => state.setNotice)
+  const notice = props.initial?.notice ?? noticeFromStore
   const enqueue = useTransferStore((state) => state.enqueue)
   const cancel = useTransferStore((state) => state.cancel)
   const retry = useTransferStore((state) => state.retry)
@@ -89,6 +103,21 @@ export function TransferDock() {
           <Trash2 className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>
+
+      {/*
+        * R10：双击下载「同名同大小」时这里是唯一的提示落点（简报明确要求：
+        * 传输栏的提示区，不是顶部弹窗、不是对话框）。
+        * 用中性灰而不是错误红 —— 文件本来就在那儿，这不是故障。
+        */}
+      {notice !== null && (
+        <div className="mt-1 flex items-start gap-1 text-[11px] text-neutral-600">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span className="flex-1">{notice}</span>
+          <button type="button" onClick={() => { setNotice(null) }} title={t('files.notice.dismiss')} className="shrink-0">
+            <X className="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       {error !== null && (
         <div className="mt-1 flex items-start gap-1 text-[11px] text-red-600">

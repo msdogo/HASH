@@ -58,6 +58,14 @@ export const CH = {
   LOCAL_LIST: 'local:list',
   /** invoke：让用户挑选本地栏的起始浏览目录（系统目录选择框；不是访问边界）。 */
   LOCAL_PICK_ROOT: 'local:pick-root',
+  /**
+   * invoke：预检「这个本地目录里有没有同名文件、它多大」（R10 双击下载前）。
+   *
+   * 为什么单独一条通道而不是复用 local:list：list 要 readdir 整个目录再逐项 lstat，
+   * 在 5000 个文件的下载目录里为「一个问题」做一次全量列举，代价与风险都不合理；
+   * 而 fileStat 只 stat 一个确定的路径。返回形状也更小（LocalFileStat）。
+   */
+  LOCAL_FILE_STAT: 'local:file-stat',
 
   /* ===== R2-2：设置（默认下载路径持久化） ===== */
   /** invoke：取设置快照（默认下载路径 + adb 只读状态）。 */
@@ -110,6 +118,7 @@ export const INVOKE_CHANNELS = [
   CH.FS_MOVE,
   CH.LOCAL_LIST,
   CH.LOCAL_PICK_ROOT,
+  CH.LOCAL_FILE_STAT,
   // R2-2：设置（默认下载路径）
   CH.SETTINGS_GET,
   CH.SETTINGS_SET_DOWNLOAD_DIR,

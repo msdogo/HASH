@@ -9,6 +9,7 @@ import {
   FS_MKDIR_INPUT,
   FS_REMOVE_FACTS_INPUT,
   FS_RENAME_INPUT,
+  LOCAL_FILE_STAT_INPUT,
   LOCAL_LIST_INPUT,
   LOCAL_PICK_ROOT_INPUT,
   SETTINGS_GET_DEVICE_CWD_INPUT,
@@ -23,7 +24,7 @@ import {
 } from '../../src/shared/api-contract'
 import type { BatchRunData } from '../../src/shared/batch'
 import { toSettingsAdb, type SettingsData } from '../../src/shared/settings'
-import type { FsOpData, FsRemoveFactsData, LocalListData } from '../../src/shared/file-ops'
+import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
 import type { ShellRunner } from '../fs/remote'
 import { normalizeDir } from '../fs/remote'
@@ -216,6 +217,13 @@ export interface SettingsController {
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
 export interface LocalController {
   list(dir?: string): Promise<LocalListData>
+  /**
+   * 预检「这个目录里有没有同名文件、它多大」（R10 双击下载前）。
+   *
+   * 实现在 electron/fs/local.ts 的 LocalFs.fileStat：目录过 resolveLocalPath、
+   * 名字过 checkName，stat 失败一律 exists:false（查不了就当不存在，照常下载）。
+   */
+  fileStat(dir: string, name: string): Promise<LocalFileStat>
 }
 
 /**
@@ -449,6 +457,25 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
       // 路径不合法（E_INVALID_PATH）与不存在（E_NOT_FOUND）都必须如实传出去：
       // 前者是路径本身写错了，后者是目标不在了，界面要给不同提示。
       // （R2-1：本地根沙箱已移除，这里不再有「越界」这一种失败。）
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * R10：双击下载前的本地同名文件预检。
+   *
+   * 这条通道**没有** IPC 层自己的失败分支，这是刻意的：
+   * 它的语义只有「有（多大）」与「没有」，而「查不到」必须收敛成「没有」——
+   * 因为调用方（双击下载）在查不到时要照常下载，不该被一个错误码拦住。
+   * 所以 LocalFs.fileStat 自己吞掉 stat 的异常，这里只透传结果。
+   * 唯一的失败出口是入参不合法（zod），那属于程序内部错误，渲染层用不到它。
+   */
+  handle(CH.LOCAL_FILE_STAT, async (_event, payload): Promise<IpcResult<LocalFileStat>> => {
+    const parsed = preflight<{ dir: string; name: string }>(payload, LOCAL_FILE_STAT_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.local.fileStat(parsed.data.dir, parsed.data.name) }
+    } catch (err) {
       return fail(toErrorCode(err))
     }
   })

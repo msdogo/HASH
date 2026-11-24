@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 import type { TransferSnapshot, TransferTask } from './transfer'
-import type { FsOpData, FsRemoveFactsData, LocalListData } from './file-ops'
+import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from './file-ops'
 import type { BatchRunData } from './batch'
 import type { DragOutFailure, DragOutProgress } from './drag'
 import type { SettingsData } from './settings'
@@ -166,6 +166,23 @@ export const LOCAL_LIST_INPUT = z.object({
 })
 export type LocalListInput = z.infer<typeof LOCAL_LIST_INPUT>
 
+/**
+ * local:file-stat 入参（R10：双击下载前的同名文件预检）。
+ *
+ * 两个字段都 min(1)，且**名字必须是单个路径段**：
+ * 名字来自远端 ls，含分隔符时若在这里放行，下游 path.join 就会写到别处去。
+ * 这里只做「非空 + 单段」的语法拦截，真正的收敛在主进程的 checkName（与所有
+ * 写路径共用同一份名字规则，见 src/shared/path-guard.ts）。
+ *
+ * 为什么 dir 也 min(1)：空串在这条通道上没有「用默认下载目录」的语义 ——
+ * 下载目标由渲染层从设置里取好后显式传进来，隐式回退会让「文件落到哪」变得不可预测。
+ */
+export const LOCAL_FILE_STAT_INPUT = z.object({
+  dir: z.string().min(1),
+  name: z.string().min(1),
+})
+export type LocalFileStatInput = z.infer<typeof LOCAL_FILE_STAT_INPUT>
+
 /** local:pick-root 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
 export const LOCAL_PICK_ROOT_INPUT = z.unknown()
 
@@ -306,7 +323,7 @@ export type BatchShellInput = z.infer<typeof BATCH_SHELL_INPUT>
 export type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from './types'
 export type { TransferSnapshot, TransferTask } from './transfer'
 export type { DragOutFailure, DragOutProgress } from './drag'
-export type { FsOpData, FsRemoveFactsData, LocalListData, LocalItem } from './file-ops'
+export type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData, LocalItem } from './file-ops'
 export type { BatchItemResult, BatchRunData } from './batch'
 export type { SettingsAdb, SettingsData } from './settings'
 
@@ -374,6 +391,13 @@ export interface DshApi {
     list(payload: LocalListInput): Promise<IpcResult<LocalListData>>
     /** 让用户挑选本地栏的起始浏览目录（不是访问边界）；取消返回空串（不是错误）。 */
     pickRoot(): Promise<IpcResult<string>>
+    /**
+     * 预检「这个本地目录里有没有同名文件、它多大」（R10 双击下载前）。
+     *
+     * 返回形状只有两种：存在（带 size）与不存在。「查不到」（权限 / 竞态 / 非法名字）
+     * 也收敛成 exists:false —— 渲染层据此照常下载，绝不因为查不了就拦。
+     */
+    fileStat(payload: LocalFileStatInput): Promise<IpcResult<LocalFileStat>>
   }
   /* ---- R2-2：设置（默认下载路径 + adb 只读状态） ---- */
   settings: {

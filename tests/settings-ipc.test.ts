@@ -5,6 +5,7 @@ import { DeviceManager } from '../electron/devices/manager'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS, E_NOT_FOUND } from '../src/shared/errors'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
 import type { SettingsData } from '../src/shared/settings'
 
@@ -49,7 +50,7 @@ function harness(over: Partial<HandlerDeps> = {}, options: {
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
+    local: fakeLocalController('C:/Users/me'),
     pickRoot: async () => '',
     settings,
     pickDownloadDir: async () => {

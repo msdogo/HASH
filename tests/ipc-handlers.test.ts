@@ -152,6 +152,11 @@ export function fakeLocal(): LocalController & { calls: Array<string | undefined
       calls.push(dir)
       return { cwd: dir ?? 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }
     },
+    /*
+     * R10：预检。默认「不存在」—— IPC 层只验证参数透传与错误收敛，
+     * 「存在/大小读对了没」由 electron/fs/local.ts 的专门用例用真临时目录证明。
+     */
+    fileStat: async () => ({ exists: false }),
   }
 }
 

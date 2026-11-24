@@ -4,6 +4,7 @@ import { registerHandlers, type BatchController, type HandlerDeps, type IpcMainL
 import { DeviceManager } from '../electron/devices/manager'
 import type { BatchRunData } from '../src/shared/batch'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS } from '../src/shared/errors'
+import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
 
 /*
@@ -80,7 +81,7 @@ function harness(options: { adbPath?: string; hasDevices?: boolean; over?: Parti
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
+    local: fakeLocalController('C:/Users/me'),
     pickRoot: async () => '',
     // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
     settings: fakeSettings(),

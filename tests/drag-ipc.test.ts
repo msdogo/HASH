@@ -7,6 +7,7 @@ import { DRAG_OUT_INPUT } from '../src/shared/api-contract'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
 
 /*
@@ -69,7 +70,7 @@ function harness(over: Partial<HandlerDeps> = {}, options: { hasDevice?: boolean
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
+    local: fakeLocalController('C:/Users/me'),
     pickRoot: async () => '',
     // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
     settings: fakeSettings(),
@@ -188,7 +189,7 @@ describe('transfer:begin-drag-out 的前置检查', () => {
           copy: async () => ({ results: [] }),
           move: async () => ({ results: [] }),
         },
-        local: { list: async () => ({ cwd: 'C:/', parent: null, items: [], startDir: 'C:/' }) },
+        local: fakeLocalController('C:/'),
         pickRoot: async () => '',
         // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
         settings: fakeSettings(),

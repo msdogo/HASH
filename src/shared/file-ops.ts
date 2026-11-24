@@ -60,3 +60,16 @@ export interface LocalListData {
    */
   startDir: string
 }
+
+/**
+ * 单个本地文件的预检结果（R10：双击下载前的「同名同大小」判定）。
+ *
+ * 形状刻意做成**不可判别成三态**：只有「存在（带大小）」与「不存在」两种，
+ * 而「查不到」（stat 抛错 / 权限 / 竞态删除）也收敛成 `{ exists: false }`。
+ *
+ * 为什么「查不到」不是第三种状态、也不能是错误：
+ * 预检的唯一用途是「省掉一次重复传输」。它没有资格拦下一次用户明确要求的下载 ——
+ * 查不了就当不存在，照常下载（覆盖是安全的，见 runner 的先写临时文件再原子改名）。
+ * 把它做成 ok:false 会诱使调用方走错误提示分支，那正好是「因为查不了就不许下」。
+ */
+export type LocalFileStat = { exists: false } | { exists: true; size: number }

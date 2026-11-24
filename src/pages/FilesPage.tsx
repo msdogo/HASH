@@ -18,6 +18,7 @@ import {
 import { errorText, t, tf } from '@shared/i18n'
 import { createCwdMemo, createCwdRestore, openedAt } from '@shared/cwd-memo'
 import { makeDownloadHandler } from '@shared/download-flow'
+import { makeSingleFileDownload, openFile } from '@shared/double-click'
 import { downloadDirForDownload } from '@shared/settings'
 import { dragOutTargets, dropNotice, enqueueDroppedFiles, prepareDropTarget, readDroppedFiles } from '@shared/drag'
 import { createTerminalRefreshWatcher, type RefreshContext } from '@shared/upload-refresh'
@@ -132,8 +133,20 @@ export function FilesPage() {
   // 首次进入文件页时确保设置已加载：下载目标依赖它，没加载就会出现「没读到路径」的提示
   useEffect(() => { void loadSettings() }, [loadSettings])
 
-  /** 上传/下载这类「队列类」操作的提示（走底栏，不走 op 结果条）。 */
-  const [queueNotice, setQueueNotice] = useState<string | null>(null)
+  /*
+   * 上传/下载这类「队列类」操作的提示（走底栏，不走 op 结果条）。
+   *
+   * 【R10 改动】修前是页面自己的 useState —— 于是它只能渲染在文件页内部（
+   * 工具条的 downloadHint 那一行）。简报要求「文件已存在」显示在**底部传输栏**，
+   * 而 TransferDock 是 FilesPage 的兄弟组件（都挂在 App 下），兄弟之间只能共享状态。
+   * 所以提示搬进 transferStore.notice：组件间传话靠 store，不靠 props 层层透传。
+   * 现有调用点（入队/未选中/拖拽摘要…）一处都不用改，语义完全一致。
+   *
+   * 这里**只写不读**：读那一头在 TransferDock（它才是渲染提示的组件）。
+   * 页面若也订阅这个字段，每次提示变化都会让整个文件列表重渲染一次 ——
+   * 而页面本身一个字都不用改（裁决 4 的同一条原则：不订阅影响不到渲染的字段）。
+   */
+  const setQueueNotice = useTransferStore((state) => state.setNotice)
 
   /**
    * 右键菜单状态（R5 事项 2）：视口坐标 + 右键的那一行名字。
@@ -312,9 +325,35 @@ export function FilesPage() {
         reportLinkError(target.code)
         return
       }
-      // 普通文件：本任务不做打开（留给任务 9 的下载/预览）
+      /*
+       * 【R10】普通文件：双击**直接下载这一个**（不弹确认框、不碰选中集合）。
+       *
+       * 判定与编排全在 @shared/double-click（真值表 + 表驱动用例），这里只注入依赖：
+       *   1. 目标目录 = 设置里的默认下载路径（与工具条下载同一来源，不是本地面板）；
+       *   2. 预检 = 主进程 local:file-stat（查不到 → 照常下载，绝不拦）；
+       *   3. 入队 = makeSingleFileDownload（复用 makeDownloadHandler，只把 selectedTargets
+       *      注入成「就这一行」—— 于是只入队 1 个任务，与选中了几个无关）。
+       *
+       * 目录与链接**一条都没改**：它们的判定仍在上面的 openTarget 里，走到这里的一定是普通文件。
+       */
+      void openFile(
+        {
+          serial,
+          cwd: current.cwd,
+          localDir: () => downloadDirForDownload(settingsData),
+          precheck: (input) => window.api.local.fileStat(input),
+          downloadOne: makeSingleFileDownload({
+            serial,
+            run: download,
+            localDir: () => downloadDirForDownload(settingsData),
+            notify: setQueueNotice,
+          }),
+          notify: setQueueNotice,
+        },
+        entry,
+      )
     },
-    [serial, openDir, current.cwd, readLinkState, reportLinkError, dispatch],
+    [serial, openDir, current.cwd, readLinkState, reportLinkError, dispatch, settingsData, download, setQueueNotice],
   )
 
   const handleSelect = useCallback(
@@ -680,7 +719,6 @@ export function FilesPage() {
         onMoveTo={handleMoveTo}
         onDownload={() => { void handleDownload() }}
         onSelectAll={handleSelectAll}
-        downloadHint={queueNotice}
         /* R6：搜索框在工具条右端（不新增行高）。过滤词进 store 分片，切设备各记各的。 */
         query={current.query}
         onQueryChange={(value) => { dispatch(serial, { type: 'setQuery', value }) }}

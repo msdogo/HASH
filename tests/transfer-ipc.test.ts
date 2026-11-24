@@ -6,6 +6,7 @@ import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { E_BAD_ARGS, E_NO_SERIAL } from '../src/shared/errors'
 import { fakeBatch } from './fake-batch'
 import { fakeDrag } from './fake-drag'
+import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
 
 /*
@@ -68,7 +69,7 @@ function harness(over: Partial<HandlerDeps> = {}, hasDevice = true): Harness {
       copy: async () => ({ results: [] }),
       move: async () => ({ results: [] }),
     },
-    local: { list: async () => ({ cwd: 'C:/Users/me', parent: null, items: [], startDir: 'C:/Users/me' }) },
+    local: fakeLocalController('C:/Users/me'),
     pickRoot: async () => '',
     // R2-2：设置给空壳，只为满足 HandlerDeps（设置有专门的 tests/settings-*.test.ts）
     settings: fakeSettings(),

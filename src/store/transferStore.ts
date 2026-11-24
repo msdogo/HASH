@@ -15,7 +15,22 @@ interface TransferState {
   snapshot: TransferSnapshot
   /** 已加载过至少一次（区分「还没拉到」与「真的空队列」）。 */
   loaded: boolean
+  /**
+   * 传输栏的**中性提示**（R10）。
+   *
+   * 为什么放进 transferStore 而不是 FilesPage 的 useState：
+   * 提示要显示在**底部传输栏**（TransferDock），而 TransferDock 与 FilesPage 是
+   * 兄弟组件（都挂在 App 下）—— 兄弟之间只能通过共享状态传话。
+   * 放 store 还有一个附带好处：切页面（文件页 ↔ 总览页 ↔ 设置页）不会把提示弄丢。
+   *
+   * 与 TransferDock 里那个 error 的区别：error 是「传输动作失败」，红色；
+   * notice 是「我们做了一个决定，告诉你一声」（例如「文件已存在，未重复下载」），
+   * 中性色、不带错误感 —— 用红色报一件没出错的事，用户会以为文件下坏了。
+   */
+  notice: string | null
   setSnapshot: (snapshot: TransferSnapshot) => void
+  /** 写/清除传输栏的中性提示。 */
+  setNotice: (text: string | null) => void
   /** 入队；返回错误码或 null（成功）。 */
   enqueue: (input: { serial: string; direction: 'push' | 'pull'; src: string; dstDir: string }) => Promise<string | null>
   cancel: (id: string) => Promise<string | null>
@@ -28,6 +43,8 @@ const EMPTY: TransferSnapshot = { tasks: [], running: 0, queued: 0 }
 export const useTransferStore = create<TransferState>((set, get) => ({
   snapshot: EMPTY,
   loaded: false,
+  notice: null,
+  setNotice: (text) => { set({ notice: text }) },
   setSnapshot: (snapshot) => {
     // 整份快照推送：内容相同就保持原引用，避免无意义的整页重渲染
     if (sameSnapshot(get().snapshot, snapshot)) {

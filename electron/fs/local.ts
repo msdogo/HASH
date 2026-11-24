@@ -1,7 +1,7 @@
 import { readdir, stat, realpath, lstat } from 'node:fs/promises'
 import path from 'node:path'
 import { E_INVALID_PATH, E_NOT_A_DIRECTORY, E_NOT_FOUND } from '../../src/shared/errors'
-import { normalizeLocalPath } from '../../src/shared/path-guard'
+import { checkName, normalizeLocalPath } from '../../src/shared/path-guard'
 
 /**
  * 本地目录访问（任务 9 的「本地栏」）。
@@ -30,8 +30,8 @@ import { normalizeLocalPath } from '../../src/shared/path-guard'
  * 这里只做一次再导出，不重新定义 —— 两份形状一漂移，IPC 边界上就会出现
  * 「主进程给了 full、渲染层按别的字段读」这种静默失败。
  */
-export type { LocalItem, LocalListData } from '../../src/shared/file-ops'
-import type { LocalItem, LocalListData } from '../../src/shared/file-ops'
+export type { LocalFileStat, LocalItem, LocalListData } from '../../src/shared/file-ops'
+import type { LocalFileStat, LocalItem, LocalListData } from '../../src/shared/file-ops'
 
 /** 本地栏依赖。 */
 export interface LocalFsDeps {
@@ -104,6 +104,43 @@ export class LocalFs {
   /** 起始浏览目录（已归一化）。**不是**访问边界。 */
   startDir(): string {
     return normalizeLocalPath(this.deps.startDir())
+  }
+
+  /**
+   * 预检「目标目录里是否已有同名文件，以及它多大」（R10：双击下载前的跳过判定）。
+   *
+   * ===== 为什么是「目录 + 名字」而不是「一个完整路径」=====
+   * 双击下载的目标路径是「设置里的默认下载路径 / 远端文件名」，而远端文件名**不可信**：
+   * 它来自 adb ls 的输出，可能含分隔符、可能是 '..'、可能带首尾空白。
+   * 若让渲染层先拼好一个完整本地路径再交进来，主进程只能校验「这串字符像不像
+   * 合法绝对路径」，而拼错的后果（名字是 '..' 时上跳一级）在拼接那一刻就已经发生了。
+   * 收「目录 + 名字」两个字段，就由这里用 checkName 把名字收成**单个路径段**、
+   * 再用 path.join 拼 —— 分隔符的处理只有 node:path 一个来源（渲染层不碰分隔符）。
+   *
+   * ===== 三条边界 =====
+   * 1. 目录走 resolveLocalPath（本项目本地路径的唯一闸门：语法 + realpath 归一化）；
+   * 2. 名字不合法（空 / 含分隔符 / 是 . 或 .. / 首尾空白 / 超长）→ 判「不存在」。
+   *    那种名字的下载本身也会被传输层的 assertPlainName 拒掉；
+   *    但预检绝不能因为「查不了」就抛错拦住流程（见 LocalFileStat 的注释）；
+   * 3. stat 失败（不存在 / 权限 / 竞态删除）→ 一律 exists:false ——
+   *    宁可多下载一次（先写临时文件再原子改名，覆盖是安全的），
+   *    也绝不误判成「已存在」把用户的文件挡在门外。
+   *
+   * 只认普通文件：目标位置是个同名**目录**时判「不存在」，让传输层去报它自己的错误
+   * （那里已经能把「目标不是文件」说清楚），预检不替它下结论。
+   */
+  async fileStat(dir: string, name: string): Promise<LocalFileStat> {
+    const access = await resolveLocalPath(dir)
+    if (!access.ok) return { exists: false }
+    if (!checkName(name).ok) return { exists: false }
+    const full = path.join(access.path, name)
+    try {
+      const info = await stat(full)
+      if (!info.isFile()) return { exists: false }
+      return { exists: true, size: info.size }
+    } catch {
+      return { exists: false }
+    }
   }
 
   /** 列举一个本地目录。dir 缺省时用起始浏览目录。 */

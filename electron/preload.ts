@@ -12,6 +12,7 @@ import type {
   FsMkdirInput,
   FsRemoveFactsInput,
   FsRenameInput,
+  LocalFileStatInput,
   LocalListInput,
   SettingsGetDeviceCwdInput,
   SettingsSetDeviceCwdInput,
@@ -22,7 +23,7 @@ import type {
 import type { BatchRunData } from '../src/shared/batch'
 import type { DragOutFailure, DragOutProgress } from '../src/shared/drag'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
-import type { FsOpData, FsRemoveFactsData, LocalListData } from '../src/shared/file-ops'
+import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../src/shared/file-ops'
 import type { SettingsData } from '../src/shared/settings'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 
@@ -128,6 +129,9 @@ export function buildApi(deps: PreloadDeps): DshApi {
        */
       pickRoot: (): Promise<IpcResult<string>> =>
         deps.invoke(CH.LOCAL_PICK_ROOT, null) as Promise<IpcResult<string>>,
+      /** 预检「这个本地目录里有没有同名文件、它多大」（R10 双击下载前）。 */
+      fileStat: (payload: LocalFileStatInput): Promise<IpcResult<LocalFileStat>> =>
+        deps.invoke(CH.LOCAL_FILE_STAT, payload) as Promise<IpcResult<LocalFileStat>>,
     },
     settings: {
       /** 取设置快照（默认下载路径 + 本机默认目录 + adb 只读状态）。 */

@@ -30,9 +30,13 @@ export interface FileToolbarProps {
    * 禁用它等于把这条唯一的显式入口在最有用的时刻关掉。
    */
   onSelectAll: () => void
-  /** 下载提示（没有本地目标目录时的说明）。 */
-  downloadHint: string | null
-  /**
+  /*
+   * 【R10 删除】这里原本有一个 downloadHint（「没有本地目标目录」等提示）。
+   * 提示区现在统一在**底部传输栏**（TransferDock）—— 简报明确要求的位置。
+   * 两处都渲染等于同一句话在界面上下各闪一次，用户会以为发生了两件事。
+   * 提示的状态也随之搬进 transferStore.notice（TransferDock 与 FilesPage 是兄弟组件，
+   * 兄弟之间只能靠共享状态传话）。
+   */  /**
    * R6：当前目录文件名过滤词（空串 = 不过滤）。
    *
    * 它放在工具条**右端**（与左侧的文件操作按钮用 ml-auto 隔开）：
@@ -68,9 +72,7 @@ export function FileToolbar(props: FileToolbarProps) {
         disabled={disabled || none}
         danger
       />
-      {props.downloadHint !== null && (
-        <span className="ml-2 min-w-0 truncate text-[10px] text-amber-600">{props.downloadHint}</span>
-      )}
+      {/* 提示区不在这里：见 R10 的说明（统一在底部传输栏） */}
       <SearchBox query={props.query} onQueryChange={props.onQueryChange} />
     </div>
   )
