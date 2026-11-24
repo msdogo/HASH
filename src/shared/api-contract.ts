@@ -5,6 +5,7 @@ import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '
 import type { BatchRunData } from './batch'
 import type { DragOutFailure, DragOutProgress } from './drag'
 import type { SettingsData } from './settings'
+import type { CaptureResult, RecordStarted } from './capture'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -352,6 +353,37 @@ export type Unsubscribe = () => void
  * 已知限制：方法参数的二变性意味着「形参改成更宽的结构兼容类型」不会报错，
  * 参数签名的精确一致性仍需人工核对。
  */
+/* ============ P1 第一批：单机截图 / 录屏 ============ */
+
+/**
+ * capture:screenshot 入参。
+ *
+ * dstDir 允许空串：空串 = 用设置里的默认下载路径。
+ * 为什么不在 zod 层要求非空：默认下载路径是用户偏好，界面不该为了「必须传个目录」
+ * 而自己抄一份设置值 —— 抄的那份一旦过期，文件会落到用户没想到的地方。
+ */
+export const CAPTURE_SCREENSHOT_INPUT = z.object({
+  serial: z.string().min(1),
+  dstDir: z.string(),
+})
+
+export type CaptureScreenshotInput = z.infer<typeof CAPTURE_SCREENSHOT_INPUT>
+
+/** capture:record-start 入参（与截图同一形状）。 */
+export const CAPTURE_RECORD_START_INPUT = z.object({
+  serial: z.string().min(1),
+  dstDir: z.string(),
+})
+
+export type CaptureRecordStartInput = z.infer<typeof CAPTURE_RECORD_START_INPUT>
+
+/** capture:record-stop 入参（只需 serial：落点在建会话时就已经定了）。 */
+export const CAPTURE_RECORD_STOP_INPUT = z.object({
+  serial: z.string().min(1),
+})
+
+export type CaptureRecordStopInput = z.infer<typeof CAPTURE_RECORD_STOP_INPUT>
+
 export interface DshApi {
   app: {
     /** 桥是否活着。 */
@@ -510,6 +542,22 @@ export interface DshApi {
     pickDirectory(): Promise<IpcResult<string>>
     /** 弹出文件选择框挑一个 .apk；取消返回空串。 */
     pickApk(): Promise<IpcResult<string>>
+  }
+  /* ---- P1 第一批：单机截图 / 录屏 ---- */
+  capture: {
+    /**
+     * 对一台设备截图。
+     *
+     * 结果里的 taskId 是**传输任务 id**：真正的下载在队列里跑，
+     * 落地进度见底栏。localPath 是预期的落点，界面用它做「复制路径」。
+     */
+    screenshot(payload: CaptureScreenshotInput): Promise<IpcResult<CaptureResult>>
+    /**
+     * 开始录屏。返回时文件还没生成 —— 停止（或到时间上限）之后才拉回本地。
+     */
+    recordStart(payload: CaptureRecordStartInput): Promise<IpcResult<RecordStarted>>
+    /** 停止录屏并把 mp4 拉回本地。没有在录时返回 E_NOT_RECORDING。 */
+    recordStop(payload: CaptureRecordStopInput): Promise<IpcResult<CaptureResult>>
   }
 }
 

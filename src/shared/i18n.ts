@@ -118,6 +118,14 @@ const messages: Record<string, string> = {
   'op.toolbar.moveTo': '移动到…',
   'op.toolbar.refresh': '刷新',
   'op.toolbar.download': '下载到本地',
+  // ---- P1：单机截图 / 录屏（工具条）----
+  'capture.screenshot': '截图',
+  'capture.record.start': '录屏',
+  'capture.record.stop': '停止录屏',
+  'capture.screenshot.saved': '截图已保存并复制路径：{path}',
+  'capture.record.started': '已开始录屏（最长 {seconds} 秒），点「停止录屏」结束',
+  'capture.record.stopped': '录屏已保存并复制路径：{path}',
+  'capture.record.busy': '正在处理，请稍候…',
   'op.kind.delete': '删除',
   'op.kind.copy': '复制',
   'op.kind.move': '移动',
@@ -310,6 +318,9 @@ const errorTexts: Record<ErrorCode, string> = {
   // ---- 任务 10：批量动作的整批参数错（用户能自己修好）----
   E_BATCH_PARAM: '批量操作没有执行：参数不合法，没有任何设备收到命令。请检查是否选了设备、选了文件、填了目标目录或命令',
   E_BAD_COMMAND: '这条命令不能执行：命令里不能包含换行符，否则一条命令会变成多条。请写成单行',
+  // ---- P1：单机截图 / 录屏 ----
+  E_RECORD_ACTIVE: '这台设备已经在录屏了。请先点「停止录屏」，把这一条录制结束掉再开始新的',
+  E_NOT_RECORDING: '这台设备当前没有在录屏，没有文件需要停止。录制可能已经到时间上限自动结束了',
 }
 
 /** 取一条已注册文案；未注册时原样返回 key（便于开发期发现漏登记）。 */

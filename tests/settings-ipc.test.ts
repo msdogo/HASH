@@ -4,6 +4,7 @@ import { registerHandlers, type HandlerDeps, type IpcMainLike } from '../electro
 import { DeviceManager } from '../electron/devices/manager'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS, E_NOT_FOUND } from '../src/shared/errors'
 import { fakeBatch } from './fake-batch'
+import { fakeCapture } from './fake-capture'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -59,6 +60,7 @@ function harness(over: Partial<HandlerDeps> = {}, options: {
       return options.pickResult ?? 'D:/picked/downloads'
     },
     batch: fakeBatch(),
+    capture: fakeCapture(),
     drag: fakeDrag(),
     transfer: {
       enqueue: async () => { throw new Error('not used') },

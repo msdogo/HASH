@@ -85,35 +85,39 @@ export const SCREENSHOT_TIMEOUT_MS = 30_000
  * 用户要的是截图，不是一条「隐藏目录建不了」的报错。回退后的路径仍会进结果矩阵
  * （detail 是传输任务 id，任务源路径可在底栏看到），且临时文件照样会被清理。
  */
-export const SHOT_TEMP_DIR = '/sdcard/.adbfm'
-
-/**
- * 每台设备在临时根下面有**自己的子目录**（【N3】的修法）。
+/*
+ * 落点常量与「每台设备一个子目录」的拼法，现在统一在 src/shared/capture.ts。
  *
- * 上一轮的清扫是 `rm -f '/sdcard/.adbfm'/adbfm-shot-*.png` —— 只按目录 + 前缀，
- * 没有年龄、没有归属。复审真机实测到的后果：一次批量截图里先完成的那台触发清扫，
- * 把**另一台还在排队的 pull 的源文件**删了，后者直接 E_NOT_FOUND。
+ * 为什么搬走：P1 的单机截图是同一件事的单设备版本。两处各写一份
+ * 「临时目录怎么拼」就是两份必须同步的事实，一旦漂移，清理用的通配符就扫不到
+ * 新写的那批文件，设备上会留垃圾。所以 shared 是唯一事实源，这里只做转发，
+ * 对外导出的名字与行为逐字不变（batch-real / batch-service 的既有断言不受影响）。
  *
- * 三种可选修法里选了「每台一个子目录」：
- *   - `find -mmin +N`：要猜一个「大于最长传输时间」的 N，猜小了照样误删、猜大了残留久；
+ * deviceShotDir 的由来（【N3】，保留在此以免新人重新踩一遍）：上一轮的清扫是
+ * `rm -f '/sdcard/.adbfm'/adbfm-shot-*.png` —— 只按目录 + 前缀，没有年龄、没有归属。
+ * 复审真机实测的后果是：一次批量截图里先完成的那台触发清扫，把**另一台还在排队的
+ * pull 的源文件**删了，后者直接 E_NOT_FOUND。修法是「每台一个子目录」：
+ *   - `find -mmin +N`：要猜一个「大于最长传输时间」的 N，猜小了照样误删；
  *   - 本次批次收集路径集合并排除：只对本进程有效，进程重启后的残留无人认领；
- *   - **按设备分目录**：归属天然成立（清扫只碰自己那台），残留排查也知道是谁的。
- * 代价只是多一层目录、一次 mkdir -p，而 mkdir -p 本来就要发。
+ *   - **按设备分目录**：归属天然成立（清扫只碰自己那台），残留也知道是谁的。
  */
-export function deviceShotDir(serial: string): string {
-  return SHOT_TEMP_DIR + '/' + sanitizeSerial(serial)
+import {
+  SHOT_TEMP_DIR,
+  SHOT_FALLBACK_DIR,
+  SHOT_PREFIX,
+  deviceShotDir,
+  deviceFallbackShotDir,
+  sanitizeSerial,
+} from '../../src/shared/capture'
+
+export {
+  SHOT_TEMP_DIR,
+  SHOT_FALLBACK_DIR,
+  SHOT_PREFIX,
+  deviceShotDir,
+  deviceFallbackShotDir,
+  sanitizeSerial,
 }
-
-/** 隐藏目录建不出来时的回退落点（设备上必然存在，闸门也放行）。 */
-export const SHOT_FALLBACK_DIR = '/sdcard/Download'
-
-/** 回退落点下同样按设备分目录，理由同上。 */
-export function deviceFallbackShotDir(serial: string): string {
-  return SHOT_FALLBACK_DIR + '/' + sanitizeSerial(serial)
-}
-
-/** 临时文件名前缀（陈旧残留清扫靠它识别，改名会破坏清理）。 */
-export const SHOT_PREFIX = 'adbfm-shot-'
 
 /** 批量动作服务依赖（全部注入，测试可用假 client / 假传输）。 */
 export interface BatchServiceDeps {
@@ -203,11 +207,6 @@ export function precheck(session: DeviceSession | undefined): string | undefined
  */
 function failAll(serials: readonly string[], code: string): BatchRunData {
   return { results: serials.map((serial) => ({ serial, ok: false, code })) }
-}
-
-/** serial 里可能有 ':' 这类字符，落成文件名前换成 '_'（不改变唯一性：时间戳在前）。 */
-export function sanitizeSerial(serial: string): string {
-  return serial.replace(/[^A-Za-z0-9._-]/g, '_')
 }
 
 /**

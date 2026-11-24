@@ -3,6 +3,9 @@ import {
   BATCH_PUSH_INPUT,
   BATCH_SCREENSHOT_INPUT,
   BATCH_SHELL_INPUT,
+  CAPTURE_RECORD_START_INPUT,
+  CAPTURE_RECORD_STOP_INPUT,
+  CAPTURE_SCREENSHOT_INPUT,
   DRAG_OUT_INPUT,
   FS_BATCH_INPUT,
   FS_LIST_INPUT,
@@ -23,6 +26,7 @@ import {
   TRANSFER_ID_INPUT,
 } from '../../src/shared/api-contract'
 import type { BatchRunData } from '../../src/shared/batch'
+import type { CaptureResult, RecordStarted } from '../../src/shared/capture'
 import { toSettingsAdb, type SettingsData } from '../../src/shared/settings'
 import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
@@ -91,6 +95,8 @@ export interface HandlerDeps {
    * 四个动作各自的编排（离线跳过、参数预检、截图走队列）由 service 负责并有专门测试。
    */
   batch: BatchController
+  /** 单机截图 / 录屏（P1 第一批）。 */
+  capture: CaptureController
   /**
    * 拖拽（简报 C）。
    *
@@ -239,6 +245,19 @@ export interface BatchController {
   shell(input: { serials: readonly string[] }, command: string): Promise<BatchRunData>
   pickScreenshotDir(): Promise<string>
   pickApk(): Promise<string>
+}
+
+/**
+ * 单机截图 / 录屏对 IPC 层暴露的最小面（electron/capture/service 的 CaptureService 满足它）。
+ *
+ * 与 batch 同一原则：IPC 层只做「zod 校验 + 会话检查 + 错误码收敛」，
+ * 「临时文件怎么建、录屏怎么收尾、拉回来之后怎么清」都由 service 负责，
+ * 那条链路有专门的假 client / 假录屏用例（tests/capture-service.test.ts）。
+ */
+export interface CaptureController {
+  screenshot(serial: string, dstDir: string): Promise<CaptureResult>
+  startRecord(serial: string, dstDir: string): Promise<RecordStarted>
+  stopRecord(serial: string): Promise<CaptureResult>
 }
 
 /**
@@ -807,6 +826,57 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
   handle(CH.BATCH_PICK_APK, async (): Promise<IpcResult<string>> => {
     try {
       return { ok: true, data: await deps.batch.pickApk() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * P1 第一批：单机截图 / 录屏。
+   *
+   * 与批量动作的区别：这里只有**一台**设备，所以没有 runBatch 的结果矩阵，
+   * 失败直接是一个错误码（成功与否是一件事，不是 N 件事）。
+   *
+   * serial 必须是主进程掌握的会话（与 fs:list 同一条原则）；
+   * 三个通道都不接受渲染层给的其它路径参数 —— 设备上的临时落点由 service 决定，
+   * 本地落点由设置或用户显式传入的 dstDir 决定。
+   */
+  const capturePreflight = <T extends { serial: string }>(
+    payload: unknown,
+    schema: { safeParse: (value: unknown) => ParseResult<T> },
+  ): { ok: true; data: T } | { ok: false; error: string } => {
+    const parsed = preflight<T>(payload, schema)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    if (deps.devices.get(parsed.data.serial) === undefined) return { ok: false, error: E_NO_SERIAL }
+    if (deps.adbPath() === '') return { ok: false, error: E_ADB_NOT_FOUND }
+    return { ok: true, data: parsed.data }
+  }
+
+  handle(CH.CAPTURE_SCREENSHOT, async (_event, payload): Promise<IpcResult<CaptureResult>> => {
+    const parsed = capturePreflight<{ serial: string; dstDir: string }>(payload, CAPTURE_SCREENSHOT_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.capture.screenshot(parsed.data.serial, parsed.data.dstDir) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.CAPTURE_RECORD_START, async (_event, payload): Promise<IpcResult<RecordStarted>> => {
+    const parsed = capturePreflight<{ serial: string; dstDir: string }>(payload, CAPTURE_RECORD_START_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.capture.startRecord(parsed.data.serial, parsed.data.dstDir) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.CAPTURE_RECORD_STOP, async (_event, payload): Promise<IpcResult<CaptureResult>> => {
+    const parsed = capturePreflight<{ serial: string }>(payload, CAPTURE_RECORD_STOP_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.capture.stopRecord(parsed.data.serial) }
     } catch (err) {
       return fail(toErrorCode(err))
     }

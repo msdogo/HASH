@@ -6,6 +6,7 @@ import { E_ADB_NOT_FOUND, E_BAD_ARGS, E_DEVICE_OFFLINE, E_NO_SERIAL } from '../s
 import { DRAG_OUT_INPUT } from '../src/shared/api-contract'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { fakeBatch } from './fake-batch'
+import { fakeCapture } from './fake-capture'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -76,6 +77,7 @@ function harness(over: Partial<HandlerDeps> = {}, options: { hasDevice?: boolean
     settings: fakeSettings(),
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
+    capture: fakeCapture(),
     transfer: {
       enqueue: async () => task(),
       cancel: () => false,
@@ -195,6 +197,7 @@ describe('transfer:begin-drag-out 的前置检查', () => {
         settings: fakeSettings(),
         pickDownloadDir: async () => '',
         batch: fakeBatch(),
+    capture: fakeCapture(),
         transfer: {
           enqueue: async () => task(), cancel: () => false, retry: () => false, get: () => undefined,
           snapshot: () => ({ tasks: [], running: 0, queued: 0 }), clearFinished: () => 0,

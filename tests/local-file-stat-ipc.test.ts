@@ -5,6 +5,7 @@ import { DeviceManager } from '../electron/devices/manager'
 import { E_BAD_ARGS } from '../src/shared/errors'
 import type { LocalFileStat } from '../src/shared/file-ops'
 import { fakeBatch } from './fake-batch'
+import { fakeCapture } from './fake-capture'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -69,6 +70,7 @@ function harness(answer: LocalFileStat = { exists: false }): Harness {
     settings: fakeSettings(),
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
+    capture: fakeCapture(),
     drag: fakeDrag(),
     transfer: {
       enqueue: async () => { throw new Error('unused') },
@@ -147,6 +149,7 @@ describe('R10 local:file-stat 的 IPC 层', () => {
       settings: fakeSettings(),
       pickDownloadDir: async () => '',
       batch: fakeBatch(),
+    capture: fakeCapture(),
       drag: fakeDrag(),
       transfer: {
         enqueue: async () => { throw new Error('unused') },

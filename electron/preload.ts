@@ -5,6 +5,9 @@ import type {
   BatchPushInput,
   BatchScreenshotInput,
   BatchShellInput,
+  CaptureRecordStartInput,
+  CaptureRecordStopInput,
+  CaptureScreenshotInput,
   DshApi,
   DragOutInput,
   FsBatchInput,
@@ -21,6 +24,7 @@ import type {
   TransferIdInput,
 } from '../src/shared/api-contract'
 import type { BatchRunData } from '../src/shared/batch'
+import type { CaptureResult, RecordStarted } from '../src/shared/capture'
 import type { DragOutFailure, DragOutProgress } from '../src/shared/drag'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
 import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../src/shared/file-ops'
@@ -239,6 +243,17 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 选 apk；取消返回空串。 */
       pickApk: (): Promise<IpcResult<string>> =>
         deps.invoke(CH.BATCH_PICK_APK) as Promise<IpcResult<string>>,
+    },
+    capture: {
+      /** 单台设备截图；taskId 是传输任务，进度见底栏。 */
+      screenshot: (payload: CaptureScreenshotInput): Promise<IpcResult<CaptureResult>> =>
+        deps.invoke(CH.CAPTURE_SCREENSHOT, payload) as Promise<IpcResult<CaptureResult>>,
+      /** 开始录屏（文件在停止后才生成）。 */
+      recordStart: (payload: CaptureRecordStartInput): Promise<IpcResult<RecordStarted>> =>
+        deps.invoke(CH.CAPTURE_RECORD_START, payload) as Promise<IpcResult<RecordStarted>>,
+      /** 停止录屏并把 mp4 拉回本地。 */
+      recordStop: (payload: CaptureRecordStopInput): Promise<IpcResult<CaptureResult>> =>
+        deps.invoke(CH.CAPTURE_RECORD_STOP, payload) as Promise<IpcResult<CaptureResult>>,
     },
   } satisfies DshApi
 }

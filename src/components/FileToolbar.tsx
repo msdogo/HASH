@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine, ListChecks, Search, X } from 'lucide-react'
+import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine, ListChecks, Search, X, Camera, CircleDot, Square } from 'lucide-react'
 import { isSearchClearKey, isSearchFocusKey } from '@shared/file-view'
 import { t } from '@shared/i18n'
 
@@ -30,6 +30,15 @@ export interface FileToolbarProps {
    * 禁用它等于把这条唯一的显式入口在最有用的时刻关掉。
    */
   onSelectAll: () => void
+  /* ---- P1：单机截图 / 录屏 ---- */
+  /** 截图（截整块屏幕，与选中项无关）。 */
+  onScreenshot: () => void
+  /** 开始录屏。 */
+  onRecordStart: () => void
+  /** 停止录屏（按钮文案随之变化）。 */
+  onRecordStop: () => void
+  /** 当前是否正在录屏（决定按钮显示「录屏」还是「停止录屏」）。 */
+  recording: boolean
   /*
    * 【R10 删除】这里原本有一个 downloadHint（「没有本地目标目录」等提示）。
    * 提示区现在统一在**底部传输栏**（TransferDock）—— 简报明确要求的位置。
@@ -59,6 +68,25 @@ export function FileToolbar(props: FileToolbarProps) {
       <ToolButton icon={<MoveRight className="h-3.5 w-3.5" />} label={t('op.toolbar.moveTo')} onClick={props.onMoveTo} disabled={disabled || none} />
       {/* 下载入口：任务 8 有队列能力但没界面入口（I4），这里补上 */}
       <ToolButton icon={<ArrowDownToLine className="h-3.5 w-3.5" />} label={t('op.toolbar.download')} onClick={props.onDownload} disabled={disabled || none} />
+      {/*
+        * P1：截图 / 录屏。
+        *
+        * 两个按钮**不按选中项禁用**：截的是整块屏幕，与选了哪些文件无关。
+        * 只受 `disabled`（没有设备 / 没有可用目录）约束，与「全选」同一判据。
+        */}
+      <ToolButton
+        icon={<Camera className="h-3.5 w-3.5" />}
+        label={t('capture.screenshot')}
+        onClick={props.onScreenshot}
+        disabled={disabled}
+      />
+      <ToolButton
+        icon={props.recording ? <Square className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
+        label={props.recording ? t('capture.record.stop') : t('capture.record.start')}
+        onClick={props.recording ? props.onRecordStop : props.onRecordStart}
+        disabled={disabled}
+        danger={props.recording}
+      />
       {/*
         * 全选（R2-2）。刻意只受 `disabled`（没有可用目录/没有设备）约束，
         * **不**受 `none` 约束：没有任何选中项时正是它最该可点的时刻。

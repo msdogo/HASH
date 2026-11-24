@@ -15,6 +15,9 @@ import { registerHandlers } from './ipc/handlers'
 import { TransferOnlineTracker, wireBatchToTransfer } from './app/transfer-wiring'
 import { TransferService } from './transfer/service'
 import { BatchService } from './batch/service'
+import { CaptureService } from './capture/service'
+import { startRecorder, STOP_COMMANDS } from './capture/recorder'
+import { RECORD_START_TIMEOUT_MS } from '../src/shared/capture'
 import { DragOutService } from './drag/service'
 import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
@@ -151,6 +154,16 @@ function settings(): ReturnType<typeof createSettingsStore> {
 const batchCleanup = new Map<string, () => void>()
 
 /**
+ * 单机截图 / 录屏待清理的临时文件（P1 第一批）。
+ *
+ * 与 batchCleanup 分开两张表而不是合并成一张：两边的清理动作虽然同形，
+ * 但「谁登记了它」决定了排查残留时该看哪条链路。合并之后，一张 png 的
+ * 清理失败提示里就分不出它来自批量截图还是单机截图。
+ * 结算入口共用同一个 settleTask（见下），所以行为上不会有两套逻辑。
+ */
+const captureCleanup = new Map<string, () => void>()
+
+/**
  * 传输事件 → 批量临时文件清理。
  *
  * 用**函数声明**而不是 const 箭头：它在 TransferService 构造时就被引用（emit），
@@ -159,15 +172,36 @@ const batchCleanup = new Map<string, () => void>()
 function settleBatchTask(event: TransferEvent): void {
   const status = event.task.status
   if (status !== 'done' && status !== 'failed' && status !== 'canceled') return
-  const callback = batchCleanup.get(event.task.id)
+  const callback = batchCleanup.get(event.task.id) ?? captureCleanup.get(event.task.id)
   if (callback === undefined) return
+  // 两张表都要删：同一个 taskId 只可能属于其中一张，但删错表会让另一张永久长胖
   batchCleanup.delete(event.task.id)
+  captureCleanup.delete(event.task.id)
   try {
     callback()
   } catch (err) {
     // 清理失败只记日志：用户的截图已经拿到了，不该因为 rm 失败而变成失败项
     console.warn('[batch] 临时文件清理回调失败：' + String(err))
   }
+}
+
+/**
+ * 登记「任务进终态后执行一次」的回调；若任务登记时已经结束则立即兑现。
+ *
+ * 任务可能在我们登记之前就已经跑完（队列空闲时几乎瞬间完成），
+ * 所以必须回查一次状态 —— 否则那张 png / mp4 会永久留在设备上。
+ */
+function registerTaskCleanup(
+  table: Map<string, () => void>,
+  taskId: string,
+  callback: () => void,
+): void {
+  const task = transfer.controller.get(taskId)
+  if (task !== undefined && (task.status === 'done' || task.status === 'failed' || task.status === 'canceled')) {
+    callback()
+    return
+  }
+  table.set(taskId, callback)
 }
 
 /**
@@ -213,12 +247,66 @@ const batchService = new BatchService({
    * 所以登记时先看一眼当前状态 —— 否则那张 png 会永久留在设备上。
    */
   onTaskSettled: (taskId, callback) => {
-    batchCleanup.set(taskId, callback)
-    const task = transfer.controller.get(taskId)
-    if (task === undefined) return
-    if (task.status === 'done' || task.status === 'failed' || task.status === 'canceled') {
-      settleBatchTask({ type: 'changed', task })
-    }
+    registerTaskCleanup(batchCleanup, taskId, callback)
+  },
+})
+
+/**
+ * 单机截图 / 录屏服务（P1 第一批）。
+ *
+ * 与 batchService 一样在模块顶层构造：IPC handler 必须尽早注册，而 handler 依赖它。
+ * adbPath / defaultDstDir 传 getter —— 构造时机早于 adb 自检与设置加载完成。
+ */
+const captureService = new CaptureService({
+  devices,
+  clientFor: (serial) => createClient(serial),
+  transfer: transfer.controller,
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+  /*
+   * 落点：设置里的默认下载路径。
+   *
+   * 与「下载到本地」同一来源（src/shared/settings 的 downloadDirForDownload 语义），
+   * 不在渲染层抄一份 —— 抄的那份一旦过期，截图会落到用户没想到的地方。
+   * settings() 是懒建的，这里必须每次现取。
+   */
+  defaultDstDir: () => settings().getDownloadDir(),
+  /*
+   * 起一个 screenrecord 会话。
+   *
+   * 停止必须在**设备侧**发 SIGINT（见 electron/capture/recorder.ts 的说明）：
+   * 本地进程在 Windows 上收不到 SIGINT，设备会一直录到 --time-limit。
+   * 两条候选命令各试一次，认不出 pkill 的旧版 toybox 也能停下来。
+   */
+  startRecording: (serial, remotePath, maxSeconds) => {
+    const adb = adbState.state === 'ok' ? adbState.path : ''
+    if (adb === '') return null
+    return startRecorder({
+      adbPath: adb,
+      serial,
+      remotePath,
+      maxSeconds,
+      requestStopOnDevice: async () => {
+        const client = createClient(serial)
+        for (const command of STOP_COMMANDS) {
+          try {
+            const result = await client.run(['shell', command], { adbPath: adb, timeoutMs: RECORD_START_TIMEOUT_MS })
+            // 第一条命令成功就够了；失败（没有 pkill）才试下一条
+            if (result.code === 0) return
+          } catch {
+            // 继续试下一条
+          }
+        }
+      },
+    })
+  },
+  /*
+   * 传输任务进终态后再删设备上的临时文件。
+   *
+   * 登记进 captureCleanup 而不是 batchCleanup：清理失败的日志要能说清来源。
+   * 结算入口是同一个 settleBatchTask（它在两张表里查）。
+   */
+  onTaskSettled: (taskId, callback) => {
+    registerTaskCleanup(captureCleanup, taskId, callback)
   },
 })
 
@@ -442,6 +530,7 @@ app.whenReady().then(async () => {
             },
             transfer: transfer.controller,
             batch: batchService,
+            capture: captureService,
             drag: dragService.controller,
             // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
             // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。
@@ -544,6 +633,9 @@ app.on('before-quit', () => {
   // 复审 I1：批量截图的临时文件清理登记也要在退出时兑现，
   // 否则排队中的 transfer 任务永远不进终态（dispose 不 emit），设备上会留 png。
   batchService.dispose()
+  // P1：单机录屏是长驻进程，退出时必须逐台发停止（设备的 --time-limit 是兜底，
+  // 但那条上限是分钟级的，不能指望它）；未结算的临时文件清理同样在这里兑现。
+  captureService.dispose()
   /*
    * 拖拽临时目录的兜底清理（简报 C 硬性要求）。
    *
@@ -558,6 +650,7 @@ app.on('before-quit', () => {
   }
   // dispose 已经把未结算的清理执行掉了，把表清空避免残留闭包
   batchCleanup.clear()
+  captureCleanup.clear()
   shutdownChildren()
   tracking?.flushChanges()
   tracking?.stop()

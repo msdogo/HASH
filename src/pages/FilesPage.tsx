@@ -618,6 +618,77 @@ export function FilesPage() {
     selectAll(serial, entries)
   }, [serial, entries, selectAll])
 
+  /*
+   * P1：单机截图 / 录屏。
+   *
+   * 三个 handler 都只做三件事：取当前 serial → 调 window.api → 把结果（或错误码）
+   * 交给底栏提示。落点目录传空串 = 用设置里的默认下载路径（主进程现取，
+   * 渲染层不抄一份 —— 抄的那份一旦过期就会和设置页显示的分叉）。
+   *
+   * 「复制路径」放在成功后做：截图的价值一半在于「马上能用这个路径」，
+   * 让用户自己去下载目录里翻文件等于这功能只做了一半。
+   */
+  const [recording, setRecording] = useState(false)
+  const [captureBusy, setCaptureBusy] = useState(false)
+
+  const copyPath = useCallback(async (target: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(target)
+    } catch {
+      // 剪贴板不可用（权限 / 无焦点）不该让整次截图变成失败：文件已经存好了
+    }
+  }, [])
+
+  const handleScreenshot = useCallback(async () => {
+    if (serial === null || captureBusy) return
+    setCaptureBusy(true)
+    try {
+      const result = await window.api.capture.screenshot({ serial, dstDir: '' })
+      if (!result.ok) {
+        setQueueNotice(errorText(result.error))
+        return
+      }
+      await copyPath(result.data.localPath)
+      setQueueNotice(tf('capture.screenshot.saved', { path: result.data.localPath }))
+    } finally {
+      setCaptureBusy(false)
+    }
+  }, [serial, captureBusy, copyPath, setQueueNotice])
+
+  const handleRecordStart = useCallback(async () => {
+    if (serial === null || captureBusy) return
+    setCaptureBusy(true)
+    try {
+      const result = await window.api.capture.recordStart({ serial, dstDir: '' })
+      if (!result.ok) {
+        setQueueNotice(errorText(result.error))
+        return
+      }
+      setRecording(true)
+      setQueueNotice(tf('capture.record.started', { seconds: String(result.data.maxSeconds) }))
+    } finally {
+      setCaptureBusy(false)
+    }
+  }, [serial, captureBusy, setQueueNotice])
+
+  const handleRecordStop = useCallback(async () => {
+    if (serial === null || captureBusy) return
+    setCaptureBusy(true)
+    try {
+      const result = await window.api.capture.recordStop({ serial })
+      // 无论成败都退出录制态：停止失败时最可能的原因就是「本来就没在录」
+      setRecording(false)
+      if (!result.ok) {
+        setQueueNotice(errorText(result.error))
+        return
+      }
+      await copyPath(result.data.localPath)
+      setQueueNotice(tf('capture.record.stopped', { path: result.data.localPath }))
+    } finally {
+      setCaptureBusy(false)
+    }
+  }, [serial, captureBusy, copyPath, setQueueNotice])
+
   const handleCopyTo = useCallback(() => {
     const targets = selectedTargets()
     if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
@@ -719,6 +790,10 @@ export function FilesPage() {
         onMoveTo={handleMoveTo}
         onDownload={() => { void handleDownload() }}
         onSelectAll={handleSelectAll}
+        onScreenshot={() => { void handleScreenshot() }}
+        onRecordStart={() => { void handleRecordStart() }}
+        onRecordStop={() => { void handleRecordStop() }}
+        recording={recording}
         /* R6：搜索框在工具条右端（不新增行高）。过滤词进 store 分片，切设备各记各的。 */
         query={current.query}
         onQueryChange={(value) => { dispatch(serial, { type: 'setQuery', value }) }}

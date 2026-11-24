@@ -230,6 +230,10 @@ function toolbarHtml(over: Partial<{ selectedCount: number; ready: boolean; quer
     onMoveTo: () => undefined,
     onDownload: () => undefined,
     onSelectAll: () => undefined,
+    onScreenshot: () => undefined,
+    onRecordStart: () => undefined,
+    onRecordStop: () => undefined,
+    recording: false,
     query: over.query ?? '',
     onQueryChange: () => undefined,
   }

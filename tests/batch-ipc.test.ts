@@ -6,6 +6,7 @@ import type { BatchRunData } from '../src/shared/batch'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS } from '../src/shared/errors'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
+import { fakeCapture } from './fake-capture'
 
 /*
  * 批量 IPC 层（任务 10）。
@@ -95,6 +96,8 @@ function harness(options: { adbPath?: string; hasDevices?: boolean; over?: Parti
       clearFinished: () => 0,
     },
     batch,
+    // P1：本文件不测截图/录屏，空壳只为满足 HandlerDeps（见 tests/capture-*.test.ts）
+    capture: fakeCapture(),
     // 本文件不测拖拽：空壳只为满足 HandlerDeps（拖拽有 tests/drag-*.test.ts）
     drag: { dragOut: async () => ({ ok: true }) },
     ...options.over,

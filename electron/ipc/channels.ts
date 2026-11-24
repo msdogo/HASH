@@ -101,6 +101,14 @@ export const CH = {
   BATCH_PICK_DIRECTORY: 'batch:pick-directory',
   /** invoke：弹出文件选择框挑一个 .apk。 */
   BATCH_PICK_APK: 'batch:pick-apk',
+
+  /* ===== P1 第一批：单机截图 / 录屏 ===== */
+  /** invoke：对一台设备截图，落到本地目录（或设置里的默认下载路径）。 */
+  CAPTURE_SCREENSHOT: 'capture:screenshot',
+  /** invoke：开始录屏（长驻进程；停止后文件才会被拉回本地）。 */
+  CAPTURE_RECORD_START: 'capture:record-start',
+  /** invoke：停止录屏并把 mp4 拉回本地。 */
+  CAPTURE_RECORD_STOP: 'capture:record-stop',
 } as const
 
 export type Channel = (typeof CH)[keyof typeof CH]
@@ -142,6 +150,10 @@ export const INVOKE_CHANNELS = [
   CH.BATCH_SHELL,
   CH.BATCH_PICK_DIRECTORY,
   CH.BATCH_PICK_APK,
+  // P1：单机截图 / 录屏
+  CH.CAPTURE_SCREENSHOT,
+  CH.CAPTURE_RECORD_START,
+  CH.CAPTURE_RECORD_STOP,
 ] as const
 
 /** 由主进程单向推送的通道（webContents.send，绝不 handle）。 */

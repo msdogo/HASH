@@ -60,6 +60,10 @@ describe('共享错误码', () => {
       // 复审 Minor 4：命令内容不合法（换行会让一条命令变成多条）。
       // 与 E_BATCH_PARAM（没选设备/文件）和 E_INVALID_PATH（路径语义）都不同。
       'E_BAD_COMMAND',
+      // P1：单机录屏的两个状态码（录屏是长驻进程，必须能区分「已在录」与「没在录」，
+      // 用 E_BAD_ARGS 会让用户去重启应用，而正确动作是点「停止录屏」或直接开始新的）
+      'E_RECORD_ACTIVE',
+      'E_NOT_RECORDING',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

@@ -14,6 +14,7 @@ import type { ShellRunner } from '../electron/fs/remote'
 import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
 import { fakeBatch } from './fake-batch'
+import { fakeCapture } from './fake-capture'
 import { fakeDrag } from './fake-drag'
 import { fakeSettings } from './fake-settings'
 
@@ -216,6 +217,7 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     settings: fakeSettings(),
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
+    capture: fakeCapture(),
     drag: fakeDrag(),
     ...over,
   }

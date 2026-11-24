@@ -115,6 +115,23 @@ export const E_BATCH_PARAM = 'E_BATCH_PARAM'
 export const E_BAD_COMMAND = 'E_BAD_COMMAND'
 
 /**
+ * 这台设备已经在录屏了（P1：单机录屏）。
+ *
+ * 与 E_BAD_ARGS 分开：用户点两下「录屏」是**操作顺序**问题，不是程序内部错误；
+ * 让他去重启应用是完全错误的引导。文案直接说「先停止当前录制」。
+ */
+export const E_RECORD_ACTIVE = 'E_RECORD_ACTIVE'
+
+/**
+ * 这台设备当前没有在录屏（停止录屏时）。
+ *
+ * 典型成因：录屏进程因为 --time-limit 到点自己退了，用户随后才点「停止」。
+ * 这不是故障，但也不能静默成功 —— 界面要说清「没有在录制」，否则用户会以为
+ * 刚点的那一下把文件弄丢了。
+ */
+export const E_NOT_RECORDING = 'E_NOT_RECORDING'
+
+/**
  * 操作只完成了一部分（多文件移动/递归删除中途失败）。
  *
  * 与 E_OP_FAILED 分开：后者承诺「什么都没发生」，而部分完成时那句承诺是假话。
@@ -161,6 +178,9 @@ export const ERROR_CODES = [
   // 任务 10：批量动作的整批参数错（用户能自己修好，与 E_BAD_ARGS 分开）
   E_BATCH_PARAM,
   E_BAD_COMMAND,
+  // P1：单机截图 / 录屏的两个状态码（录屏是长驻进程，必须有「已在录」与「没在录」）
+  E_RECORD_ACTIVE,
+  E_NOT_RECORDING,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
