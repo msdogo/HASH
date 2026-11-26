@@ -792,14 +792,40 @@ const SetParent = user32.func('intptr_t SetParent(intptr_t child, intptr_t paren
 const MoveWindow = user32.func('bool MoveWindow(intptr_t hWnd, int x, int y, int w, int h, bool repaint)')
 const GetParent = user32.func('intptr_t GetParent(intptr_t hWnd)')
 const ShowWindow = user32.func('bool ShowWindow(intptr_t hWnd, int cmd)')
+const GetWindowLongPtr = user32.func('intptr_t GetWindowLongPtrW(intptr_t hWnd, int index)')
+const SetWindowLongPtr = user32.func('intptr_t SetWindowLongPtrW(intptr_t hWnd, int index, intptr_t value)')
 ~~~
 
 对外三个函数：
-- `findWindowByTitle(exact: string): Promise<number>` —— 轮询最多 10s（scrcpy 建窗要时间），找不到返回 0
-- `embed(childHwnd, parentHwnd, rect)` —— `SetParent` + `MoveWindow`
+- `findWindowByTitle(exact: string): Promise<number>` —— 轮询最多 10s（scrcpy 建窗实测 6~8s），找不到返回 0
+- `embed(childHwnd, parentHwnd, rect)` —— **先改样式、再 SetParent、最后 MoveWindow**（见下方红线）
 - `resize(childHwnd, rect)` —— 只 `MoveWindow`
 纯几何部分（`toPhysical` / `fitRect`）单独导出，不依赖 koffi，**这是可单测的部分**。
 koffi 调用本身在 CI 里跑不了（需要真窗口），如实登记进「已知无门禁清单」。
+
+**红线（spike 实测踩过，见 docs/superpowers/spike/scrcpy-embed-result.md 第三节）：**
+
+只调 `SetParent` 是**假嵌入** —— 对带 `WS_POPUP` 样式的窗口，SetParent 只把坐标改写成
+屏幕绝对坐标，不建立父子关系，看起来「嵌进去了」纯属视觉巧合（`GetParent` 返回 0、
+宿主移动时画面纹丝不动）。必须先改样式：
+
+~~~ts
+const GWL_STYLE = -16
+const WS_CHILD = 0x40000000
+const WS_POPUP = 0x80000000
+const WS_CAPTION = 0x00c00000
+const WS_THICKFRAME = 0x00040000
+
+function makeChild(hwnd: number): void {
+  const style = Number(GetWindowLongPtr(hwnd, GWL_STYLE))
+  const next = (style | WS_CHILD) & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME
+  SetWindowLongPtr(hwnd, GWL_STYLE, next)
+}
+~~~
+
+顺序必须是：`makeChild()` → `SetParent()` → `MoveWindow()`。
+**验收断言**：嵌入后 `GetParent(child) === parentHwnd`；宿主移动后子窗口矩形跟着变。
+这两条写进真机验证清单（任务 11）。
 
 - [ ] **步骤 4：Commit**
 
