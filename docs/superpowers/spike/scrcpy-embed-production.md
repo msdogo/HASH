@@ -70,7 +70,27 @@ if (parent !== hostHwnd) return { ok: false, reason: 'GetParent mismatch' }
 所以**不能**用 `EnumWindows` 的返回值判断成败 —— 必须只看回调里有没有命中。
 生产代码就是这么写的（`findWindowOnce` 只返回 `found`）。
 
-## 三、`npm run dev` 在这台机器上起不来的原因（与投屏无关，如实记录）
+## 三、投屏窗口布局的真渲染证据
+
+自动化冒烟证明了「原生窗口能嵌进来」，但没有证明「我们这个窗口画对了」。
+补了一张`capturePage()` 的真实截图（跑的是 `dist/` 里的**实际构建产物**，
+hash 走 `#/mirror/<serial>`，`window.api` 用最小替身）：
+
+![投屏窗口布局](./mirror-window-layout.png)
+
+从截图与 DOM 断言可以确认（不是靠肉眼猜）：
+
+| 断言 | 实测值 |
+| --- | --- |
+| 侧边栏在**右**侧 | `nav.getBoundingClientRect().right === 420`（等于窗口宽度 420） |
+| 六个按键全部渲染 | `title` 依次为 返回 / 主页 / 后台 / 音量减 / 音量加 / 电源 |
+| 画面区是**空的** | `body.innerText` 只有「投屏中 / serial / 正在启动投屏…」 |
+| 顶栏有窗口控制 | 最小化 / 最大化 / 关闭 三个按钮 |
+
+这张图同时也说明了一个**已知限制**：画面区在 scrcpy 窗口嵌入前只有一行提示文字，
+嵌入后会被原生子窗口完全盖住 —— 所以提示不需要（也没有）隐藏逻辑。
+
+## 四、`npm run dev` 在这台机器上起不来的原因（与投屏无关，如实记录）
 
 用 `ADB_FM_DEBUG_PORT=xxxx npm run dev` 启动后进程立刻退出、无窗口。
 根因是**单实例锁**：机器上已经装着并运行着 `C:\Program Files\HASH\HASH.exe`
@@ -81,7 +101,7 @@ if (parent !== hostHwnd) return { ok: false, reason: 'GetParent mismatch' }
 嵌入冒烟就是这么跑起来的（见上）。这不影响结论，但下次做界面手工验证前，
 **必须先把已安装的 HASH 退掉**（托盘菜单「退出」），否则开发实例永远静默退出。
 
-## 四、为什么要两份报告
+## 五、为什么要两份报告
 
 - `scrcpy-embed-result.md`（spike）证的是「**这个思路可行**」—— 它用 PowerShell 复刻，
   因为当时连 koffi 都还没装，用最少的未知数回答「SetParent 会不会黑屏」。
