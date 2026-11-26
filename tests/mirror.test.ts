@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEFAULT_MAX_SIZE,
+  HEADER_HEIGHT,
   MAX_SIZE_OPTIONS,
   SCRCPY_WINDOW_PREFIX,
+  SIDEBAR_WIDTH,
+  availableRect,
   buildScrcpyArgs,
   classifyScrcpyFailure,
+  fitRect,
   mirrorTitleOf,
+  windowFitSize,
 } from '../src/shared/mirror'
 
 describe('buildScrcpyArgs', () => {
@@ -89,6 +94,123 @@ describe('classifyScrcpyFailure', () => {
 
   it('空串 → E_MIRROR_START_FAILED（不抛）', () => {
     expect(classifyScrcpyFailure('')).toBe('E_MIRROR_START_FAILED')
+  })
+})
+
+describe('availableRect', () => {
+  it('扣掉顶栏（上）与右侧侧边栏', () => {
+    const r = availableRect({ width: 480, height: 900 }, 1)
+    expect(r.x).toBe(0)
+    expect(r.y).toBe(HEADER_HEIGHT)
+    expect(r.width).toBe(480 - SIDEBAR_WIDTH)
+    expect(r.height).toBe(900 - HEADER_HEIGHT)
+  })
+
+  it('scaleFactor 2 时全部翻倍（MoveWindow 要物理像素）', () => {
+    const r = availableRect({ width: 480, height: 900 }, 2)
+    expect(r.y).toBe(HEADER_HEIGHT * 2)
+    expect(r.width).toBe(960 - SIDEBAR_WIDTH * 2)
+    expect(r.height).toBe(1800 - HEADER_HEIGHT * 2)
+  })
+
+  it('scaleFactor 非法（0 / 负数）时按 1 处理，不产生负尺寸', () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      const r = availableRect({ width: 400, height: 400 }, bad)
+      expect(r.width).toBeGreaterThan(0)
+      expect(r.height).toBeGreaterThan(0)
+    }
+  })
+
+  it('窗口比侧边栏还窄时宽度夹到 0（不出现负数）', () => {
+    const r = availableRect({ width: 40, height: 100 }, 1)
+    expect(r.width).toBe(0)
+  })
+})
+
+describe('fitRect', () => {
+  it('横屏视频放进竖长区域 → 撑满宽度、上下留黑边、垂直居中', () => {
+    const r = fitRect({ x: 0, y: 36, width: 368, height: 864 }, 1024, 640)
+    expect(r.width).toBe(368)
+    expect(r.height).toBe(Math.round(640 * (368 / 1024)))
+    // 垂直居中：上下剩余相等
+    const topGap = r.y - 36
+    const bottomGap = 36 + 864 - (r.y + r.height)
+    expect(Math.abs(topGap - bottomGap)).toBeLessThanOrEqual(1)
+  })
+
+  it('竖屏视频放进宽区域 → 撑满高度、左右留黑边、水平居中', () => {
+    const r = fitRect({ x: 0, y: 0, width: 1000, height: 500 }, 500, 1000)
+    expect(r.height).toBe(500)
+    expect(r.width).toBe(250)
+    expect(r.x).toBe(Math.floor((1000 - 250) / 2))
+  })
+
+  it('宽高比一致时不产生黑边（铺满可用区域）', () => {
+    const r = fitRect({ x: 10, y: 20, width: 400, height: 200 }, 400, 200)
+    expect(r).toEqual({ x: 10, y: 20, width: 400, height: 200 })
+  })
+
+  it('视频尺寸未知（0）→ 回落到铺满，不产生 NaN', () => {
+    const area = { x: 0, y: 0, width: 100, height: 80 }
+    expect(fitRect(area, 0, 640)).toEqual(area)
+    expect(fitRect(area, 1024, 0)).toEqual(area)
+  })
+
+  it('可用区域为 0 → 回退原值，不抛', () => {
+    const area = { x: 0, y: 0, width: 0, height: 0 }
+    expect(fitRect(area, 1024, 640)).toEqual(area)
+  })
+
+  it('结果永远不超出可用区域', () => {
+    for (const [vw, vh] of [[1024, 640], [640, 1024], [1920, 1080], [100, 300]]) {
+      const area = { x: 5, y: 7, width: 400, height: 900 }
+      const r = fitRect(area, vw, vh)
+      expect(r.width).toBeLessThanOrEqual(area.width)
+      expect(r.height).toBeLessThanOrEqual(area.height)
+      expect(r.x).toBeGreaterThanOrEqual(area.x)
+      expect(r.y).toBeGreaterThanOrEqual(area.y)
+    }
+  })
+})
+
+describe('windowFitSize', () => {
+  it('窗口刚好装下 16:10 画面：宽 = 视频宽 + 侧边栏，高 = 视频高 + 顶栏', () => {
+    const size = windowFitSize(1024, 640, 1, 2000)
+    expect(size.width).toBe(1024 + SIDEBAR_WIDTH)
+    expect(size.height).toBe(640 + HEADER_HEIGHT)
+  })
+
+  it('scaleFactor 2 时视频尺寸减半（DIP 更小），但侧边栏/顶栏不缩', () => {
+    const size = windowFitSize(1024, 640, 2, 2000)
+    expect(size.width).toBe(512 + SIDEBAR_WIDTH)
+    expect(size.height).toBe(320 + HEADER_HEIGHT)
+  })
+
+  it('超过 maxHeight 时按比例缩，不拉伸画面', () => {
+    const size = windowFitSize(1024, 1024, 1, 500)
+    expect(size.height).toBe(500)
+    // 等比：宽高比与视频一致（差异只来自取整与固定减项）
+    expect(size.width).toBeLessThan(1024 + SIDEBAR_WIDTH)
+  })
+
+  it('视频未知（0）→ 给可用的默认尺寸，不是 0×0', () => {
+    const size = windowFitSize(0, 0, 1)
+    expect(size.width).toBeGreaterThan(SIDEBAR_WIDTH)
+    expect(size.height).toBeGreaterThan(HEADER_HEIGHT)
+  })
+
+  it('极窄视频也不会把窗口压到放不下六个键', () => {
+    const size = windowFitSize(40, 400, 1, 2000)
+    expect(size.width).toBeGreaterThanOrEqual(SIDEBAR_WIDTH + 120)
+  })
+
+  it('永远不返回负尺寸或 NaN', () => {
+    for (const [w, h, s] of [[1024, 640, 1], [0, 640, 1], [1024, 640, 0], [-5, -5, -1]]) {
+      const size = windowFitSize(w, h, s)
+      expect(Number.isFinite(size.width)).toBe(true)
+      expect(size.width).toBeGreaterThan(0)
+      expect(size.height).toBeGreaterThan(0)
+    }
   })
 })
 

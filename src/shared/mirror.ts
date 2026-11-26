@@ -52,6 +52,119 @@ export type MirrorEvent =
   | { kind: 'exited'; serial: string; code: number | null }
   | { kind: 'failed'; serial: string; code: string }
 
+/** 侧边栏宽度（CSS 像素 = DIP；MirrorWindow.tsx 的 w-14 必须与它一致）。 */
+export const SIDEBAR_WIDTH = 56
+
+/** 顶栏高度（CSS 像素 = DIP；MirrorWindow.tsx 的 h-9 必须与它一致）。 */
+export const HEADER_HEIGHT = 36
+
+/** 矩形（物理像素）。 */
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * 把「视频该占的区域」算出来：在可用区域里按视频宽高比居中。
+ *
+ * ===== 为什么必须按宽高比，而不是铺满 =====
+ * 实机踩到的缺陷（见 docs/superpowers/spike/scrcpy-embed-production.md 第六节）：
+ * 直接把 scrcpy 窗口 MoveWindow 成「可用区域那么大」，视频是 1024×640（16:10）而
+ * 竖长的窗口是 424×900 —— scrcpy 会把它自己那层画布铺满窗口、视频居中留黑边，
+ * 于是屏幕上下各出现一条巨大的黑带，用户以为投屏坏了。
+ *
+ * 正确做法：保持视频宽高比，在不超出可用区域的前提下尽量放大，然后居中。
+ *
+ * @param available 可用区域（不含顶栏与侧边栏），物理像素。
+ * @param videoWidth 视频原始宽（scrcpy 窗口的初始宽度）。
+ * @param videoHeight 视频原始高。
+ */
+export function fitRect(available: Rect, videoWidth: number, videoHeight: number): Rect {
+  // 退化输入（0 或负数）直接回落到铺满，宁可留黑边也不要算出 NaN 让 MoveWindow 失败
+  if (videoWidth <= 0 || videoHeight <= 0 || available.width <= 0 || available.height <= 0) {
+    return available
+  }
+  const scale = Math.min(available.width / videoWidth, available.height / videoHeight)
+  const width = Math.max(1, Math.round(videoWidth * scale))
+  const height = Math.max(1, Math.round(videoHeight * scale))
+  return {
+    // 居中：两侧/上下平均分配剩余空间
+    x: available.x + Math.floor((available.width - width) / 2),
+    y: available.y + Math.floor((available.height - height) / 2),
+    width,
+    height,
+  }
+}
+
+/**
+ * 视频区在窗口里的位置（可用区域）。
+ *
+ * 三个减项都对应屏幕上真实存在的东西，少减一个就会被原生子窗口盖住：
+ *   - 顶栏（HEADER_HEIGHT）：原生窗口永远画在渲染层之上，盖住顶栏会让
+ *     「投屏中 / 关闭按钮」全部消失；
+ *   - 侧边栏（SIDEBAR_WIDTH）：在**右侧**，所以只减宽度、x 从 0 开始；
+ *   - 各乘以 scaleFactor：MoveWindow 要物理像素，Electron 给的是 DIP。
+ */
+export function availableRect(
+  content: { width: number; height: number },
+  scaleFactor: number,
+): Rect {
+  const scale = scaleFactor > 0 ? scaleFactor : 1
+  const sidebar = Math.round(SIDEBAR_WIDTH * scale)
+  const header = Math.round(HEADER_HEIGHT * scale)
+  return {
+    x: 0,
+    y: header,
+    width: Math.max(0, Math.round(content.width * scale) - sidebar),
+    height: Math.max(0, Math.round(content.height * scale) - header),
+  }
+}
+
+/**
+ * 窗口内容区该多大（DIP），让画面**刚刚好**装下、不留黑边。
+ *
+ * ===== 为什么需要这一步（实机踩到的第三个缺陷）=====
+ * 一开始窗口固定 480×900。而设备画面是 1024×640（16:10 横屏）——
+ * 一个竖长的窗口装横屏画面，无论怎么居中，上下都会留出几百像素的黑带。
+ * 实测截图里画面只占窗口中间约 1/3，看起来像「投屏只投了一小块」。
+ *
+ * 正确做法：窗口尺寸由视频尺寸决定。宽 = 视频宽 + 侧边栏，高 = 视频高 + 顶栏。
+ * 这样默认打开就严丝合缝；用户拉窗口时再由 fitRect 居中（那时黑边是用户自己的选择）。
+ *
+ * @param maxHeight 屏幕可用高度的上限（DIP），防止 4K 设备把窗口撑出屏幕。
+ */
+export function windowFitSize(
+  videoWidth: number,
+  videoHeight: number,
+  scaleFactor: number,
+  maxHeight = 900,
+): { width: number; height: number } {
+  const scale = scaleFactor > 0 ? scaleFactor : 1
+  // 退化输入 → 给一个能用的默认值，不要算出 0×0 的窗口（用户会以为程序没启动）
+  if (videoWidth <= 0 || videoHeight <= 0) return { width: 420, height: 780 }
+
+  // 视频换算到 DIP 后再加上顶栏/侧边栏
+  let width = Math.round(videoWidth / scale) + SIDEBAR_WIDTH
+  let height = Math.round(videoHeight / scale) + HEADER_HEIGHT
+
+  // 太高就按比例缩回去（不能只压高度，否则画面被拉伸）
+  if (height > maxHeight) {
+    const ratio = maxHeight / height
+    width = Math.round(width * ratio)
+    height = maxHeight
+  }
+  // 太窄的窗口连六个按键都放不下（侧边栏 56 + 画面至少 120）
+  const minWidth = SIDEBAR_WIDTH + 120
+  if (width < minWidth) {
+    const ratio = minWidth / width
+    width = minWidth
+    height = Math.round(height * ratio)
+  }
+  return { width, height }
+}
+
 /** 拼 scrcpy 命令行参数所需的输入。 */
 export interface ScrcpyArgsInput {
   /** 设备序列号。**每条 scrcpy 命令都必须带 -s**，与 adb 调用同一条红线。 */

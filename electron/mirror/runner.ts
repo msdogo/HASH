@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
-import { spawnTracked, killTree } from '../adb/children'
+import { spawnTracked, killTree, untrackChild } from '../adb/children'
 
 /**
  * scrcpy 进程的真实实现。
@@ -121,6 +121,16 @@ export function startScrcpy(deps: StartScrcpyDeps): ScrcpyHandle | null {
   const settle = (code: number | null): void => {
     if (settled) return
     settled = true
+    /*
+     * 从全局跟踪集合里摘掉。
+     *
+     * children.ts 的约定是「谁 spawn 谁负责在唯一出口摘登记」——
+     * 不摘的话这个已死的 child 会永远留在 live 集合里：
+     * 退出时 shutdownChildren 还会对它调一次 taskkill（无害但多余），
+     * 更实际的问题是 adbChildCount 只增不减，任何用计数断言
+     * 「没有残留子进程」的测试都会逐渐失真。
+     */
+    untrackChild(child as ChildProcess)
     for (const cb of callbacks) {
       try {
         cb(code)

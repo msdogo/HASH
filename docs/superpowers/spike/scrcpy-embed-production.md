@@ -101,7 +101,47 @@ hash 走 `#/mirror/<serial>`，`window.api` 用最小替身）：
 嵌入冒烟就是这么跑起来的（见上）。这不影响结论，但下次做界面手工验证前，
 **必须先把已安装的 HASH 退掉**（托盘菜单「退出」），否则开发实例永远静默退出。
 
-## 五、为什么要两份报告
+## 六、装正式包实测（0.10.3）—— 修掉的四个真缺陷
+
+上面三节都是「跑构建产物」。这一节是**装完安装包、双击桌面图标**之后测的。
+实机测试暴露了四个在这之前完全看不见的缺陷，全部已修并补了门禁：
+
+![装正式包后的投屏窗口](./mirror-installed-final.png)
+
+| # | 缺陷 | 症状 | 根因 | 修法 |
+| --- | --- | --- | --- | --- |
+| 1 | 顶栏被画面盖住 | 「投屏中 / 关闭按钮」整条消失，窗口没法关 | 嵌入矩形的 y 从 0 开始，原生子窗口永远画在渲染层之上 | `availableRect()` 减掉 `HEADER_HEIGHT`（有单测） |
+| 2 | 巨幅黑边 | 16:10 横屏画面塞进竖长窗口，上下各约 260px 黑带，画面只占中间一小块 | 直接把窗口 MoveWindow 成可用区域那么大，忽略视频宽高比 | `fitRect()` 按视频宽高比缩放并居中（有单测） |
+| 3 | 窗口尺寸不匹配 | 即使按比例居中了，竖长窗口里画面还是很小 | 窗口尺寸是硬编码的 480×900 | `windowFitSize()` 让窗口尺寸由视频尺寸决定（有单测） |
+| 4 | 量到中间态尺寸 | 窗口缩到 328×328，画面更小 | scrcpy 先建小窗、拿到首帧后才 resize；第一次实现一找到窗口就量尺寸 | `measureStableVideoRect()`：连续两次量到同一尺寸且边长 ≥320 才采信 |
+
+另有一个**看不见但会累积**的缺陷：
+
+| # | 缺陷 | 症状 | 修法 |
+| --- | --- | --- | --- |
+| 5 | 已退出的 scrcpy 留在全局跟踪集合里 | `adbChildCount` 只增不减；退出时对死进程多调一次 taskkill | `runner.ts` 的 `settle()` 里调 `untrackChild`（`tests/mirror-tracking.test.ts` 锁住，并用变异验证过：删掉那行测试立刻红） |
+
+### 实测确认可用的行为（都是真机操作，不是推断）
+
+| 验收项 | 方法 | 结果 |
+| --- | --- | --- |
+| 画面嵌进自建窗口 | `EnumChildWindows` + `GetWindowThreadProcessId` | 子窗口 hwnd=24578530，pid 属于 scrcpy，class=SDL_app，visible=True |
+| 尺寸跟随宿主 | `MoveWindow` 把宿主拉大 300×200 | 子窗口 1024×640 → 1324×828，且坐标跟着宿主移动 |
+| 返回键真的到设备 | 点侧边栏「返回」→ `dumpsys activity` | 前台从 TJH 应用切走 |
+| 主页键真的到设备 | 点「主页」→ `dumpsys activity` | `mResumedActivity: com.android.launcher3/.uioverrides.QuickstepLauncher` |
+| 关窗口 → scrcpy 进程消失 | 点自绘顶栏「关闭」→ `tasklist` | 我们那个 scrcpy pid 消失（另一台是用户自己在跑的 Escrcpy，不受影响） |
+
+### 环境里挖出来的两个坑（不是代码缺陷，但会浪费半天）
+
+1. **设备会自己休眠**。第一次截图是一片黑，不是投屏坏了 —— `dumpsys power` 显示
+   `mWakefulness=Asleep`。用 `adb shell input keyevent KEYCODE_WAKEUP` 唤醒后画面立刻正常。
+   以后看到「投屏黑屏」先查这一条。
+2. **`PrintWindow` 抓不到 D3D 画面**。想绕过窗口遮挡去截图时，`PrintWindow(PW_RENDERFULLCONTENT)`
+   抓到的是全黑 —— 因为 scrcpy 用 d3d11 渲染，打印窗口 API 拿不到那块表面。
+   只能把窗口真正摆到前台再用 `CopyFromScreen`。
+3. **PS 里 `$pid` / `$host` 是只读变量**，不能当局部变量用（会让整段脚本静默失效）。
+
+## 七、为什么要两份报告
 
 - `scrcpy-embed-result.md`（spike）证的是「**这个思路可行**」—— 它用 PowerShell 复刻，
   因为当时连 koffi 都还没装，用最少的未知数回答「SetParent 会不会黑屏」。
