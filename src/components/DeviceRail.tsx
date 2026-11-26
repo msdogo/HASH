@@ -1,8 +1,10 @@
-import { useEffect } from 'react'
+import { useState } from 'react'
 import { DOT_CLASS, DOT_LABEL_KEY, deviceLabel, hasUnauthorized, serialTail, statusDot, summarize } from '@shared/device-view'
+import { deviceMenuItemsFor, type DeviceMenuAction } from '@shared/device-menu'
 import { errorText, t, tf } from '@shared/i18n'
 import type { AdbState, DeviceSession } from '@shared/types'
 import { useDeviceStore } from '@/store/deviceStore'
+import { useMirrorStore } from '@/store/mirrorStore'
 
 /**
  * 左侧设备栏（规格 9.2）。
@@ -82,6 +84,44 @@ export function DeviceRail(props: DeviceRailProps) {
     loaded: store.loaded,
   })
   const setActive = store.setActive
+  /*
+   * 投屏会话镜像（只读）：右键菜单据此在「投屏」与「关闭投屏」之间切换。
+   *
+   * 订阅是全局的（src/main.tsx 的 subscribeMirrorChanges），这里只读快照 ——
+   * 组件自己 invoke 一次 list 会拿到与其它组件不同时刻的状态。
+   */
+  const mirroring = useMirrorStore((state) => state.sessions)
+
+  /**
+   * 右键菜单的状态（哪台设备、在屏幕哪个点）。
+   *
+   * 放组件 state 而不是 store：它是一次瞬时的界面动作，
+   * 没有任何其它模块需要读「菜单现在开着吗」。
+   */
+  const [menu, setMenu] = useState<{ serial: string; x: number; y: number } | null>(null)
+
+  /**
+   * 执行右键菜单动作。
+   *
+   * 失败只打到 console：设备栏没有提示区（提示统一在传输底栏），
+   * 而把「投屏失败」的文案塞进别处会出现「提示位置随功能而异」的混乱。
+   * 主进程同时会推 failed 事件，投屏窗口那边有更完整的说明。
+   */
+  const runMenuAction = (serial: string, action: DeviceMenuAction): void => {
+    setMenu(null)
+    if (action === 'mirrorStop') {
+      void window.api.mirror.stop({ serial })
+      return
+    }
+    void window.api.mirror.start({ serial }).then((result) => {
+      /*
+       * 失败时只把错误码打到 console（设备栏没有提示区，见上），
+       * 用户可见的说明由投屏窗口与工具条负责。
+       * 这里刻意不写中文文案：本组件受 ui-contract 的「文案全部走 i18n」静态断言约束。
+       */
+      if (!result.ok) console.warn('[mirror] start failed: ' + result.error)
+    })
+  }
 
   // 空状态与 adb 故障是两种不同的事，提示必须分开给
   const adbBroken = adb !== null && adb.state === 'error'
@@ -121,6 +161,17 @@ export function DeviceRail(props: DeviceRailProps) {
                 props.onSelectDevice?.(device.serial)
               }}
               title={device.serial + ' · ' + t(DOT_LABEL_KEY[dot])}
+              /*
+               * 右键：弹「投屏 / 关闭投屏」。
+               *
+               * 与左键的分工：左键 = 切到这台设备（改 activeSerial + 回文件页），
+               * 右键 = 对这台设备做动作，不改变当前选中。
+               * 这正是资源管理器的惯例 —— 用户不需要学。
+               */
+              onContextMenu={(event) => {
+                event.preventDefault()
+                setMenu({ serial: device.serial, x: event.clientX, y: event.clientY })
+              }}
               className={
                 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ' +
                 (active
@@ -157,6 +208,40 @@ export function DeviceRail(props: DeviceRailProps) {
         * 「还有一个没打开的页面」，而它其实只是另一个按钮。
         * 底部保留的那行是**统计**（共 N 台 · M 台在线），不是入口，所以留着。
         */}
+      {/*
+        右键菜单。
+        不做成通用 ContextMenu 组件（那个是文件列表专用的：菜单项、图标、动作 id
+        都与文件强绑定），设备栏只有一项动作，画一个小浮层更直接、也不会
+        为了复用而把两边的语义硬凑在一起。
+      */}
+      {menu !== null && (() => {
+        const target = devices.find((device) => device.serial === menu.serial)
+        const items = deviceMenuItemsFor(
+          target !== undefined && target.status === 'device',
+          mirroring[menu.serial] !== undefined,
+        )
+        if (items.length === 0) return null
+        return (
+          <div
+            role="menu"
+            className="fixed z-50 min-w-[120px] rounded border border-neutral-300 bg-white py-0.5 shadow-lg"
+            style={{ left: String(menu.x) + 'px', top: String(menu.y) + 'px' }}
+            onMouseLeave={() => { setMenu(null) }}
+          >
+            {items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                onClick={() => { runMenuAction(menu.serial, item.id) }}
+                className="flex w-full items-center px-3 py-1 text-left text-xs text-neutral-700 hover:bg-neutral-100"
+              >
+                {t(item.labelKey)}
+              </button>
+            ))}
+          </div>
+        )
+      })()}
       <div className="border-t border-neutral-300 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
         {tf('devices.summary', { total: summary.total, online: summary.online })}
       </div>

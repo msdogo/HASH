@@ -4,6 +4,7 @@ import { App } from './App'
 import { subscribeDeviceChanges } from './store/deviceStore'
 import { subscribeTransferChanges } from './store/transferStore'
 import { subscribeInstallLog } from './store/logStore'
+import { subscribeMirrorChanges } from './store/mirrorStore'
 import { exposeStoresForDebug } from './devtools'
 import './index.css'
 
@@ -20,10 +21,16 @@ const unsubscribeTransfers = subscribeTransferChanges()
  * 日志栏恰恰在最需要它的时候是空的。
  */
 const unsubscribeInstallLog = subscribeInstallLog()
+/*
+ * 投屏会话的订阅同样挂在这里：设备栏右键菜单要知道「这台是不是已经在投屏」，
+ * 而设备栏在每个页面都在 —— 挂在某个页面里等于切页就丢状态。
+ */
+const unsubscribeMirror = subscribeMirrorChanges()
 window.addEventListener('beforeunload', () => {
   unsubscribe()
   unsubscribeTransfers()
   unsubscribeInstallLog()
+  unsubscribeMirror()
 })
 
 createRoot(document.getElementById('root')!).render(
