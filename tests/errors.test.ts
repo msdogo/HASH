@@ -64,6 +64,14 @@ describe('共享错误码', () => {
       // 用 E_BAD_ARGS 会让用户去重启应用，而正确动作是点「停止录屏」或直接开始新的）
       'E_RECORD_ACTIVE',
       'E_NOT_RECORDING',
+      // scrcpy 投屏：启动失败 / 找不到组件 / 组件跑不起来 / 组件找不到 adb / 已在投屏。
+      // 四个都单列的理由：用户的修法各不相同（看日志 / 重装 / 查 DLL / 查内置 adb / 关窗口），
+      // 合并成 E_BAD_ARGS 只会把用户引向「重启应用」这条错路。
+      'E_MIRROR_START_FAILED',
+      'E_SCRCPY_NOT_FOUND',
+      'E_SCRCPY_NOT_EXECUTABLE',
+      'E_SCRCPY_NO_ADB',
+      'E_MIRROR_ACTIVE',
     ]
     for (const code of expected) expect(ERROR_CODES).toContain(code)
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length)

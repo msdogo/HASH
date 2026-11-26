@@ -132,6 +132,41 @@ export const E_RECORD_ACTIVE = 'E_RECORD_ACTIVE'
 export const E_NOT_RECORDING = 'E_NOT_RECORDING'
 
 /**
+ * scrcpy 投屏启动失败，且 stderr 里认不出已知原因。
+ *
+ * 为什么单列：投屏失败时用户最需要的是「看得到 scrcpy 说了什么」，
+ * 所以这条文案要提示去日志栏找原始输出，而不是只说「失败了」。
+ */
+export const E_MIRROR_START_FAILED = 'E_MIRROR_START_FAILED'
+
+/**
+ * 找不到 scrcpy 可执行文件。
+ *
+ * 与 E_SCRCPY_NO_ADB 分开：这条是「装没装」，那条是「装了但用的是别的 adb」，
+ * 用户的修法完全不同（重装应用 vs 检查 adb 配置）。
+ */
+export const E_SCRCPY_NOT_FOUND = 'E_SCRCPY_NOT_FOUND'
+
+/** scrcpy 找到了但跑不起来（缺 DLL / 被拦截 / 不是可执行文件）。 */
+export const E_SCRCPY_NOT_EXECUTABLE = 'E_SCRCPY_NOT_EXECUTABLE'
+
+/**
+ * scrcpy 启动时找不到可用的 adb（它自己起 adb server 失败了）。
+ *
+ * 本项目通过 ADB 环境变量把内置 adb 的绝对路径交给 scrcpy，
+ * 这条错误通常意味着那个路径上有问题（文件被删/被杀软隔离）。
+ */
+export const E_SCRCPY_NO_ADB = 'E_SCRCPY_NO_ADB'
+
+/**
+ * 这台设备已经在投屏中。
+ *
+ * 与 E_RECORD_ACTIVE 同一范式：重复点投屏是**操作顺序**问题，
+ * 不是内部错误 —— 文案要说「已经在投屏了」，而不是让用户重启应用。
+ */
+export const E_MIRROR_ACTIVE = 'E_MIRROR_ACTIVE'
+
+/**
  * 操作只完成了一部分（多文件移动/递归删除中途失败）。
  *
  * 与 E_OP_FAILED 分开：后者承诺「什么都没发生」，而部分完成时那句承诺是假话。
@@ -181,6 +216,12 @@ export const ERROR_CODES = [
   // P1：单机截图 / 录屏的两个状态码（录屏是长驻进程，必须有「已在录」与「没在录」）
   E_RECORD_ACTIVE,
   E_NOT_RECORDING,
+  // scrcpy 投屏（启动失败 / 找不到 / 跑不起来 / 找不到 adb / 已在投屏）
+  E_MIRROR_START_FAILED,
+  E_SCRCPY_NOT_FOUND,
+  E_SCRCPY_NOT_EXECUTABLE,
+  E_SCRCPY_NO_ADB,
+  E_MIRROR_ACTIVE,
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
