@@ -9,7 +9,15 @@
 - 上传 / 下载 / 新建文件夹 / 重命名 / 删除 / 复制 / 移动
 - 多选下载、全选；从资源管理器拖入上传、拖出下载
 - 传输队列与进度、并发控制（单设备 1 路、全局 3 路）
+- 单机截图 / 录屏（截图自动复制路径）
+- 应用管理：列出、详情、拉取 APK、安装、强制停止、清空数据、卸载、启动
+- **投屏（内嵌窗口 + 设备按键侧边栏）**：画面用 scrcpy 原生渲染后嵌进自绘窗口，
+  侧边栏六个键（返回 / 主页 / 后台 / 音量± / 电源）直接下发到设备；
+  多台设备可同时投屏，每台一个窗口
 - 设置页：默认下载路径、adb 状态、版本号
+
+> 投屏的入口有两个：文件页工具条的「投屏」按钮（作用于当前设备），
+> 以及**设备栏右键**某台设备（不改变当前选中，直接投那台）。
 
 ## 环境
 
@@ -17,13 +25,19 @@
 - Node.js 22+
 - USB 连接手机并开启 USB 调试
 
-内置 adb（`resources/platform-tools/`），无需另装 Android SDK。
+内置 adb（`resources/platform-tools/`）与 scrcpy（`resources/scrcpy/`），
+无需另装 Android SDK，也不需要单独安装 scrcpy。
+
+安装包约 **200 MB**（内置 adb ≈110 MB + 内置 scrcpy ≈17 MB + Electron 运行时）。
+选内置而不用「让用户自己装」的原因：投屏对 scrcpy 版本敏感（命令行参数跨大版本变过），
+随包分发的那份是唯一被验证过的一版。
 
 ## 快速开始
 
 ```bash
 npm ci
 npm run fetch-platform-tools   # 下载内置 adb，首次必需
+npm run fetch-scrcpy           # 下载内置 scrcpy（投屏用），首次必需
 npm run dev
 ```
 
@@ -34,6 +48,10 @@ npm run dist
 ```
 
 产物在 `release/`：NSIS 安装包 + 便携版。
+
+打包前会跑两道断言（`assert-platform-tools` / `assert-scrcpy`）：
+内置 adb 与内置 scrcpy 必须在位且能跑，否则中止 —— 缺任何一个都会打出一个
+「能装、能开、但投屏或设备列表报错」的包。
 
 ## 版本号
 

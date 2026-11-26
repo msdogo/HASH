@@ -1,5 +1,12 @@
 # scrcpy 投屏（嵌入窗口 + 侧边栏）实现计划
 
+> **状态（2026-11-26）：** 任务 1–10 已实现并提交。核心嵌入断言（窗口找到 / SetParent 成立 /
+> 宿主移动后子窗口跟随 / 尺寸跟随）已由 `docs/superpowers/spike/scrcpy-embed-production.md`
+> 的自动化冒烟覆盖 —— 跑的是**生产模块本体**，不是复刻。
+> 仍需人眼确认的项（DPI 切换后的点击落点、按键是否真的到达设备、双设备并存）
+> 如实登记在 `.superpowers/sdd/adb-file-manager/progress.md` 的「已知无门禁」清单里，
+> **不靠打勾冒充已验证**。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 subagent-driven-development（推荐）或 executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 在 HASH 里点「投屏」得到一个自绘窗口：左侧嵌入 scrcpy 实时画面，右侧竖排设备按键侧边栏。
@@ -54,7 +61,7 @@
 - 创建：`src/shared/mirror.ts`
 - 测试：`tests/mirror.test.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -106,12 +113,12 @@ describe('classifyScrcpyFailure', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/mirror.test.ts`
 预期：FAIL，报错 "Cannot find module '../src/shared/mirror'"
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ~~~ts
 /**
@@ -164,12 +171,12 @@ export function classifyScrcpyFailure(stderr: string): string {
 }
 ~~~
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`npx vitest run tests/mirror.test.ts`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add src/shared/mirror.ts tests/mirror.test.ts
@@ -184,7 +191,7 @@ git commit -m "feat: 投屏共享层类型与参数拼装"
 - 创建：`src/shared/device-key.ts`
 - 测试：`tests/device-key.test.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -217,12 +224,12 @@ describe('device-key', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/device-key.test.ts`
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ~~~ts
 /**
@@ -257,12 +264,12 @@ export function isDeviceKey(value: unknown): value is DeviceKey {
 }
 ~~~
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`npx vitest run tests/device-key.test.ts`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add src/shared/device-key.ts tests/device-key.test.ts
@@ -277,7 +284,7 @@ git commit -m "feat: 设备按键枚举与 KEYCODE 映射"
 - 创建：`electron/device/keys.ts`、`tests/device-keys.test.ts`
 - 修改：`src/shared/errors.ts`、`src/shared/i18n.ts`、`electron/ipc/channels.ts`、`src/shared/api-contract.ts`、`electron/ipc/handlers.ts`、`electron/preload.ts`、`src/shared/api.d.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect, vi } from 'vitest'
@@ -320,12 +327,12 @@ describe('key service', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/device-keys.test.ts`
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 ~~~ts
 import type { DeviceSession } from '../../src/shared/types'
@@ -376,12 +383,12 @@ export function createKeyService(deps: KeyServiceDeps): KeyService {
 }
 ~~~
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`npx vitest run tests/device-keys.test.ts`
 预期：PASS
 
-- [ ] **步骤 5：四件套接线 + 错误码**
+- [x] **步骤 5：四件套接线 + 错误码**
 
 在 `errors.ts` 登记 `E_MIRROR_START_FAILED` / `E_SCRCPY_NOT_FOUND` / `E_SCRCPY_NO_ADB` / `E_MIRROR_ACTIVE`，
 在 `i18n.ts` 补对应中文文案（`errors.test.ts` 会校验两表齐平）。
@@ -399,14 +406,14 @@ export type DeviceKeyeventInput = z.infer<typeof DEVICE_KEYEVENT_INPUT>
 在 `handlers.ts` 注册（沿用 `appsPreflight` 同款前置）；在 `preload.ts` 的 `buildApi` 里加
 `device: { pressKey }`，并在 `api.d.ts` 的 `DshApi` 上声明（**返回类型标注 + 字面量 satisfies 双保险**）。
 
-- [ ] **步骤 6：运行门禁**
+- [x] **步骤 6：运行门禁**
 
 运行：`npx tsc -b --force`
 预期：exit 0
 运行：`npx vitest run tests/api-contract-binding.test.ts tests/ipc-channels.test.ts`
 预期：PASS
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ~~~bash
 git add -A
@@ -420,7 +427,7 @@ git commit -m "feat: 设备按键服务与 IPC 通道"
 **文件：**
 - 创建：`electron/mirror/binary.ts`、`tests/mirror-binary.test.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -465,12 +472,12 @@ describe('locateScrcpy', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/mirror-binary.test.ts`
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 实现要点（完整代码写在实现时）：
 
@@ -480,12 +487,12 @@ describe('locateScrcpy', () => {
 3. 返回可判别联合 `{ ok: true, path, version, source } | { ok: false, code }`。
 4. 依赖全部注入（`exists` / `probe` / `pathEnv` / `pathext`），单测不需要真二进制。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`npx vitest run tests/mirror-binary.test.ts`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add electron/mirror/binary.ts tests/mirror-binary.test.ts
@@ -499,7 +506,7 @@ git commit -m "feat: scrcpy 定位与版本自检"
 **文件：**
 - 创建：`electron/mirror/runner.ts`、`electron/mirror/service.ts`、`tests/mirror-service.test.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -566,12 +573,12 @@ describe('mirror service', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/mirror-service.test.ts`
 预期：FAIL
 
-- [ ] **步骤 3：编写最少实现代码**
+- [x] **步骤 3：编写最少实现代码**
 
 实现要点：
 
@@ -585,16 +592,16 @@ describe('mirror service', () => {
 4. `stopAll()` 供 `before-quit` 调用（dispose）。
 5. `emit` 三种事件：`started` / `exited` / `failed`。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`npx vitest run tests/mirror-service.test.ts`
 预期：PASS
 
-- [ ] **步骤 5：变异验证（必做）**
+- [x] **步骤 5：变异验证（必做）**
 
 把 `buildScrcpyArgs` 里的 `'-s', serial` 删掉 → 定向用例必须变红。记录实际数字。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ~~~bash
 git add -A
@@ -609,7 +616,7 @@ git commit -m "feat: 投屏服务与会话生命周期"
 - 修改：`electron/ipc/channels.ts`、`src/shared/api-contract.ts`、`electron/ipc/handlers.ts`、`electron/preload.ts`、`src/shared/api.d.ts`
 - 测试：`tests/mirror-ipc.test.ts`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -624,24 +631,24 @@ describe('mirror ipc contract', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`npx vitest run tests/mirror-ipc.test.ts`
 预期：FAIL
 
-- [ ] **步骤 3：实现四件套**
+- [x] **步骤 3：实现四件套**
 
 通道：`MIRROR_START` / `MIRROR_STOP` / `MIRROR_LIST`（invoke）+ `MIRROR_CHANGED`（event）。
 zod：`MIRROR_START_INPUT = z.object({ serial: z.string().min(1) })`、`MIRROR_STOP_INPUT` 同形。
 handler 前置沿用 `capturePreflight`（zod + 会话存在 + adb 已定位）。
 `DshApi.mirror = { start, stop, list, onChanged }`。
 
-- [ ] **步骤 4：运行门禁**
+- [x] **步骤 4：运行门禁**
 
 运行：`npx tsc -b --force` → exit 0
 运行：`npx vitest run tests/mirror-ipc.test.ts tests/api-contract-binding.test.ts tests/ipc-channels.test.ts` → PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add -A
@@ -656,7 +663,7 @@ git commit -m "feat: 投屏 IPC 通道与契约"
 - 创建：`src/shared/mirror-view.ts`、`src/store/mirrorStore.ts`、`tests/mirror-view.test.ts`
 - 修改：`src/components/DeviceRail.tsx`、`src/components/FileToolbar.tsx`、`src/pages/FilesPage.tsx`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -678,18 +685,18 @@ describe('mirrorButtonState', () => {
 })
 ~~~
 
-- [ ] **步骤 2：运行测试验证失败 → 实现 → 验证通过**
+- [x] **步骤 2：运行测试验证失败 → 实现 → 验证通过**
 
 实现 `mirrorButtonState` 四态纯函数，再在工具条加「投屏」按钮、设备栏行加右键菜单项。
 接线仍按本项目惯例登记进 progress.md 的「已知无门禁清单」（SSR 拿不到 onClick）。
 
-- [ ] **步骤 3：运行门禁**
+- [x] **步骤 3：运行门禁**
 
 运行：`npx tsc -b --force` → exit 0
 运行：`npx vitest run tests/mirror-view.test.ts` → PASS
 运行：`npm run build` → exit 0
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ~~~bash
 git add -A
@@ -704,7 +711,7 @@ git commit -m "feat: 投屏入口与按钮状态"
 - 创建：`scripts/fetch-scrcpy.mjs`、`scripts/assert-scrcpy.mjs`、`scripts/before-pack-scrcpy.cjs`
 - 修改：`electron-builder.json`、`package.json`、`.gitignore`
 
-- [ ] **步骤 1：编写 fetch 脚本**
+- [x] **步骤 1：编写 fetch 脚本**
 
 要点（对齐既有 `fetch-platform-tools.mjs` 的风格）：
 
@@ -717,12 +724,12 @@ git commit -m "feat: 投屏入口与按钮状态"
 - 资产名不匹配 → 打印手动放置指引并 `exit 1`，**绝不静默通过**（这是任务 11 踩过的同款坑）。
 - 支持离线：`ADB_SCREENSYNC_ZIP=<本地 zip>`。
 
-- [ ] **步骤 2：编写 assert 脚本**
+- [x] **步骤 2：编写 assert 脚本**
 
 断言 `resources/scrcpy/scrcpy.exe` **能跑**（`--version` 退出 0 且输出含版本行），
 不是「文件存在」。失败信息要写清「为什么构建必须停」。
 
-- [ ] **步骤 3：接进构建链**
+- [x] **步骤 3：接进构建链**
 
 - `package.json`：`fetch-scrcpy` / `assert-scrcpy` 两个脚本，并插进 `dist` 链（fetch → assert-platform-tools → **fetch-scrcpy → assert-scrcpy** → assert-version → build → electron-builder）。
 - `electron-builder.json`：`extraResources` 加 `{ "from": "resources/scrcpy", "to": "scrcpy" }`；
@@ -730,13 +737,13 @@ git commit -m "feat: 投屏入口与按钮状态"
 - `.gitignore`：加 `resources/scrcpy/`。
 - `before-pack-scrcpy.cjs`：在 `beforePack` 里再断言一次（覆盖直接跑 `npx electron-builder` 的旁路）。
 
-- [ ] **步骤 4：验证**
+- [x] **步骤 4：验证**
 
 运行：`npm run fetch-scrcpy` → 产物就位
 运行：`npm run assert-scrcpy` → exit 0
 运行：`npm run dist` → exit 0，安装包内 `resources/scrcpy/scrcpy.exe` 存在
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add -A
@@ -751,12 +758,12 @@ git commit -m "build: 打包内置 scrcpy 并加构建闸门"
 - 创建：`electron/mirror/embed.ts`、`tests/mirror-embed.test.ts`
 - 修改：`package.json`（`koffi` 依赖）
 
-- [ ] **步骤 1：安装 koffi**
+- [x] **步骤 1：安装 koffi**
 
 运行：`npm i koffi`
 预期：`node_modules/@koromix/koffi-win32-x64` 就位
 
-- [ ] **步骤 2：编写失败的测试（纯逻辑部分）**
+- [x] **步骤 2：编写失败的测试（纯逻辑部分）**
 
 ~~~ts
 import { describe, it, expect } from 'vitest'
@@ -778,7 +785,7 @@ describe('embed geometry', () => {
 })
 ~~~
 
-- [ ] **步骤 3：运行测试验证失败 → 实现 → 验证通过**
+- [x] **步骤 3：运行测试验证失败 → 实现 → 验证通过**
 
 `embed.ts` 的 Win32 部分用 `koffi`：
 
@@ -827,7 +834,7 @@ function makeChild(hwnd: number): void {
 **验收断言**：嵌入后 `GetParent(child) === parentHwnd`；宿主移动后子窗口矩形跟着变。
 这两条写进真机验证清单（任务 11）。
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ~~~bash
 git add -A
@@ -842,7 +849,7 @@ git commit -m "feat: Win32 窗口嵌入层"
 - 创建：`src/components/MirrorWindow.tsx`、`src/components/MirrorSidebar.tsx`、`src/shared/mirror-view.ts`（扩展）、`tests/mirror-sidebar.test.tsx`
 - 修改：`src/App.tsx`、`electron/main.ts`（开窗口）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ~~~tsx
 import { describe, it, expect } from 'vitest'
@@ -862,7 +869,7 @@ describe('MirrorSidebar', () => {
 })
 ~~~
 
-- [ ] **步骤 2~4：实现 → 验证**
+- [x] **步骤 2~4：实现 → 验证**
 
 - `MirrorWindow.tsx`：自绘顶栏（标题 = `mirrorTitleOf`，右侧复用 `WindowControls`），
   主体 `flex`：左侧 `flex-1` 是嵌入区（**留空 div**，HWND 盖在上面），右侧 `MirrorSidebar` 固定 56px。
@@ -870,7 +877,7 @@ describe('MirrorSidebar', () => {
 - `main.ts` 加 `openMirrorWindow(serial)`：`new BrowserWindow({ frame: false, width: 1200, height: 800 })`，
   `loadURL(APP_ENTRY_URL + '#/mirror?serial=' + encodeURIComponent(serial))`。
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ~~~bash
 git add -A
@@ -884,25 +891,28 @@ git commit -m "feat: 投屏窗口与按键侧边栏"
 **文件：**
 - 修改：`electron/main.ts`、`electron/mirror/service.ts`、`electron/mirror/embed.ts`
 
-- [ ] **步骤 1：实现**
+- [x] **步骤 1：实现**
 
 - 投屏窗口 `resize` / `maximize` / `restore` → 重算 `fitRect` → `MoveWindow`。
 - `scaleFactor` 用 `screen.getDisplayMatching(win.getBounds()).scaleFactor` 现取（用户可能拖到另一块屏）。
 - 窗口 `closed` → `service.stop(serial)`。
 - scrcpy 退出 → 渲染层收 `MIRROR_CHANGED` → 嵌入区显示错误态（不是黑块）。
 
-- [ ] **步骤 2：真机验证清单**
+- [x] **步骤 2：真机验证清单**
+
+> 以下 8 条是**人眼/真机**验收项，自动化冒烟覆盖不到（详见 progress.md 的「已知无门禁」）。
+> 保持未勾状态是如实记录，不是遗漏。
 
 - [ ] 点投屏 → 窗口出现，画面在左、按键在右，不重叠
 - [ ] 拖动窗口到另一块屏（不同 DPI）→ 画面不错位、点击落点准确
-- [ ] 最大化 / 还原 → 画面跟随
+- [x] 最大化 / 还原 → 画面跟随（已由生产模块冒烟覆盖：setContentBounds 后 follows=true）
 - [ ] 点侧边栏「返回」→ 设备真的返回
 - [ ] 拔线 → 窗口显示错误态、不崩溃
 - [ ] 关闭投屏窗口 → scrcpy 进程消失
 - [ ] 关闭整个应用 → 系统进程表**无 scrcpy.exe 残留**
 - [ ] 两台设备同时投屏 → 两个窗口互不干扰
 
-- [ ] **步骤 3：Commit**
+- [x] **步骤 3：Commit**
 
 ~~~bash
 git add -A
@@ -913,16 +923,20 @@ git commit -m "feat: 投屏窗口几何协同与崩溃态"
 
 ### 任务 12：文档与收尾
 
-- [ ] README 功能清单加「投屏（内嵌窗口 + 设备按键侧边栏）」
-- [ ] README「环境」注明安装包 ≈200 MB（含内置 scrcpy）
-- [ ] progress.md 新增本轮小节，登记「已知无门禁清单」新增条目：
+- [x] README 功能清单加「投屏（内嵌窗口 + 设备按键侧边栏）」
+- [x] README「环境」注明安装包 ≈200 MB（含内置 scrcpy）
+- [x] progress.md 新增本轮小节，登记「已知无门禁清单」新增条目：
   - koffi 的 Win32 调用（需要真窗口，vitest 跑不了）
   - 侧边栏 onClick 接线（SSR 拿不到事件，与既有条目同类）
   - 窗口 resize → MoveWindow 的接线
-- [ ] `npx tsc -b --force` exit 0 / `npx vitest run` 全绿 / `npm run build` exit 0
-- [ ] Commit
+- [x] `npx tsc -b --force` exit 0 / `npx vitest run` 全绿 / `npm run build` exit 0
+- [x] Commit
 
 ## 验收清单
+
+> 验收清单整体**尚未执行**：需要在装了正式包的干净机器上做一遍。
+> 已确认的是构建链（assert-scrcpy 通过）与嵌入链路（生产模块冒烟通过），
+> 两者都不等于「最终用户视角跑通」。
 
 - [ ] 插入设备 → 点投屏 → 3 秒内出现内嵌画面
 - [ ] 侧边栏六个按键全部生效
