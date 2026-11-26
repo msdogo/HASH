@@ -6,6 +6,9 @@ import type { BatchRunData } from './batch'
 import type { DragOutFailure, DragOutProgress } from './drag'
 import type { SettingsData } from './settings'
 import type { CaptureResult, RecordStarted } from './capture'
+import type { AppDetail, AppEntry, InstallProgress } from './apps'
+import { DEVICE_KEYS } from './device-key'
+import type { MirrorEvent, MirrorSession } from './mirror'
 
 /**
  * IPC API 契约的【单一事实源】（审查轮 1 / I3、I4）。
@@ -384,10 +387,85 @@ export const CAPTURE_RECORD_STOP_INPUT = z.object({
 
 export type CaptureRecordStopInput = z.infer<typeof CAPTURE_RECORD_STOP_INPUT>
 
+/* ============ P1 第二批：应用管理 ============ */
+
+/**
+ * 应用管理的入参。
+ *
+ * 包名在这里只做「非空字符串」这一层的最小约束：
+ * 真正的合法性（是否像一个 Android 包名）由主进程的 isSafePackageName 判 ——
+ * 那是**安全闸门**（拼进 shell 命令之前必须过），不是入参形状问题。
+ * 放在 zod 里会让渲染层拿到一个「参数不合法」的内部错误码，而用户真正该看到的是
+ * 「这个包名不能用」。
+ */
+export const APPS_LIST_INPUT = z.object({ serial: z.string().min(1) })
+export const APPS_DETAIL_INPUT = z.object({ serial: z.string().min(1), packageName: z.string().min(1) })
+export const APPS_PULL_APK_INPUT = z.object({
+  serial: z.string().min(1),
+  packageName: z.string().min(1),
+  /** 空串 = 用设置里的默认下载路径。 */
+  dstDir: z.string(),
+})
+export const APPS_INSTALL_INPUT = z.object({ serial: z.string().min(1), apkPath: z.string().min(1) })
+export const APPS_PACKAGE_INPUT = z.object({ serial: z.string().min(1), packageName: z.string().min(1) })
+
+export type AppsListInput = z.infer<typeof APPS_LIST_INPUT>
+export type AppsDetailInput = z.infer<typeof APPS_DETAIL_INPUT>
+export type AppsPullApkInput = z.infer<typeof APPS_PULL_APK_INPUT>
+export type AppsInstallInput = z.infer<typeof APPS_INSTALL_INPUT>
+export type AppsPackageInput = z.infer<typeof APPS_PACKAGE_INPUT>
+
+/* ============ 设备按键 + scrcpy 投屏 ============ */
+
+/**
+ * device:keyevent 入参。
+ *
+ * key 用 z.enum(DEVICE_KEYS) —— **枚举而非字符串**是本通道的安全本体：
+ * 它让「渲染层传一条 adb 命令进来」在 zod 层就被拒，
+ * 主进程随即用 keyCodeOf 把枚举翻成数字码，全程没有拼接。
+ */
+export const DEVICE_KEYEVENT_INPUT = z.object({
+  serial: z.string().min(1),
+  key: z.enum(DEVICE_KEYS),
+})
+
+export type DeviceKeyeventInput = z.infer<typeof DEVICE_KEYEVENT_INPUT>
+
+/** mirror:start 入参。 */
+export const MIRROR_START_INPUT = z.object({ serial: z.string().min(1) })
+export type MirrorStartInput = z.infer<typeof MIRROR_START_INPUT>
+
+/** mirror:stop 入参（与 start 同形：只需要 serial）。 */
+export const MIRROR_STOP_INPUT = z.object({ serial: z.string().min(1) })
+export type MirrorStopInput = z.infer<typeof MIRROR_STOP_INPUT>
+
+/** mirror:list 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
+export const MIRROR_LIST_INPUT = z.unknown()
+
 export interface DshApi {
   app: {
     /** 桥是否活着。 */
     ping(): string
+  }
+  /**
+   * 窗口控制（自绘顶栏）。
+   *
+   * 窗口是 frame:false 建的 —— 系统标题栏与它的三个按钮都不存在了，
+   * 所以最小化 / 最大化 / 关闭必须由界面自己提供，并回到主进程执行。
+   */
+  window: {
+    /** 最小化到任务栏。 */
+    minimize(): Promise<IpcResult<void>>
+    /** 最大化 ↔ 还原（同一个按钮）；返回切换后的状态。 */
+    toggleMaximize(): Promise<IpcResult<boolean>>
+    /** 关闭窗口 —— 也就是退出应用（没有托盘驻留）。 */
+    close(): Promise<IpcResult<void>>
+    /** 当前是否最大化（窗口刚打开时选图标用）。 */
+    isMaximized(): Promise<IpcResult<boolean>>
+    /** 打开（或聚焦）设置子窗口 —— 设置不是主窗口内的一页。 */
+    openSettings(): Promise<IpcResult<void>>
+    /** 订阅最大化状态变化；返回退订函数。 */
+    onMaximizedChanged(callback: (maximized: boolean) => void): Unsubscribe
   }
   devices: {
     /** 取设备表 + adb 自检状态（含首屏与迟到订阅者的自愈入口）。 */
@@ -558,6 +636,56 @@ export interface DshApi {
     recordStart(payload: CaptureRecordStartInput): Promise<IpcResult<RecordStarted>>
     /** 停止录屏并把 mp4 拉回本地。没有在录时返回 E_NOT_RECORDING。 */
     recordStop(payload: CaptureRecordStopInput): Promise<IpcResult<CaptureResult>>
+  }
+  /* ---- P1 第二批：应用管理 ---- */
+  apps: {
+    /** 列出第三方应用（一条 pm list，含 versionCode）。 */
+    list(payload: AppsListInput): Promise<IpcResult<AppEntry[]>>
+    /** 单个应用详情（逐包 dumpsys；只在展开时调）。 */
+    detail(payload: AppsDetailInput): Promise<IpcResult<AppDetail>>
+    /** 把 APK 拉到本地（split APK 全部拉）。 */
+    pullApk(payload: AppsPullApkInput): Promise<IpcResult<{ packageName: string; files: string[] }>>
+    /** 安装本地 APK（adb install -r）。 */
+    install(payload: AppsInstallInput): Promise<IpcResult<void>>
+    /** 强制停止。 */
+    forceStop(payload: AppsPackageInput): Promise<IpcResult<void>>
+    /** 清空数据（不可逆）。 */
+    clearData(payload: AppsPackageInput): Promise<IpcResult<void>>
+    /** 卸载（不可逆）。 */
+    uninstall(payload: AppsPackageInput): Promise<IpcResult<void>>
+    /** 启动（monkey LAUNCHER 意图）。 */
+    launch(payload: AppsPackageInput): Promise<IpcResult<void>>
+    /** 弹出文件选择框挑一个 .apk；取消返回空串。 */
+    pickApk(): Promise<IpcResult<string>>
+    /**
+     * 订阅安装进度。
+     *
+     * 为什么是事件而不是 invoke 的返回值：装一个 150 MB 的包要几十秒，
+     * 而 IPC 的 invoke 只给一个最终结果 —— 期间用户看不到任何东西。
+     * 进度走单向推送（与传输队列同一套模式）。
+     */
+    onInstallProgress(callback: (payload: InstallProgress) => void): () => void
+  }
+  /* ---- 设备按键（投屏侧边栏用） ---- */
+  device: {
+    /**
+     * 给一台设备发一次按键。
+     *
+     * 入参的 key 是六个枚举之一（back/home/recents/volumeUp/volumeDown/power），
+     * 不是数字也不是命令 —— 这是把「按键」与「任意 shell」彻底分开的那条线。
+     */
+    pressKey(payload: DeviceKeyeventInput): Promise<IpcResult<void>>
+  }
+  /* ---- scrcpy 投屏（P1 第三批） ---- */
+  mirror: {
+    /** 开始投屏；已在该设备上投屏时返回已有会话（幂等）。 */
+    start(payload: MirrorStartInput): Promise<IpcResult<MirrorSession>>
+    /** 结束投屏；没有会话时是安全空操作。 */
+    stop(payload: MirrorStopInput): Promise<IpcResult<void>>
+    /** 当前全部会话（多设备并行）。 */
+    list(): Promise<IpcResult<MirrorSession[]>>
+    /** 订阅会话变化；返回退订函数。 */
+    onChanged(callback: (event: MirrorEvent) => void): Unsubscribe
   }
 }
 

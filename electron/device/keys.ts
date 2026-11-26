@@ -24,6 +24,9 @@ export interface KeyServiceDeps {
   adbPath: () => string
 }
 
+/** IPC 层引用的别名（与 capture/apps 的 *Controller 命名保持一致的读法）。 */
+export type KeyController = KeyService
+
 export interface KeyService {
   /** 给某台设备发一次按键；失败抛带错误码的 Error（IPC 层收敛成 IpcResult）。 */
   press(serial: string, key: DeviceKey): Promise<void>

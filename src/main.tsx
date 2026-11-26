@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { subscribeDeviceChanges } from './store/deviceStore'
 import { subscribeTransferChanges } from './store/transferStore'
+import { subscribeInstallLog } from './store/logStore'
 import { exposeStoresForDebug } from './devtools'
 import './index.css'
 
@@ -12,9 +13,17 @@ exposeStoresForDebug()
 
 const unsubscribe = subscribeDeviceChanges()
 const unsubscribeTransfers = subscribeTransferChanges()
+/*
+ * 安装日志的订阅必须挂在**这里**而不是应用页里：
+ * 切页会卸载应用页（见 App.tsx 的三页互斥渲染注释），
+ * 而安装一个包要几十秒 —— 挂页面里就意味着切走之后进度与结果全丢，
+ * 日志栏恰恰在最需要它的时候是空的。
+ */
+const unsubscribeInstallLog = subscribeInstallLog()
 window.addEventListener('beforeunload', () => {
   unsubscribe()
   unsubscribeTransfers()
+  unsubscribeInstallLog()
 })
 
 createRoot(document.getElementById('root')!).render(

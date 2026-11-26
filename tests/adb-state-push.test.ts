@@ -1,10 +1,13 @@
+import { stubMirrorDeps } from './helpers/mirror-stubs'
 import { describe, it, expect } from 'vitest'
+import { fakeWindow } from './fake-window'
 import { DeviceManager } from '../electron/devices/manager'
 import { AdbTracking } from '../electron/app/sessions'
 import { createDeviceChangeHub } from '../electron/ipc/throttle'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
 import { fakeLocalController } from './fake-local'
 import { fakeCapture } from './fake-capture'
+import { fakeApps } from './fake-apps'
 
 function silentChild(): unknown {
   return {
@@ -176,6 +179,15 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
         },
         // P1：本文件不测截图/录屏，空壳只为满足 HandlerDeps
         capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
+    emitInstallProgress: () => undefined,
         // 本文件不测拖拽：空壳只为满足 HandlerDeps（拖拽有 tests/drag-*.test.ts）
         drag: { dragOut: async () => ({ ok: true }) },
         // 本文件不测传输：给一个空壳，只为满足 HandlerDeps（传输有专门的 tests/transfer-*.test.ts）

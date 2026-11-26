@@ -67,6 +67,9 @@ export interface MirrorServiceDeps {
   now?: () => number
 }
 
+/** IPC 层引用的别名（与 capture/apps 的 *Controller 命名保持一致的读法）。 */
+export type MirrorController = MirrorService
+
 export interface MirrorService {
   /** 开始投屏；已在投屏则直接返回已有会话（幂等，不 spawn 第二个）。 */
   start(serial: string): Promise<MirrorSession>

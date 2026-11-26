@@ -1,63 +1,73 @@
 import { describe, it, expect } from 'vitest'
-import { pageAfterSelectDevice, pageAfterSettingsClick, type Page } from '../src/shared/nav'
+import {
+  PAGES,
+  pageAfterAppsClick,
+  pageAfterSelectDevice,
+  settingsClickOpensWindow,
+  type Page,
+} from '../src/shared/nav'
 import { t } from '../src/shared/i18n'
 
 /*
- * R3-1（用户实测缺陷：设置页进得去出不来）的**行为门禁**。
+ * 页面路由的行为门禁。
  *
- * 组件的 onClick 在 SSR 下观测不到（工程无 jsdom），所以「点完之后去哪一页」这个
+ * 组件的 onClick 在 SSR 下观测不到（工程无 jsdom），所以「点完之后去哪」这个
  * **决定**被抽成 src/shared/nav.ts 的纯函数，由这里直接驱动。
  * 「onClick 那一行有没有调它」仍然只能靠 code review —— 已如实登记进
  * progress.md 的「已知无门禁清单」，不造假文本断言。
  */
 
-const PAGES: Page[] = ['files', 'overview', 'settings']
-
-describe('R3-1：点设备必须回到文件页（修前：点了还在设置页）', () => {
-  it('在设置页点设备 → 文件页（缺陷本体）', () => {
-    expect(pageAfterSelectDevice('settings')).toBe('files')
-  })
-
+describe('点设备必须回到文件页（R3-1 的缺陷本体）', () => {
   it('在任何一页点设备的目标都一致（与当前页无关）', () => {
-    // 三个入口逐一代入：写死 'files' 与「按当前页算」在这里都会通过，
-    // 但下一组「设置页 → files」会拦住「设置页点设备不动」的那种退化。
     for (const page of PAGES) expect(pageAfterSelectDevice(page), page).toBe('files')
   })
 
-  it('反向自证：设备点击的目标不能是设置页（否则缺陷原样复发）', () => {
-    for (const page of PAGES) expect(pageAfterSelectDevice(page), page).not.toBe('settings')
+  it('反向自证：设备点击的目标在任何一页都不是非文件页', () => {
+    for (const page of PAGES) expect(pageAfterSelectDevice(page), page).not.toBe(page === 'files' ? 'apps' : page)
   })
 })
 
-describe('R3-1：顶栏「⚙设置」是 toggle（再点一次回到文件页）', () => {
-  it('不在设置页 → 进设置页', () => {
-    expect(pageAfterSettingsClick('files')).toBe('settings')
-    expect(pageAfterSettingsClick('overview')).toBe('settings')
+/*
+ * 设置改成独立窗口之后，这条判断的语义变了：**它不再改变当前页**。
+ *
+ * 以前是 toggle（设置页 ↔ 文件页），用户抱怨「进得去出不来」；
+ * 现在点设置只开一个子窗口，主窗口停在原地 —— 所以这里要钉住的恰恰是
+ * 「无论在哪一页，page 都不变」。写死成切页会让主窗口在开窗的同时跳走。
+ */
+describe('点设置只开窗口，不切页', () => {
+  it('每一页都返回同一个 page（当前页不变）', () => {
+    for (const page of PAGES) expect(settingsClickOpensWindow(page).page, page).toBe(page)
   })
 
-  it('已在设置页 → 回文件页（第三个出口）', () => {
-    expect(pageAfterSettingsClick('settings')).toBe('files')
+  it('每一页都要求开窗口（否则点了没反应）', () => {
+    for (const page of PAGES) expect(settingsClickOpensWindow(page).openWindow, page).toBe(true)
   })
 
-  /*
-   * 从文件页 / 设置页出发，连点两次回到出发页（自反）。
-   * 从总览页出发不成立：设置页的出口**固定是文件页**（本应用只有 3 页、不做 history 栈），
-   * 所以 overview → settings → files。这是规格要求的语义，如实断言，不写成「自反」。
-   */
-  it('从文件页/设置页连点两次回到出发页（自反）', () => {
-    for (const page of ['files', 'settings'] as Page[]) {
-      expect(pageAfterSettingsClick(pageAfterSettingsClick(page)), page).toBe(page)
-    }
-  })
-
-  it('从总览页连点两次落到文件页（设置页的出口固定是文件页，不做 history 栈）', () => {
-    expect(pageAfterSettingsClick(pageAfterSettingsClick('overview'))).toBe('files')
+  it('设置不再是 Page 的成员（它已经是独立窗口，不该还能切进去）', () => {
+    expect(PAGES as readonly string[]).not.toContain('settings')
   })
 })
 
-describe('R3-1：设置页返回按钮的文案走 i18n', () => {
-  it('settings.back 有真文案（未注册的 key 会原样返回）', () => {
-    expect(t('settings.back')).not.toBe('settings.back')
-    expect(t('settings.back')).toMatch(/[\u4e00-\u9fff]/)
+describe('点应用页签去应用页（不是 toggle）', () => {
+  it('任何一页点它都落到应用页', () => {
+    for (const page of PAGES) expect(pageAfterAppsClick(page), page).toBe('apps')
+  })
+
+  it('已在应用页再点一次没有副作用（仍然停在应用页）', () => {
+    expect(pageAfterAppsClick('apps')).toBe('apps')
+  })
+})
+
+describe('页面枚举自身', () => {
+  it('PAGES 覆盖 Page 的全部取值（新增一页时遍历型用例自动跟上）', () => {
+    const expected: Page[] = ['files', 'overview', 'apps']
+    expect([...PAGES].sort()).toEqual([...expected].sort())
+  })
+})
+
+describe('设置窗口的文案走 i18n', () => {
+  it('settings.title 有真文案（未注册的 key 会原样返回）', () => {
+    expect(t('settings.title')).not.toBe('settings.title')
+    expect(t('settings.title')).toMatch(/[\u4e00-\u9fff]/)
   })
 })

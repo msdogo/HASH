@@ -3,19 +3,21 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { App } from '../src/App'
 import { SettingsPage } from '../src/pages/SettingsPage'
+import { SettingsWindow } from '../src/components/SettingsWindow'
 import { t } from '../src/shared/i18n'
-import type { Page } from '../src/shared/nav'
+import { PAGES, type Page } from '../src/shared/nav'
 import type { SettingsData } from '../src/shared/settings'
 
 /*
- * R3-1 的**渲染期**门禁：页面路由与设置页出口。
+ * 渲染期的页面路由门禁。
  *
- * 为什么能测：App 支持 initial.page 注入（与 DeviceRail 的 initial 同一手法）。
- * 当前在哪一页本来是 useState 内部状态，SSR 只有一次 render，不能「点一下再断言」；
- * 注入起始页之后，「page → 真的渲染了那一页」与「在设置页时顶栏按钮高亮」都有了
- * 可复现的判据 —— 判据是用户看得见的 HTML，不是源码文本。
+ * 为什么能测：App 支持 initial.page / initial.settingsWindow 注入
+ * （与 DeviceRail 的 initial 同一手法）。当前在哪一页本来是 useState 内部状态，
+ * SSR 只有一次 render，不能「点一下再断言」；注入之后，
+ * 「page → 真的渲染了那一页」与「#/settings → 渲染设置窗口」都有了可复现判据 ——
+ * 判据是用户看得见的 HTML，不是源码文本。
  *
- * onClick 里那几行接线（点设备 / 点设置 / 点返回）仍然观测不到，已如实登记
+ * onClick 里那几行接线（点设备 / 点设置）仍然观测不到，已如实登记在
  * progress.md「已知无门禁清单」，本文件不编造 toContain(源码) 断言。
  */
 
@@ -26,20 +28,34 @@ const SETTINGS: SettingsData = {
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/platform-tools/adb.exe', version: '1.0.41' },
 }
 
-/** 三页各自的「只可能在这一页出现」的标记（由实测渲染输出确定，不是猜的）。 */
+/** 各页的「只可能在这一页出现」的标记（由实测渲染输出确定，不是猜的）。 */
 const MARK: Record<Page, string> = {
   // 文件页：没有设备时的占位文案（只有 FilesPage 渲染它，DeviceRail 不渲染）
   files: t('devices.selectHint'),
   // 总览页：批量操作标题
   overview: t('batch.title'),
-  // 设置页：页面根节点的 data-testid（R2-2 起就有）
-  settings: 'data-testid="settings-page"',
+  /*
+   * 应用页（P1 第二批）。
+   *
+   * 用「没有设备时的占位文案」作标记：它与文件页的 devices.selectHint 不同，
+   * 且只有 AppsPage 会渲染它。标记必须互不重复，否则分不清渲染了哪一页。
+   */
+  apps: t('apps.noDevice'),
 }
 
 function appHtml(page: Page): string {
-  return renderToStaticMarkup(React.createElement(App as unknown as (p: { initial?: { page?: Page } }) => React.ReactElement, {
-    initial: { page },
-  }))
+  return renderToStaticMarkup(React.createElement(
+    App as unknown as (p: { initial?: { page?: Page; settingsWindow?: boolean } }) => React.ReactElement,
+    { initial: { page } },
+  ))
+}
+
+/** 按 hash 分流的「设置窗口」形态。 */
+function settingsWindowHtml(): string {
+  return renderToStaticMarkup(React.createElement(
+    App as unknown as (p: { initial?: { settingsWindow?: boolean } }) => React.ReactElement,
+    { initial: { settingsWindow: true } },
+  ))
 }
 
 /** 取某个按钮的**整段**HTML（开标签 + 内容 + 闭标签），按文案定位。 */
@@ -54,8 +70,7 @@ function buttonByText(html: string, text: string): string {
  * 按钮里**真的看得见**的文本（标签之间那部分）。
  *
  * 为什么要剥出内容再判：title / aria-label 里也有同样的字，
- * 直接用 buttonByText 的 includes 会把「按钮上没字、只有 tooltip」也算通过 ——
- * 本项目已多次栽在「断言命中的是别处文字」这类无牙判据上。
+ * 直接用 includes 会把「按钮上没字、只有 tooltip」也算通过。
  */
 function buttonInner(button: string): string {
   const open = button.indexOf('>')
@@ -64,100 +79,150 @@ function buttonInner(button: string): string {
   return button.slice(open + 1, close)
 }
 
-describe('R3-1：App 的 page 状态真的决定渲染哪一页', () => {
-  it('page=files → 渲染文件页（不是设置页/总览页）', () => {
-    const html = appHtml('files')
-    expect(html).toContain(MARK.files)
-    expect(html).not.toContain(MARK.settings)
-    expect(html).not.toContain(MARK.overview)
-  })
-
-  it('page=overview → 渲染总览页', () => {
-    const html = appHtml('overview')
-    expect(html).toContain(MARK.overview)
-    expect(html).not.toContain(MARK.settings)
-    expect(html).not.toContain(MARK.files)
-  })
-
-  it('page=settings → 渲染设置页（而不是永远渲染文件页）', () => {
-    const html = appHtml('settings')
-    expect(html).toContain(MARK.settings)
-    expect(html).not.toContain(MARK.files)
-    expect(html).not.toContain(MARK.overview)
+describe('App 的 page 状态真的决定渲染哪一页', () => {
+  it('每一页只渲染自己（标记互不串台）', () => {
+    for (const page of PAGES) {
+      const html = appHtml(page)
+      expect(html, page).toContain(MARK[page])
+      for (const other of PAGES) {
+        if (other === page) continue
+        expect(html, page + ' 不该包含 ' + other).not.toContain(MARK[other])
+      }
+    }
   })
 
   it('生产路径：不传 initial → 首屏是文件页（与改前一致）', () => {
     const html = renderToStaticMarkup(React.createElement(App))
     expect(html).toContain(MARK.files)
-    expect(html).not.toContain(MARK.settings)
   })
-})
 
-describe('R3-1：顶栏「⚙设置」按钮的高亮跟着 page 走（toggle 的可见面）', () => {
   /*
-   * 高亮类必须带**前后空格**再匹配：未选中的那一支是 hover:bg-neutral-200/70，
-   * 直接用 includes('bg-neutral-200') 会永远为真（本项目反复踩过的无牙断言形态）。
+   * 设置不再是主窗口内的一页 —— 这条断言守的是「别把它又加回去」。
+   * 加回去的后果：主窗口里又出现一个占满内容区的设置页，
+   * 而设置窗口同时也存在，用户会看到两个设置界面。
    */
-  const ACTIVE = ' bg-neutral-200 '
-
-  it('在设置页时该按钮是高亮态', () => {
-    expect(buttonByText(appHtml('settings'), t('nav.settings'))).toContain(ACTIVE)
-  })
-
-  it('不在设置页时该按钮不高亮（高亮不会永远为真）', () => {
-    for (const page of ['files', 'overview'] as Page[]) {
-      expect(buttonByText(appHtml(page), t('nav.settings')), page).not.toContain(ACTIVE)
+  it('主窗口的任何一页都不渲染设置页', () => {
+    for (const page of PAGES) {
+      expect(appHtml(page), page).not.toContain('data-testid="settings-page"')
     }
   })
+})
 
-  it('对照：设置页高亮的同时，「当前设备」页签不高亮（证明高亮判定确实在跟着 page 变）', () => {
-    const html = appHtml('settings')
-    expect(buttonByText(html, t('nav.files'))).not.toContain(ACTIVE)
+/*
+ * 顶栏与左栏的形态（用户实测反馈的两条）。
+ *
+ * 这两条都必须断言**渲染输出**，不能断言源码文本：
+ * 「左栏底部没有那个按钮」用 HTML 判断才是真的没画出来；
+ * 「页签撑满顶栏」只能通过它的 class 看 —— 而 class 就在 HTML 里，所以能测。
+ */
+describe('左栏不再有「全部设备」按钮（顶栏页签已是入口）', () => {
+  it('渲染结果里没有那个左栏按钮', () => {
+    const html = appHtml('files')
+    /*
+     * 判据是 **<aside> 之内**不出现「全部设备」。
+     * 顶栏那个页签文案一模一样，直接断言整页 not.toContain 会永远为假 ——
+     * 这正是本项目反复遇到的「断言命中了别处文字」。
+     */
+    const aside = html.slice(html.indexOf('<aside'), html.indexOf('</aside>'))
+    expect(aside.length).toBeGreaterThan(0)
+    expect(aside).not.toContain(t('nav.overview'))
+  })
+
+  it('底部统计仍然保留（它是状态，不是入口）', () => {
+    const html = appHtml('files')
+    const aside = html.slice(html.indexOf('<aside'), html.indexOf('</aside>'))
+    expect(aside).toContain('共')
   })
 })
 
-/* ============ 设置页的返回按钮（用户要的第一个出口） ============ */
-
-const PAGE = SettingsPage as unknown as (props: {
-  onBack: () => void
-  initial?: { data?: SettingsData | null; loading?: boolean; error?: string | null }
-}) => React.ReactElement
-
-function settingsHtml(onBack: () => void = () => undefined): string {
-  return renderToStaticMarkup(React.createElement(PAGE, { onBack, initial: { data: SETTINGS } }))
-}
-
-describe('R3-1：设置页的「返回」按钮', () => {
-  it('真的渲染出一个带返回文案、可点的按钮', () => {
-    const html = settingsHtml()
-    const tag = buttonByText(html, t('settings.back'))
-    // 按钮上**看得见**的字（不是只有 title/aria-label）
-    expect(buttonInner(tag)).toContain(t('settings.back'))
-    expect(tag).not.toMatch(/\sdisabled=""/)
-    expect(tag).toContain('aria-label="' + t('settings.back') + '"')
-    // 与页内既有小按钮同样的样式（边框 + 11px 灰字），不是裸文字按钮
-    expect(tag).toContain('border-neutral-300')
+describe('顶栏：应用图标与撑满高度的页签', () => {
+  it('左上角渲染了应用图标', () => {
+    const html = appHtml('files')
+    const h1 = html.slice(html.indexOf('<h1'), html.indexOf('</h1>'))
+    expect(h1).toContain('<img')
+    // 装饰性图标：屏幕阅读器不该读它，alt 必须为空
+    expect(h1).toContain('alt=""')
   })
 
-  it('文案来自 i18n（不是写死中文的裸字面量）', () => {
-    const html = settingsHtml()
-    expect(html).toContain(t('settings.back'))
-    // 反向自证：未注册的 key 会原样返回，所以这条不是恒真
-    expect(t('settings.back')).not.toBe('settings.back')
+  it('页签用 items-stretch 且不再是圆角小胶囊（否则撑满后是方块套圆角）', () => {
+    const html = appHtml('files')
+    const nav = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'))
+    expect(nav).toContain('items-stretch')
+    expect(nav).not.toContain('rounded')
   })
 
-  it('对照组：返回按钮之外，页面内容照常渲染（没有为了加按钮把设置页弄丢）', () => {
+  it('页签与设置按钮同高：两者都不再写死 py-0.5 的小内边距', () => {
+    const html = appHtml('files')
+    // 设置按钮在 nav 之外
+    const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'))
+    expect(header).not.toContain('py-0.5')
+  })
+})
+
+describe('设置是独立窗口（#/settings 分流）', () => {
+  it('hash 命中时只渲染设置窗口，不渲染主窗口的顶栏/页签', () => {
+    const html = settingsWindowHtml()
+    expect(html).toContain('data-testid="settings-page"')
+    /*
+     * 主窗口的页签不该出现（否则两套导航会同时存在）。
+     *
+     * 判据用 <nav> 元素而不是文案：'应用' 这两个字也出现在设置页自己的
+     * 说明文字里（「adb 由应用自动定位」），拿文案判会永远为真 ——
+     * 与本项目反复踩过的「断言命中的是别处文字」同一类无牙判据。
+     */
+    expect(html).not.toContain('<nav')
+    expect(html).not.toContain(t('nav.overview'))
+  })
+
+  it('设置窗口有自己的顶栏标题（否则无边框窗口看起来像一张浮空卡片）', () => {
+    expect(settingsWindowHtml()).toContain(t('settings.title'))
+  })
+
+  it('设置窗口有最小化与关闭，但没有最大化（内容是固定两块，最大化只是空白）', () => {
+    const html = settingsWindowHtml()
+    expect(html).toContain(t('window.minimize'))
+    expect(html).toContain(t('window.close'))
+    expect(html).not.toContain(t('window.maximize'))
+  })
+})
+
+/*
+ * 设置页**不再有**「返回」按钮。
+ *
+ * 历史：它曾经是页面时代的必需品（R3-1：进得去出不来）。现在设置是独立子窗口，
+ * 出口就是窗口右上角 ×。同一个动作画两遍会让用户猜「返回」和「关闭」有什么差别，
+ * 而实际上两者一模一样 —— 用户实测反馈的第一条就是这个多余按钮。
+ *
+ * 这条断言方向是反的（not.toContain）也仍然有门禁价值：它锁住「别再加回来」。
+ */
+describe('设置页没有返回按钮（出口只有窗口 ×）', () => {
+  const PAGE = SettingsPage as unknown as (props: {
+    initial?: { data?: SettingsData | null; loading?: boolean; error?: string | null }
+  }) => React.ReactElement
+
+  function settingsHtml(): string {
+    return renderToStaticMarkup(React.createElement(PAGE, { initial: { data: SETTINGS } }))
+  }
+
+  it('渲染结果里没有「返回」按钮', () => {
+    const html = settingsHtml()
+    expect(html).not.toContain(t('settings.back'))
+    expect(html).not.toContain('aria-label="' + t('settings.back') + '"')
+  })
+
+  it('设置页内容仍然完整渲染（删按钮没连带删掉正文）', () => {
     const html = settingsHtml()
     expect(html).toContain('data-testid="settings-page"')
     expect(html).toContain(t('settings.title'))
-    expect(html).toContain('data-testid="settings-adb"')
   })
+})
 
-  it('每次渲染都会把 onBack 交给同一个按钮（换一个回调，按钮仍在）', () => {
-    // SSR 观测不到 onClick，但能证明按钮不是条件渲染的一部分 —— 换回调它照样在。
-    const first = settingsHtml(() => undefined)
-    const second = settingsHtml(() => undefined)
-    expect(first).toContain(t('settings.back'))
-    expect(second).toContain(t('settings.back'))
+describe('SettingsWindow 外壳', () => {
+  const Shell = SettingsWindow as unknown as (props: { initial?: { maximized?: boolean } }) => React.ReactElement
+
+  it('外壳包含设置内容与顶栏（两者缺一窗口就不成立）', () => {
+    const html = renderToStaticMarkup(React.createElement(Shell, {}))
+    expect(html).toContain('data-testid="settings-page"')
+    expect(html).toContain(t('window.close'))
   })
 })

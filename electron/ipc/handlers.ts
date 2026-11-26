@@ -6,6 +6,14 @@ import {
   CAPTURE_RECORD_START_INPUT,
   CAPTURE_RECORD_STOP_INPUT,
   CAPTURE_SCREENSHOT_INPUT,
+  DEVICE_KEYEVENT_INPUT,
+  MIRROR_START_INPUT,
+  MIRROR_STOP_INPUT,
+  APPS_DETAIL_INPUT,
+  APPS_INSTALL_INPUT,
+  APPS_LIST_INPUT,
+  APPS_PACKAGE_INPUT,
+  APPS_PULL_APK_INPUT,
   DRAG_OUT_INPUT,
   FS_BATCH_INPUT,
   FS_LIST_INPUT,
@@ -27,6 +35,11 @@ import {
 } from '../../src/shared/api-contract'
 import type { BatchRunData } from '../../src/shared/batch'
 import type { CaptureResult, RecordStarted } from '../../src/shared/capture'
+import type { AppDetail, AppEntry, InstallProgress } from '../../src/shared/apps'
+import type { DeviceKey } from '../../src/shared/device-key'
+import type { MirrorEvent, MirrorSession } from '../../src/shared/mirror'
+import type { KeyController } from '../device/keys'
+import type { MirrorController } from '../mirror/service'
 import { toSettingsAdb, type SettingsData } from '../../src/shared/settings'
 import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../../src/shared/file-ops'
 import type { DeviceManager } from '../devices/manager'
@@ -53,6 +66,8 @@ import { CH, INVOKE_CHANNELS } from './channels'
  *    绝不凭渲染层传什么就发命令。
  * 3. 业务错误同样收敛成 { ok:false, error:<code> }，渲染层永远只需处理一种形状。
  */
+
+import type { WindowController } from '../window/controller'
 
 /** ipcMain 的最小契约（测试注入假实现，不必起 Electron）。 */
 export interface IpcMainLike {
@@ -97,6 +112,48 @@ export interface HandlerDeps {
   batch: BatchController
   /** 单机截图 / 录屏（P1 第一批）。 */
   capture: CaptureController
+  /** 应用管理（P1 第二批）。 */
+  apps: AppsController
+  /** 设备按键（投屏侧边栏的六个按钮）。 */
+  keys: KeyController
+  /** scrcpy 投屏（P1 第三批）。 */
+  mirror: MirrorController
+  /**
+   * 把投屏会话变化推给渲染层。
+   *
+   * 注入而不是在这里 import BrowserWindow：IPC 层要能在纯 node 测试里跑，
+   * 与 emitInstallProgress 同一手法。
+   */
+  emitMirror: (event: MirrorEvent) => void
+  /** 弹出文件选择框挑一个 .apk（应用管理安装用）；取消返回空串。 */
+  pickApk: () => Promise<string>
+  /**
+   * 按「发起命令的 IPC 事件」取那个窗口的控制器。
+   *
+   * 为什么是函数而不是一个实例：应用有两个窗口（主窗口 + 设置子窗口），
+   * 一律取 getAllWindows()[0] 会让「在设置窗口点最小化」变成最小化主窗口。
+   * 事件里带着 sender，只有它能确定「用户点的是哪个窗口的按钮」。
+   *
+   * 注入而不是在主进程里 import BrowserWindow：控制器本身的行为
+   * （没有窗口时安全空操作、最大化/还原共用一个按钮）有专门测试。
+   */
+  windowOf: (event: unknown) => WindowController
+  /** 关掉发起命令的那个窗口；没有窗口时是安全空操作。 */
+  closeWindowOf: (event: unknown) => void
+  /**
+   * 打开（或聚焦）设置子窗口。
+   *
+   * 设置不再是主窗口内的一页：它有自己的窗口，主窗口停在原地。
+   * 已在开则聚焦 —— 连点两次不该开出两个设置窗口。
+   */
+  openSettings: () => void
+  /**
+   * 把安装进度推给渲染层。
+   *
+   * 注入而不是在这里 import BrowserWindow：IPC 层要能在纯 node 测试里跑
+   * （tests/apps-ipc.test.ts 断言「进度事件确实被转发」）。
+   */
+  emitInstallProgress: (payload: InstallProgress) => void
   /**
    * 拖拽（简报 C）。
    *
@@ -258,6 +315,33 @@ export interface CaptureController {
   screenshot(serial: string, dstDir: string): Promise<CaptureResult>
   startRecord(serial: string, dstDir: string): Promise<RecordStarted>
   stopRecord(serial: string): Promise<CaptureResult>
+}
+
+/**
+ * 应用管理对 IPC 层暴露的最小面（electron/apps/service 的 AppsService 满足它）。
+ *
+ * 与其它服务同一原则：IPC 层只做「zod 校验 + 会话检查 + 错误码收敛」，
+ * 解析、命令构造、包名闸门都在 service 与 shared/apps 里（有专门用例）。
+ */
+export interface AppsController {
+  listApps(serial: string): Promise<AppEntry[]>
+  appDetail(serial: string, packageName: string): Promise<AppDetail>
+  pullApk(serial: string, packageName: string, dstDir: string): Promise<{ packageName: string; files: string[] }>
+  /**
+   * 安装 APK。
+   *
+   * onProgress 由 IPC 层注入：它把回调转成 webContents.send（渲染层只订阅事件）。
+   * service 不认识 Electron，这是本项目「主进程服务不 import electron」那条红线的延伸。
+   */
+  installApk(
+    serial: string,
+    apkPath: string,
+    onProgress?: (payload: InstallProgress) => void,
+  ): Promise<void>
+  forceStop(serial: string, packageName: string): Promise<void>
+  clearData(serial: string, packageName: string): Promise<void>
+  uninstall(serial: string, packageName: string): Promise<void>
+  launch(serial: string, packageName: string): Promise<void>
 }
 
 /**
@@ -877,6 +961,202 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     if (!parsed.ok) return fail(parsed.error)
     try {
       return { ok: true, data: await deps.capture.stopRecord(parsed.data.serial) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ 应用管理（P1 第二批） ============ */
+
+  /*
+   * 与截图/录屏同一套前置：zod + 会话检查 + adb 已定位。
+   * 差别只在「载荷里多一个 packageName」—— 它的合法性由 service 的
+   * isSafePackageName 判（那是拼进 shell 命令之前的安全闸门，不是入参形状问题）。
+   */
+  const appsPreflight = <T extends { serial: string }>(
+    payload: unknown,
+    schema: { safeParse: (value: unknown) => ParseResult<T> },
+  ): { ok: true; data: T } | { ok: false; error: string } => {
+    const parsed = preflight<T>(payload, schema)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    if (deps.devices.get(parsed.data.serial) === undefined) return { ok: false, error: E_NO_SERIAL }
+    if (deps.adbPath() === '') return { ok: false, error: E_ADB_NOT_FOUND }
+    return { ok: true, data: parsed.data }
+  }
+
+  /*
+   * 自绘顶栏的窗口控制。
+   *
+   * 命令无载荷、无有意义的返回值，但仍走 IpcResult：
+   * 渲染层统一按 ok/error 处理，不必为它们写第二套错误通道。
+   */
+  handle(CH.WINDOW_MINIMIZE, (event): IpcResult<void> => {
+    deps.windowOf(event).minimize()
+    return { ok: true, data: undefined }
+  })
+
+  handle(CH.WINDOW_TOGGLE_MAXIMIZE, (event): IpcResult<boolean> => {
+    return { ok: true, data: deps.windowOf(event).toggleMaximize() }
+  })
+
+  /*
+   * 关闭 = 退出应用。
+   *
+   * 这里不直接 app.quit()：退出必须走 before-quit 那套清理（杀子进程、关闸门），
+   * 而 close 窗口 → window-all-closed → quit 是唯一入口。
+   * 多一条 quit 路径就多一处「清理没跑」的可能。
+   */
+  handle(CH.WINDOW_CLOSE, (event): IpcResult<void> => {
+    deps.closeWindowOf(event)
+    return { ok: true, data: undefined }
+  })
+
+  handle(CH.WINDOW_IS_MAXIMIZED, (event): IpcResult<boolean> => {
+    return { ok: true, data: deps.windowOf(event).isMaximized() }
+  })
+
+  handle(CH.WINDOW_OPEN_SETTINGS, (): IpcResult<void> => {
+    deps.openSettings()
+    return { ok: true, data: undefined }
+  })
+
+  handle(CH.APPS_LIST, async (_event, payload): Promise<IpcResult<AppEntry[]>> => {
+    const parsed = appsPreflight<{ serial: string }>(payload, APPS_LIST_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.apps.listApps(parsed.data.serial) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.APPS_DETAIL, async (_event, payload): Promise<IpcResult<AppDetail>> => {
+    const parsed = appsPreflight<{ serial: string; packageName: string }>(payload, APPS_DETAIL_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.apps.appDetail(parsed.data.serial, parsed.data.packageName) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.APPS_PULL_APK, async (_event, payload): Promise<IpcResult<{ packageName: string; files: string[] }>> => {
+    const parsed = appsPreflight<{ serial: string; packageName: string; dstDir: string }>(payload, APPS_PULL_APK_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return {
+        ok: true,
+        data: await deps.apps.pullApk(parsed.data.serial, parsed.data.packageName, parsed.data.dstDir),
+      }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.APPS_INSTALL, async (_event, payload): Promise<IpcResult<void>> => {
+    const parsed = appsPreflight<{ serial: string; apkPath: string }>(payload, APPS_INSTALL_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      /*
+       * 进度直接经 deps.emitInstallProgress 推给窗口。
+       *
+       * 为什么在 IPC 层转手而不是让 service 自己 send：
+       * service 不 import electron（它要能在纯 node 下被测试），
+       * 而「推给哪个窗口」是渲染层拓扑问题，本来就该在接线层解决。
+       */
+      await deps.apps.installApk(parsed.data.serial, parsed.data.apkPath, (progress) => {
+        deps.emitInstallProgress(progress)
+      })
+      return { ok: true, data: undefined }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * 四个「对某个包做动作」的通道共用同一个形状与同一段错误处理。
+   * 拆成四个独立的 handle 调用（而不是一个循环）：注册表自检要能按通道名
+   * 精确指出漏了哪一个，循环里的失败信息只有下标。
+   */
+  const appAction = (
+    channel: string,
+    invoke: (serial: string, packageName: string) => Promise<void>,
+  ): void => {
+    handle(channel, async (_event, payload): Promise<IpcResult<void>> => {
+      const parsed = appsPreflight<{ serial: string; packageName: string }>(payload, APPS_PACKAGE_INPUT)
+      if (!parsed.ok) return fail(parsed.error)
+      try {
+        await invoke(parsed.data.serial, parsed.data.packageName)
+        return { ok: true, data: undefined }
+      } catch (err) {
+        return fail(toErrorCode(err))
+      }
+    })
+  }
+
+  appAction(CH.APPS_FORCE_STOP, (serial, pkg) => deps.apps.forceStop(serial, pkg))
+  appAction(CH.APPS_CLEAR_DATA, (serial, pkg) => deps.apps.clearData(serial, pkg))
+  appAction(CH.APPS_UNINSTALL, (serial, pkg) => deps.apps.uninstall(serial, pkg))
+  appAction(CH.APPS_LAUNCH, (serial, pkg) => deps.apps.launch(serial, pkg))
+
+  handle(CH.APPS_PICK_APK, async (): Promise<IpcResult<string>> => {
+    try {
+      return { ok: true, data: await deps.pickApk() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /* ============ 设备按键 + scrcpy 投屏（P1 第三批） ============ */
+
+  /*
+   * 按键：zod 已经把 key 收成六个枚举，所以这里不需要再判「命令是否安全」——
+   * 非法值在 preflight 阶段就已经是 E_BAD_ARGS，根本到不了 service。
+   */
+  handle(CH.DEVICE_KEYEVENT, async (_event, payload): Promise<IpcResult<void>> => {
+    const parsed = capturePreflight<{ serial: string; key: DeviceKey }>(payload, DEVICE_KEYEVENT_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      await deps.keys.press(parsed.data.serial, parsed.data.key)
+      return { ok: true, data: undefined }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  handle(CH.MIRROR_START, async (_event, payload): Promise<IpcResult<MirrorSession>> => {
+    const parsed = capturePreflight<{ serial: string }>(payload, MIRROR_START_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      return { ok: true, data: await deps.mirror.start(parsed.data.serial) }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * stop 刻意**不做**设备会话检查：设备刚被拔掉时，窗口可能还开着，
+   * 用户点关闭必须能关掉它。用 capturePreflight 会因为 E_NO_SERIAL 直接拒绝，
+   * 那个窗口就再也关不掉了。这里只做 zod 形状校验。
+   */
+  handle(CH.MIRROR_STOP, async (_event, payload): Promise<IpcResult<void>> => {
+    const parsed = preflight<{ serial: string }>(payload, MIRROR_STOP_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      await deps.mirror.stop(parsed.data.serial)
+      return { ok: true, data: undefined }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /*
+   * mirror:list 刻意**不做**会话检查：它返回的是「当前有哪些投屏」，
+   * 设备刚掉线时用户更需要看到「那个窗口还在」而不是一个错误码。
+   */
+  handle(CH.MIRROR_LIST, async (): Promise<IpcResult<MirrorSession[]>> => {
+    try {
+      return { ok: true, data: deps.mirror.list() }
     } catch (err) {
       return fail(toErrorCode(err))
     }

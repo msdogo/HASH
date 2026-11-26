@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { ArrowLeft, Download, FolderOpen, Info, RotateCcw } from 'lucide-react'
+import { Download, FolderOpen, Info, RotateCcw } from 'lucide-react'
 import type { AdbSource } from '@shared/types'
 import { errorText, t, tf } from '@shared/i18n'
 import { useSettingsStore } from '@/store/settingsStore'
@@ -40,14 +40,15 @@ function sourceLabel(source: AdbSource): string {
  */
 export interface SettingsPageProps {
   /**
-   * 出口（R3-1）。
+   * 本页**不再有「返回」按钮**。
    *
-   * 为什么**必填**而不是可选：设置页是从顶栏进来的独立功能页，入口那一半
-   * （App 的 ⚙设置）R2-2 已经接好，出口这一半却从来没有 —— 于是用户点进去出不来。
-   * 允许缺省就等于允许「渲染一个没有出口的设置页」，历史会重演；
-   * 必填把「忘了接线」变成编译错误，而不是等用户点进去才发现。
+   * 历史：它曾经是一个可切换的页面，那时必须有出口（R3-1：进得去出不来）。
+   * 现在它是独立子窗口，出口就是窗口右上角的 ×；再放一个「返回」等于同一个动作
+   * 画两遍，用户还会以为「返回」和「关闭」有区别（用户实测反馈的第一条）。
+   *
+   * 所以 onBack 整个删掉，而不是留着不用 —— 留一个没接线的必填 prop，
+   * 下一个人就会以为它还在起作用。
    */
-  onBack: () => void
   initial?: {
     data?: ReturnType<typeof useSettingsStore.getState>['data']
     loading?: boolean
@@ -78,21 +79,6 @@ export function SettingsPage(props: SettingsPageProps) {
 
   return (
     <section className="min-h-0 flex-1 overflow-auto p-4" data-testid="settings-page">
-      {/*
-        * 返回按钮（R3-1）：放在标题**上方**，因为它不属于页面内容，
-        * 而是「离开这一页」的动作 —— 与文件页的地址栏同理，先于内容出现。
-        * 文案走 i18n；样式与页内既有小按钮一致（边框 + 11px 灰字）。
-        */}
-      <button
-        type="button"
-        onClick={props.onBack}
-        title={t('settings.back')}
-        aria-label={t('settings.back')}
-        className="mb-3 flex items-center gap-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200"
-      >
-        <ArrowLeft className="h-3 w-3" aria-hidden="true" />
-        {t('settings.back')}
-      </button>
       <h2 className="mb-3 text-sm font-semibold text-neutral-900">{t('settings.title')}</h2>
 
       {error !== null && (

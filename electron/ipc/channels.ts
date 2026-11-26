@@ -109,6 +109,67 @@ export const CH = {
   CAPTURE_RECORD_START: 'capture:record-start',
   /** invoke：停止录屏并把 mp4 拉回本地。 */
   CAPTURE_RECORD_STOP: 'capture:record-stop',
+
+  /* ===== P1 第二批：应用管理 ===== */
+  /** invoke：列出设备上的第三方应用。 */
+  APPS_LIST: 'apps:list',
+  /** invoke：取单个应用的详情（逐包 dumpsys）。 */
+  APPS_DETAIL: 'apps:detail',
+  /** invoke：把应用的 APK 拉到本地（split APK 全拉）。 */
+  APPS_PULL_APK: 'apps:pull-apk',
+  /** invoke：安装本地 APK（adb install -r）。 */
+  APPS_INSTALL: 'apps:install',
+  /** invoke：强制停止。 */
+  APPS_FORCE_STOP: 'apps:force-stop',
+  /** invoke：清空应用数据（不可逆，界面二次确认）。 */
+  APPS_CLEAR_DATA: 'apps:clear-data',
+  /** invoke：卸载（不可逆，界面二次确认）。 */
+  APPS_UNINSTALL: 'apps:uninstall',
+  /** invoke：启动应用。 */
+  APPS_LAUNCH: 'apps:launch',
+  /** invoke：弹出文件选择框挑一个 .apk（安装用）。 */
+  APPS_PICK_APK: 'apps:pick-apk',
+  /**
+   * event（主进程 → 渲染层）：安装进度。
+   *
+   * 为什么必须有：adb install 拿不到中间态，我们拆成 push + pm install，
+   * 而 push 阶段能算出真实字节进度。不给用户看，装 150MB 的包就是几十秒黑屏。
+   */
+  APPS_INSTALL_PROGRESS: 'apps:install-progress',
+  /*
+   * 窗口控制（自绘顶栏）。
+   *
+   * 为什么需要这三条：窗口是 frame:false 创建的（系统标题栏被去掉），
+   * 于是最小化 / 最大化 / 关闭这三个能力在界面上就没人提供了 ——
+   * 没有它们，用户只能靠 Alt+F4 关程序。
+   */
+  WINDOW_MINIMIZE: 'window:minimize',
+  /** 最大化与还原是同一个按钮，状态由主进程给（渲染层不自己记）。 */
+  WINDOW_TOGGLE_MAXIMIZE: 'window:toggle-maximize',
+  /** 关闭 = 退出应用（单实例、无托盘驻留，关掉就是关掉）。 */
+  WINDOW_CLOSE: 'window:close',
+  /** invoke：当前是否最大化（窗口刚打开时渲染层要据此选图标）。 */
+  WINDOW_IS_MAXIMIZED: 'window:is-maximized',
+  /** invoke：打开（或聚焦）设置子窗口。设置不再是主窗口内的一页。 */
+  WINDOW_OPEN_SETTINGS: 'window:open-settings',
+  /** event（主进程 → 渲染层）：最大化状态变了（双击标题栏 / 系统快捷键也要跟上）。 */
+  WINDOW_MAXIMIZED_CHANGED: 'window:maximized-changed',
+  /*
+   * 设备按键（投屏侧边栏的六个按钮）。
+   *
+   * 为什么单独一条通道而不是复用 batch:shell：batch:shell 接受**任意命令字符串**，
+   * 而这条只接受六个枚举值。两者的权限面差一个数量级，绝不能共用。
+   */
+  DEVICE_KEYEVENT: 'device:keyevent',
+  /* ---- scrcpy 投屏 ---- */
+  /** invoke：开始投屏（幂等：已在投屏则返回已有会话）。 */
+  MIRROR_START: 'mirror:start',
+  /** invoke：结束投屏（关闭对应窗口时也会走这条）。 */
+  MIRROR_STOP: 'mirror:stop',
+  /** invoke：当前全部投屏会话。 */
+  MIRROR_LIST: 'mirror:list',
+  /** event（主进程 → 渲染层）：会话开始 / 退出 / 失败。 */
+  MIRROR_CHANGED: 'mirror:changed',
 } as const
 
 export type Channel = (typeof CH)[keyof typeof CH]
@@ -154,6 +215,27 @@ export const INVOKE_CHANNELS = [
   CH.CAPTURE_SCREENSHOT,
   CH.CAPTURE_RECORD_START,
   CH.CAPTURE_RECORD_STOP,
+  // P1 第二批：应用管理
+  CH.APPS_LIST,
+  CH.APPS_DETAIL,
+  CH.APPS_PULL_APK,
+  CH.APPS_INSTALL,
+  CH.APPS_FORCE_STOP,
+  CH.APPS_CLEAR_DATA,
+  CH.APPS_UNINSTALL,
+  CH.APPS_LAUNCH,
+  CH.APPS_PICK_APK,
+  // 自绘顶栏的窗口控制
+  CH.WINDOW_MINIMIZE,
+  CH.WINDOW_TOGGLE_MAXIMIZE,
+  CH.WINDOW_CLOSE,
+  CH.WINDOW_IS_MAXIMIZED,
+  CH.WINDOW_OPEN_SETTINGS,
+  // 设备按键 + 投屏
+  CH.DEVICE_KEYEVENT,
+  CH.MIRROR_START,
+  CH.MIRROR_STOP,
+  CH.MIRROR_LIST,
 ] as const
 
 /** 由主进程单向推送的通道（webContents.send，绝不 handle）。 */
@@ -162,6 +244,9 @@ export const EVENT_CHANNELS = [
   CH.TRANSFER_CHANGED,
   CH.TRANSFER_DRAG_OUT_PROGRESS,
   CH.TRANSFER_DRAG_OUT_FAILED,
+  CH.APPS_INSTALL_PROGRESS,
+  CH.WINDOW_MAXIMIZED_CHANGED,
+  CH.MIRROR_CHANGED,
 ] as const
 
 export function isInvokeChannel(channel: string): boolean {

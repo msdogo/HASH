@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, session, ipcMain, protocol, webContents } from 'electron'
+import { app, BrowserWindow, dialog, session, ipcMain, Menu, nativeImage, protocol, Tray, webContents } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { shutdownChildren } from './adb/children'
@@ -18,12 +18,20 @@ import { BatchService } from './batch/service'
 import { CaptureService } from './capture/service'
 import { startRecorder, STOP_COMMANDS } from './capture/recorder'
 import { RECORD_START_TIMEOUT_MS } from '../src/shared/capture'
+import { AppsService } from './apps/service'
+import { createKeyService } from './device/keys'
+import { createMirrorService } from './mirror/service'
+import { locateScrcpy } from './mirror/binary'
+import { probeScrcpyVersion, startScrcpy } from './mirror/runner'
+import { createWindowController } from './window/controller'
+import { closeOutcome, mayStartApp, restoreMainWindow } from './app/lifecycle'
 import { DragOutService } from './drag/service'
 import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
 import { LocalFs } from './fs/local'
 import { createSettingsStore } from './settings/store'
 import { homedir } from 'node:os'
+import { existsSync } from 'node:fs'
 import type { TransferSnapshot } from './../src/shared/transfer'
 import { errorText } from '../src/shared/i18n'
 import type { AdbState, DevicesChangedBatch } from '../src/shared/types'
@@ -46,6 +54,46 @@ if (debugPort !== undefined && debugPort !== '') {
  */
 registerAppScheme()
 
+/*
+ * 单实例锁：只能开一个窗口。
+ *
+ * 为什么必须有：应用独占一条 USB/adb 连接与一份 settings.json。
+ * 两个实例同时跑，后开的那个会读到前一个还没写盘的设置，
+ * 而且两个进程各自 spawn 的 adb 子进程会互相抢设备（adb devices 抖动、
+ * 传输中断）。这类故障现场极难复现，所以从根上不允许第二个实例存在。
+ *
+ * requestSingleInstanceLock 是原子操作（基于命名互斥体）：
+ * 返回 false 说明已有实例在跑，此时立刻退出，并把已有窗口提到前台
+ * （用户双击图标时期望看到那个窗口，而不是什么都没发生）。
+ */
+const gotTheLock = app.requestSingleInstanceLock()
+/*
+ * 没有锁就**什么都不要再做**。
+ *
+ * 只写 app.quit() 是不够的：quit 是异步的「发起」，当前模块会继续往下跑，
+ * 于是 app.whenReady() 照样回调、照样 createWindow() —— 第二个实例的窗口
+ * 先画出来，再随进程一起消失，用户看到「闪一下」。
+ * 正常应用第二次双击图标应当是**毫无反应**，所以用 mayStartApp 把
+ * 「建窗口 / 起托盘」这些有可见副作用的代码整块挡在外面。
+ */
+if (!mayStartApp(gotTheLock)) {
+  app.quit()
+} else {
+  /*
+   * 第二次双击图标 = **什么都不做**。
+   *
+   * 用户明确要求「像别的应用那样，已经打开了再点图标没有任何反应」。
+   * 之前这里会 restore()+focus()，再加上第二个实例自己还画了一次窗口
+   * （app.quit() 是异步的，模块继续执行到 createWindow），合起来就是
+   * 「窗口闪一下」。现在两处都堵住：这里不做任何事，whenReady 里
+   * mayStartApp 也把建窗口/起托盘挡在外面。
+   *
+   * 窗口被最小化到任务栏时，回来的路径是任务栏按钮或托盘图标 —— 都在。
+   */
+  app.on('second-instance', () => {
+    // 故意留空。保留监听器是为了让 Electron 知道我们收到了这个事件。
+  })
+}
 /**
  * adb 自检状态。
  * 初值是 checking —— 自检要 4~8s，这段时间界面必须显示「正在查找 adb…」，
@@ -309,7 +357,62 @@ const captureService = new CaptureService({
     registerTaskCleanup(captureCleanup, taskId, callback)
   },
 })
+/**
+ * 应用管理服务（P1 第二批）。
+ *
+ * 与其它服务一样在模块顶层构造：IPC handler 必须尽早注册，而 handler 依赖它。
+ * 拉 APK 走主进程直接 adb pull（源在 /data/app，传输队列的闸门拒绝 /data 整棵子树）——
+ * 理由写在 electron/apps/service.ts 的文件头。
+ */
+const appsService = new AppsService({
+  devices,
+  clientFor: (serial) => createClient(serial),
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+  defaultDstDir: () => settings().getDownloadDir(),
+})
 
+
+/**
+ * 设备按键服务（投屏侧边栏的六个按钮）。
+ *
+ * adbPath 传 getter：构造时机早于自检完成，与 capture/apps 同一手法。
+ */
+const keyService = createKeyService({
+  devices,
+  clientFor: (serial) => createClient(serial),
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+})
+
+/**
+ * 投屏服务（P1 第三批：scrcpy）。
+ *
+ * locate 每次现查：用户可能中途才把 scrcpy 装到 PATH 上，
+ * 缓存一次「没有」会让整个会话都用不了投屏。
+ */
+const mirrorService = createMirrorService({
+  devices,
+  adbPath: () => (adbState.state === 'ok' ? adbState.path : ''),
+  locate: () =>
+    locateScrcpy({
+      resourcesPath: process.resourcesPath,
+      exists: (filePath) => {
+        try {
+          // require 在这里是同步的存在性判定，不读内容
+          return existsSync(filePath)
+        } catch {
+          return false
+        }
+      },
+      probe: probeScrcpyVersion,
+    }),
+  spawn: startScrcpy,
+  emit: (event) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      win.webContents.send(CH.MIRROR_CHANGED, event)
+    }
+  },
+})
 
 /**
  * 拖拽服务（简报 C：设备 ↔ 资源管理器）。
@@ -385,6 +488,152 @@ function installCsp(): void {
   applyCsp(session.defaultSession, isDev)
 }
 
+/**
+ * 从 IPC 事件反查它来自哪个窗口。
+ *
+ * 这是「多窗口按钮不串台」的唯一依据：渲染层只能通过事件表达「我点了」，
+ * 而事件里带着 sender。任何「取第一个窗口」的写法都会在设置窗口里出错。
+ * 窗口已销毁 / sender 不是窗口时返回 undefined（调用方按安全空操作处理）。
+ */
+function windowOfEvent(event: unknown): BrowserWindow | undefined {
+  const sender = (event as { sender?: unknown } | undefined)?.sender
+  if (sender === undefined || sender === null) return undefined
+  const win = BrowserWindow.fromWebContents(sender as Electron.WebContents)
+  return win === null ? undefined : win
+}
+
+/** 设置窗口只允许有一个（连点两次不该开出两个）。 */
+let settingsWindow: BrowserWindow | undefined
+
+/** 主窗口引用（子窗口的父、以及「主窗口关了就把子窗口一起关」需要它）。 */
+let mainWindow: BrowserWindow | undefined
+
+/**
+ * 是否正在真正退出。
+ *
+ * 关闭按钮走的是 hide()（退到后台），只有托盘菜单「退出」会把它置 true。
+ * 这个标志必须由 main.ts 持有并传进 closeOutcome：把它放进渲染层就等于
+ * 让渲染层决定进程生死，而 Alt+F4、系统关机这些路径根本不经过渲染层。
+ */
+let isQuitting = false
+
+/**
+ * 托盘图标。
+ *
+ * 为什么要托盘：关闭改为「退到后台」之后，用户需要一个看得见、点得到的入口
+ * 把窗口叫回来，以及一个明确的「退出」。没有托盘的话，hide 掉的窗口就再也
+ * 找不回来（任务栏里没有它，Alt+Tab 也没有）——那才是真正的「关不掉也开不了」。
+ *
+ * 图标走 extraResources/icon.png，与安装包图标同一份资源。
+ */
+let tray: Tray | undefined
+
+function trayIconPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(dirname, '..', 'resources', 'icon.png')
+}
+
+function createTray(): void {
+  if (tray !== undefined && !tray.isDestroyed()) return
+  /*
+   * 用 createFromPath 而不是 createEmpty：空图标在托盘区是不可见的，
+   * 用户会以为「托盘没起来」，而这个功能的全部意义就是「看得见的入口」。
+   */
+  const image = nativeImage.createFromPath(trayIconPath())
+  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image)
+  tray.setToolTip('HASH')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: t('tray.show'),
+        click: () => { restoreMainWindow(mainWindow) },
+      },
+      { type: 'separator' },
+      {
+        label: t('tray.quit'),
+        click: () => {
+          // 先置位再 quit：close 事件处理器据此放行，走完整的 before-quit 清理。
+          isQuitting = true
+          app.quit()
+        },
+      },
+    ]),
+  )
+  // 单击托盘 = 把窗口叫回来（Windows 上最常见的习惯）。
+  tray.on('click', () => { restoreMainWindow(mainWindow) })
+}
+
+/**
+ * 打开（或聚焦）设置子窗口。
+ *
+ * ===== 为什么是独立窗口，而不是主窗口内的一页 =====
+ * 改完下载路径通常想立刻回文件页确认，而切页会卸载文件页（视觉上等于重新进来一次）。
+ * 独立窗口让「改设置」与「看文件」能同时进行 —— 这是桌面应用的固有优势。
+ *
+ * ===== 为什么设置窗口不可最大化 =====
+ * 它只有两块固定高度的信息，最大化只会变成一大片空白。
+ * 与其给一个能点但没用的按钮，不如不给（渲染层也同步不画那个按钮）。
+ */
+function openSettingsWindow(): void {
+  // 已开过且还活着 → 聚焦（也许被最小化了，先还原）
+  if (settingsWindow !== undefined && !settingsWindow.isDestroyed()) {
+    if (settingsWindow.isMinimized()) settingsWindow.restore()
+    settingsWindow.focus()
+    return
+  }
+
+  /*
+   * 父窗口只用于「跟随主窗口最小化/置顶」这类视觉关系。
+   *
+   * 必须避开 settingsWindow 自己（getAllWindows() 的顺序不保证）：
+   * 把设置窗口设成它自己的 parent 会形成一个无效的循环引用。
+   */
+  const parent = mainWindow !== undefined && !mainWindow.isDestroyed()
+    ? mainWindow
+    : BrowserWindow.getAllWindows().find((w) => w !== settingsWindow)
+  settingsWindow = new BrowserWindow({
+    width: 760,
+    height: 620,
+    minWidth: 560,
+    minHeight: 420,
+    parent,
+    /* 非模态：改设置时很可能要对着主窗口里的文件列表确认，挡住主窗口反而碍事。 */
+    modal: false,
+    maximizable: false,
+    frame: false,
+    backgroundColor: '#F7F8FA',
+    webPreferences: {
+      preload: path.join(dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+
+  /*
+   * 用 hash 分流到设置视图，而不是打第二个 HTML 入口。
+   *
+   * 多一个入口就要多一套构建产物、多一份 CSP 配置、多一处 preload 路径问题；
+   * 而两个窗口的差别只有「渲染哪棵组件树」。src/App.tsx 的 isSettingsWindow
+   * 读的就是这个 hash。
+   */
+  if (isDev) {
+    settingsWindow.loadURL((process.env.VITE_DEV_SERVER_URL as string) + '#/settings')
+  } else {
+    settingsWindow.loadURL(APP_ENTRY_URL + '#/settings')
+  }
+
+  // 最大化状态推送（设置窗口不可最大化，但保持与主窗口同款接线，行为一致）
+  settingsWindow.on('maximize', () => {
+    settingsWindow?.webContents.send(CH.WINDOW_MAXIMIZED_CHANGED, true)
+  })
+  settingsWindow.on('unmaximize', () => {
+    settingsWindow?.webContents.send(CH.WINDOW_MAXIMIZED_CHANGED, false)
+  })
+  settingsWindow.on('closed', () => { settingsWindow = undefined })
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1440,
@@ -392,6 +641,19 @@ function createWindow(): void {
     minWidth: 1100,
     minHeight: 680,
     backgroundColor: '#F7F8FA',
+    /*
+     * frame: false —— 去掉系统标题栏。
+     *
+     * 理由：Windows 的原生标题栏（右上角那三个系统按钮）与应用自己的深色/浅色
+     * 顶栏是两套视觉，且它占掉一整条高度。改成自绘之后窗口内容可以一直画到顶部，
+     * 顶栏右侧由界面自己提供最小化 / 最大化 / 关闭三个按钮。
+     *
+     * 代价（必须自己补上，否则用户没法关窗口）：
+     *   - 拖动窗口：顶栏那片区域靠 CSS 的 -webkit-app-region: drag；
+     *   - 双击最大化、系统快捷键：主进程监听 maximize/unmaximize 推给渲染层；
+     *   - 关闭即退出：window-all-closed 已有 app.quit()。
+     */
+    frame: false,
     webPreferences: {
       // preload 产物是 CJS（.cjs）。不要关闭 sandbox：本项目 preload 依赖沙箱预加载器
       // 提供的 require 垫片，sandbox: false 时 window.api 会全部变成 undefined 且不报错。
@@ -400,6 +662,51 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+  /*
+   * 最大化状态推送。
+   *
+   * 为什么需要它：双击标题栏、Win+↑、系统菜单都能改变最大化状态，
+   * 而这些都不经过渲染层。主进程监听后推过去，图标才不会停在错误的状态上。
+   */
+  mainWindow = win
+  /*
+   * 主窗口关掉时把设置窗口一并关掉。
+   *
+   * 为什么必须显式做：window-all-closed 只在**所有**窗口都关了才触发。
+   * 如果用户只关主窗口而设置窗口还开着，进程会继续活着但没有主界面 ——
+   * 一个只剩设置窗口的「半死」状态，而且用户再也回不到文件页。
+   */
+  /*
+   * 关闭按钮 = 退到后台，不是退出程序。
+   *
+   * 为什么改：用户明确要求「点关闭后应用退到后台、任务栏图标还在」。
+   * 桌面文件管理器在传输时被误关，传到一半的文件会变成残片 —— 这是真实损失。
+   * 真正退出走托盘菜单的「退出」，那里用户是明确表达。
+   *
+   * 注意是拦 close 事件而不是在 closeWindowOf 里判断：Alt+F4、任务栏右键关闭、
+   * 系统关机都走同一条路，只改 IPC 会漏掉后面那些。
+   */
+  win.on('close', (event) => {
+    if (closeOutcome(isQuitting) === 'background') {
+      event.preventDefault()
+      /*
+       * 用 minimize 而不是 hide：hide 会把窗口从任务栏摘掉，而用户要的是
+       * 「退到后台，系统底部的应用图标还在，点一下能回来」。minimize 正是这个语义。
+       * 设置子窗口一并最小化 —— 单独留一个孤零零的设置窗口不算「退到后台」。
+       */
+      if (settingsWindow !== undefined && !settingsWindow.isDestroyed()) settingsWindow.minimize()
+      win.minimize()
+      return
+    }
+    mainWindow = undefined
+    if (settingsWindow !== undefined && !settingsWindow.isDestroyed()) settingsWindow.close()
+  })
+  win.on('maximize', () => {
+    win.webContents.send(CH.WINDOW_MAXIMIZED_CHANGED, true)
+  })
+  win.on('unmaximize', () => {
+    win.webContents.send(CH.WINDOW_MAXIMIZED_CHANGED, false)
   })
   if (isDev) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL as string)
@@ -444,6 +751,15 @@ function broadcastTransfer(): void {
  * 那一刻 handler 必须在位。（修前的代码顺序相反，只因同 tick 无间隙才没出事。）
  */
 app.whenReady().then(async () => {
+  /*
+   * 没有单实例锁时这里必须直接返回。
+   *
+   * 上面虽然已经 app.quit()，但那是异步的：whenReady 的回调仍会执行。
+   * 不挡住的话，第二个实例会真的建窗口、真的起托盘，然后随进程消失 ——
+   * 表现为「双击图标，窗口闪一下」。正常应用此时应当毫无反应。
+   */
+  if (!mayStartApp(gotTheLock)) return
+  createTray()
   // 生产模式：把 dist 用 app:// 提供出来（C2）。dev 模式不需要。
   if (!isDev) {
     registerAppProtocol(path.join(dirname, '..', 'dist'), isDev)
@@ -531,6 +847,75 @@ app.whenReady().then(async () => {
             transfer: transfer.controller,
             batch: batchService,
             capture: captureService,
+            apps: appsService,
+            keys: keyService,
+            mirror: mirrorService,
+            /*
+             * 投屏会话变化 → 所有窗口。
+             *
+             * 广播而不是只推给主窗口：投屏侧边栏所在的窗口与「用户正在看的窗口」
+             * 未必是同一个，漏推会让另一边的按钮状态永远停在「已投屏」。
+             */
+            emitMirror: (event) => {
+              for (const win of BrowserWindow.getAllWindows()) {
+                if (win.isDestroyed()) continue
+                win.webContents.send(CH.MIRROR_CHANGED, event)
+              }
+            },
+            /*
+             * 应用管理装 APK 用的文件选择框。
+             *
+             * 与 batchService 的 pickApk 分开注入：那个的语义是「给批量安装挑一个包」，
+             * 它的选择框默认落在下载目录且带 apk 过滤器；应用管理这边用户可能刚拉完
+             * 一个 APK 就在同一个目录里装回去，路径来源不同但对话框行为一致。
+             */
+            pickApk: async () => {
+              const win = BrowserWindow.getAllWindows()[0]
+              if (win === undefined) return ''
+              const picked = await dialog.showOpenDialog(win, {
+                title: t('batch.pickApkTitle'),
+                filters: [{ name: t('batch.apkFilter'), extensions: ['apk'] }],
+                properties: ['openFile'],
+              })
+              if (picked.canceled || picked.filePaths.length === 0) return ''
+              return picked.filePaths[0]
+            },
+            /*
+             * 安装进度 → 所有窗口。
+             *
+             * 为什么推给**所有**窗口而不是只在应用页的那个：装包期间用户完全可能
+             * 切到文件页，进度断了会让他以为装完了/装失败了。广播的成本是每个窗口
+             * 一次 send，而漏推的代价是一次几十秒的「不知道在干什么」。
+             */
+            /*
+             * 自绘顶栏的窗口控制。
+             *
+             * pick() 每次现取：窗口可能在任意时刻被销毁（退出流程中），
+             * 控制器内部对「没有窗口」是安全空操作。
+             */
+            /*
+             * 窗口控制按**发起命令的那个窗口**路由。
+             *
+             * 应用现在有两个窗口（主窗口 + 设置子窗口）。如果一律取
+             * getAllWindows()[0]，在设置窗口点最小化会最小化主窗口 ——
+             * 这种缺陷只有在两个窗口同时在屏幕上时才看得出来。
+             *
+             * sender → BrowserWindow 的映射由 electron 提供（fromWebContents）；
+             * 窗口已销毁时返回 undefined，控制器内部按「没有窗口」安全空操作。
+             */
+            windowOf: (event) => createWindowController(() => windowOfEvent(event)),
+            closeWindowOf: (event) => {
+              const win = windowOfEvent(event)
+              // 关窗口 → 没有窗口了才 window-all-closed → quit。关设置窗口不会退出程序。
+              if (win !== undefined && !win.isDestroyed()) win.close()
+            },
+            openSettings: () => { openSettingsWindow() },
+            emitInstallProgress: (payload) => {
+              for (const win of BrowserWindow.getAllWindows()) {
+                if (win.isDestroyed()) continue
+                win.webContents.send(CH.APPS_INSTALL_PROGRESS, payload)
+              }
+            },
             drag: dragService.controller,
             // 文件选择框必须挂在有窗口的父级上（否则模态会跑到屏幕角落）。
             // 没有窗口时返回空数组：渲染层会把它当成「用户没选」。
@@ -597,6 +982,16 @@ app.whenReady().then(async () => {
         tracking.onDevicesChanged((batch) => {
           // 先推渲染层（设备栏要立刻更新），再做传输暂停/恢复
           broadcast(batch)
+          /*
+           * 设备掉线/移除 → 自动结束它的投屏会话。
+           *
+           * 为什么放在这里而不是渲染层：会话表在主进程，只有这里能保证
+           * 「设备没了，scrcpy 进程也不会留着」。用 catch 兜住是为了不让
+           * 一次清理失败拖垮整条设备变更链路。
+           */
+          void mirrorService.onDeviceChanged(batch).catch((err: unknown) => {
+            console.warn('[mirror] 设备变更时结束投屏失败：' + String(err))
+          })
           wireBatchToTransfer(onlineTracker, batch, transfer)
           // 设备状态变化可能让排队任务可以继续，也可能改动了进度提示
           broadcastTransfer()
@@ -620,6 +1015,13 @@ app.whenReady().then(async () => {
 // 规格要求：窗口关闭时回收所有子进程；tracker 也必须在这里停掉，
 // 否则它的定时器与长驻 track-devices 进程会挂住事件循环（裁决 1）。
 app.on('before-quit', () => {
+  // 置位：此后主窗口的 close 不再被拦（关闭 = 真关），清理流程得以继续。
+  isQuitting = true
+  // 托盘必须先销毁：否则进程退出后会在托盘区留一个点不动的僵尸图标。
+  if (tray !== undefined && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = undefined
+  }
   // 顺序很重要（I5）：
   // 1. 先 abort 在飞的自检 —— 让 await probe() 立刻返回，不再等它跑完；
   // 2. shutdownChildren() 置位全局闸门并回收在册进程 —— 这之后任何迟到的
@@ -636,6 +1038,15 @@ app.on('before-quit', () => {
   // P1：单机录屏是长驻进程，退出时必须逐台发停止（设备的 --time-limit 是兜底，
   // 但那条上限是分钟级的，不能指望它）；未结算的临时文件清理同样在这里兑现。
   captureService.dispose()
+  /*
+   * 投屏进程是长驻的原生窗口，退出时必须全部收掉。
+   *
+   * 这里的 await 不能等：before-quit 是同步事件。用 void + 立即 kill 的方式
+   * （dispose 内部对每个会话都调 killTree，且 children.ts 的闸门随后兜底）。
+   */
+  void mirrorService.dispose().catch((err: unknown) => {
+    console.warn('[mirror] 退出时结束投屏失败：' + String(err))
+  })
   /*
    * 拖拽临时目录的兜底清理（简报 C 硬性要求）。
    *
@@ -657,4 +1068,13 @@ app.on('before-quit', () => {
   tracking = undefined
 })
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+/*
+ * 所有窗口都没了才退出。
+ *
+ * 注意：关闭按钮走 hide()，窗口并**没有**被销毁，所以这条不会因为「点关闭」
+ * 触发 —— 进程与托盘继续存在，这正是「退到后台」的定义。
+ * 只有托盘菜单「退出」（isQuitting=true，窗口真的 close 掉）才会走到这里。
+ */
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin' && isQuitting) app.quit()
+})

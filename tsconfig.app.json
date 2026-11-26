@@ -20,5 +20,5 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src", "tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/settings-page.test.tsx", "tests/app-nav.test.tsx", "tests/store-wiring.test.ts", "tests/drag-store.test.ts", "tests/double-click-wiring.test.ts", "tests/transfer-dock-notice.test.tsx"]
+  "include": ["src", "tests/overview-buttons.test.tsx", "tests/component-wiring.test.tsx", "tests/settings-page.test.tsx", "tests/app-nav.test.tsx", "tests/store-wiring.test.ts", "tests/drag-store.test.ts", "tests/double-click-wiring.test.ts", "tests/transfer-dock-notice.test.tsx", "tests/apps-page.test.tsx", "tests/log-bar.test.tsx", "tests/log-store.test.ts", "tests/window-controls.test.tsx"]
 }

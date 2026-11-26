@@ -1,4 +1,6 @@
+import { stubMirrorDeps } from './helpers/mirror-stubs'
 import { describe, it, expect } from 'vitest'
+import { fakeWindow } from './fake-window'
 import { CH } from '../electron/ipc/channels'
 import { registerHandlers, type HandlerDeps, type IpcMainLike } from '../electron/ipc/handlers'
 import { DeviceManager } from '../electron/devices/manager'
@@ -6,6 +8,7 @@ import { E_BAD_ARGS } from '../src/shared/errors'
 import type { LocalFileStat } from '../src/shared/file-ops'
 import { fakeBatch } from './fake-batch'
 import { fakeCapture } from './fake-capture'
+import { fakeApps } from './fake-apps'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -71,6 +74,15 @@ function harness(answer: LocalFileStat = { exists: false }): Harness {
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    emitInstallProgress: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
     drag: fakeDrag(),
     transfer: {
       enqueue: async () => { throw new Error('unused') },
@@ -150,6 +162,15 @@ describe('R10 local:file-stat 的 IPC 层', () => {
       pickDownloadDir: async () => '',
       batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    emitInstallProgress: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
       drag: fakeDrag(),
       transfer: {
         enqueue: async () => { throw new Error('unused') },

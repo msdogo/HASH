@@ -6,3 +6,36 @@ body {
   background: #f7f8fa;
   color: #171717;
 }
+
+/*
+ * 滚动条统一成应用自己的样式。
+ *
+ * 为什么必须改：Windows 原生滚动条（那道灰白相间的宽条）在日志栏、
+ * 文件列表这些窄区域里会直接截断内容宽度，视觉上也与界面其余部分完全脱节 ——
+ * 它看起来像「外部控件嵌进来了」，而不是这个应用的一部分。
+ *
+ * 做法：轨道透明、滑块浅灰细条、悬停加深。宽度 8px 是「能拖得住」与
+ * 「不挤占内容」之间的折中（原生是 17px）。
+ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d4d4d4;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a3a3a3;
+}
+
+/* 滚动条两端的箭头按钮同样去掉：它们只在老式 Windows 界面里才合理。 */
+::-webkit-scrollbar-button {
+  display: none;
+}

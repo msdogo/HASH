@@ -9,6 +9,53 @@ import { spawnTracked, killTree } from '../adb/children'
  * 真正碰 child_process 的部分收在这里，与 capture/recorder.ts 同一分层手法。
  */
 
+/**
+ * 跑一次 `scrcpy --version` 取版本号。
+ *
+ * 用 spawnTracked 而不是裸 spawn：这条命令同样会拉起一个子进程，
+ * 而退出瞬间冒出来的子进程正是 children.ts 的闸门要消灭的东西。
+ *
+ * @returns 成功给出解析后的版本号；起不来或认不出都算失败。
+ */
+export async function probeScrcpyVersion(
+  exePath: string,
+  timeoutMs = 5_000,
+): Promise<{ ok: true; version: string } | { ok: false }> {
+  const child = spawnTracked(exePath, ['--version'], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (child === null) return { ok: false }
+  return await new Promise((resolve) => {
+    let out = ''
+    let done = false
+    const finish = (result: { ok: true; version: string } | { ok: false }): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      // 超时按失败处理，并把进程收掉（否则一个卡住的 scrcpy 会陪到下个版本）
+      void killTree(child as ChildProcess)
+      finish({ ok: false })
+    }, timeoutMs)
+    child.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString('utf8') })
+    child.on('error', () => { finish({ ok: false }) })
+    child.on('close', (code) => {
+      if (code !== 0) return finish({ ok: false })
+      const version = parseVersion(out)
+      finish(version === null ? { ok: false } : { ok: true, version })
+    })
+  })
+}
+
+/** 从 `scrcpy --version` 的输出里取版本号；认不出返回 null。 */
+function parseVersion(output: string): string | null {
+  const m = /scrcpy\s+(\d+\.\d+(?:\.\d+)?)/i.exec(output)
+  return m === null ? null : m[1]
+}
+
 export interface StartScrcpyDeps {
   /** scrcpy.exe 绝对路径。 */
   scrcpyPath: string

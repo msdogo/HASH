@@ -14,7 +14,6 @@ import { useDeviceStore } from '@/store/deviceStore'
  * 不得在组件里硬编码中文（tests/ui-contract.test.ts 静态断言守着）。
  */
 export interface DeviceRailProps {
-  onShowOverview?: () => void
   /**
    * 点某台设备之后的通知（R3-1）。
    *
@@ -152,15 +151,12 @@ export function DeviceRail(props: DeviceRailProps) {
         )}
       </nav>
 
-      {/* 规格 §9.2：底部固定「全部设备」入口（任务 10 的总览页从这里进） */}
-      <button
-        type="button"
-        onClick={props.onShowOverview}
-        className="border-t border-neutral-300 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-200/70"
-      >
-        {t('devices.all')}
-      </button>
-
+      {/*
+        * 这里原本有一个「全部设备」按钮（规格 §9.2 的入口）。
+        * 删掉的原因：顶栏已经有同名页签，同一个入口画两遍会让左下角看起来像
+        * 「还有一个没打开的页面」，而它其实只是另一个按钮。
+        * 底部保留的那行是**统计**（共 N 台 · M 台在线），不是入口，所以留着。
+        */}
       <div className="border-t border-neutral-300 px-3 py-2 text-[11px] leading-relaxed text-neutral-500">
         {tf('devices.summary', { total: summary.total, online: summary.online })}
       </div>

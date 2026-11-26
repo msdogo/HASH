@@ -4,6 +4,7 @@ import {
   DOT_CLASS,
   deviceFingerprint,
   deviceLabel,
+  deviceLogTag,
   nextActiveSerial,
   serialTail,
   snapshotFingerprint,
@@ -205,5 +206,34 @@ describe('快照指纹（裁决 5：不变就不推送）', () => {
     expect(snapshotFingerprint({ devices: [], adb: ok })).toBe(
       snapshotFingerprint({ devices: [], adb: { ...ok } }),
     )
+  })
+})
+
+/*
+ * 日志里的设备标识。
+ *
+ * 为什么不是只显示 serial 尾巴：用户对不上「A3P」是哪台机器；
+ * 为什么不是只显示型号：两台同型号设备（例如两台一模一样的遥控器）
+ * 在日志里会完全无法区分。
+ */
+describe('日志里的设备标识', () => {
+  it('型号 + serial 后 4 位', () => {
+    expect(deviceLogTag({ serial: '9N9CN2G0012A3P', model: 'DJI RC Plus 2' }, '9N9CN2G0012A3P'))
+      .toBe('DJI RC Plus 2 · 2A3P')
+  })
+
+  it('没有型号时只显示尾巴（不出现「· A3P」这种残句）', () => {
+    expect(deviceLogTag({ serial: '9N9CN2G0012A3P', model: '  ' }, '9N9CN2G0012A3P')).toBe('2A3P')
+    expect(deviceLogTag(undefined, '9N9CN2G0012A3P')).toBe('2A3P')
+  })
+
+  it('型号恰好等于尾巴时只说一次（别写成「2A3P · 2A3P」）', () => {
+    expect(deviceLogTag({ serial: '2A3P', model: '2A3P' }, '2A3P')).toBe('2A3P')
+  })
+
+  it('同型号的两台设备靠尾巴区分', () => {
+    const a = deviceLogTag({ serial: 'SERIAL0001AAAA', model: 'DJI RC Plus 2' }, 'SERIAL0001AAAA')
+    const b = deviceLogTag({ serial: 'SERIAL0001BBBB', model: 'DJI RC Plus 2' }, 'SERIAL0001BBBB')
+    expect(a).not.toBe(b)
   })
 })

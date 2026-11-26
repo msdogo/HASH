@@ -8,6 +8,14 @@ import type {
   CaptureRecordStartInput,
   CaptureRecordStopInput,
   CaptureScreenshotInput,
+  DeviceKeyeventInput,
+  MirrorStartInput,
+  MirrorStopInput,
+  AppsDetailInput,
+  AppsInstallInput,
+  AppsListInput,
+  AppsPackageInput,
+  AppsPullApkInput,
   DshApi,
   DragOutInput,
   FsBatchInput,
@@ -25,7 +33,9 @@ import type {
 } from '../src/shared/api-contract'
 import type { BatchRunData } from '../src/shared/batch'
 import type { CaptureResult, RecordStarted } from '../src/shared/capture'
+import type { AppDetail, AppEntry, InstallProgress } from '../src/shared/apps'
 import type { DragOutFailure, DragOutProgress } from '../src/shared/drag'
+import type { MirrorEvent, MirrorSession } from '../src/shared/mirror'
 import type { DevicesChangedBatch, DevicesListData, FsListData, IpcResult } from '../src/shared/types'
 import type { FsOpData, FsRemoveFactsData, LocalFileStat, LocalListData } from '../src/shared/file-ops'
 import type { SettingsData } from '../src/shared/settings'
@@ -84,6 +94,26 @@ export function buildApi(deps: PreloadDeps): DshApi {
     app: {
       /** 之前的 ping 保留，作为「桥是否活着」的探针。 */
       ping: (): string => 'pong',
+    },
+    /* 自绘顶栏的三个按钮（窗口是 frame:false，系统不再提供它们）。 */
+    window: {
+      minimize: (): Promise<IpcResult<void>> =>
+        deps.invoke(CH.WINDOW_MINIMIZE) as Promise<IpcResult<void>>,
+      toggleMaximize: (): Promise<IpcResult<boolean>> =>
+        deps.invoke(CH.WINDOW_TOGGLE_MAXIMIZE) as Promise<IpcResult<boolean>>,
+      close: (): Promise<IpcResult<void>> =>
+        deps.invoke(CH.WINDOW_CLOSE) as Promise<IpcResult<void>>,
+      isMaximized: (): Promise<IpcResult<boolean>> =>
+        deps.invoke(CH.WINDOW_IS_MAXIMIZED) as Promise<IpcResult<boolean>>,
+      openSettings: (): Promise<IpcResult<void>> =>
+        deps.invoke(CH.WINDOW_OPEN_SETTINGS) as Promise<IpcResult<void>>,
+      onMaximizedChanged: (callback: (maximized: boolean) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as boolean)
+        }
+        deps.on(CH.WINDOW_MAXIMIZED_CHANGED, listener)
+        return () => { deps.off(CH.WINDOW_MAXIMIZED_CHANGED, listener) }
+      },
     },
     devices: {
       /** 取设备表 + adb 自检状态。 */
@@ -254,6 +284,72 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 停止录屏并把 mp4 拉回本地。 */
       recordStop: (payload: CaptureRecordStopInput): Promise<IpcResult<CaptureResult>> =>
         deps.invoke(CH.CAPTURE_RECORD_STOP, payload) as Promise<IpcResult<CaptureResult>>,
+    },
+    apps: {
+      /** 列出第三方应用。 */
+      list: (payload: AppsListInput): Promise<IpcResult<AppEntry[]>> =>
+        deps.invoke(CH.APPS_LIST, payload) as Promise<IpcResult<AppEntry[]>>,
+      /** 单个应用详情。 */
+      detail: (payload: AppsDetailInput): Promise<IpcResult<AppDetail>> =>
+        deps.invoke(CH.APPS_DETAIL, payload) as Promise<IpcResult<AppDetail>>,
+      /** 拉取 APK 到本地。 */
+      pullApk: (payload: AppsPullApkInput): Promise<IpcResult<{ packageName: string; files: string[] }>> =>
+        deps.invoke(CH.APPS_PULL_APK, payload) as Promise<IpcResult<{ packageName: string; files: string[] }>>,
+      /** 安装本地 APK。 */
+      install: (payload: AppsInstallInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.APPS_INSTALL, payload) as Promise<IpcResult<void>>,
+      /** 强制停止。 */
+      forceStop: (payload: AppsPackageInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.APPS_FORCE_STOP, payload) as Promise<IpcResult<void>>,
+      /** 清空数据（不可逆）。 */
+      clearData: (payload: AppsPackageInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.APPS_CLEAR_DATA, payload) as Promise<IpcResult<void>>,
+      /** 卸载（不可逆）。 */
+      uninstall: (payload: AppsPackageInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.APPS_UNINSTALL, payload) as Promise<IpcResult<void>>,
+      /** 启动。 */
+      launch: (payload: AppsPackageInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.APPS_LAUNCH, payload) as Promise<IpcResult<void>>,
+      /** 选 apk；取消返回空串。 */
+      pickApk: (): Promise<IpcResult<string>> =>
+        deps.invoke(CH.APPS_PICK_APK) as Promise<IpcResult<string>>,
+      /** 订阅安装进度；返回退订函数（组件卸载时必须调用）。 */
+      onInstallProgress: (callback: (payload: InstallProgress) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as InstallProgress)
+        }
+        deps.on(CH.APPS_INSTALL_PROGRESS, listener)
+        return () => { deps.off(CH.APPS_INSTALL_PROGRESS, listener) }
+      },
+    },
+    device: {
+      /**
+       * 给一台设备发一次按键。
+       *
+       * 载荷里的 key 是六个枚举之一 —— 渲染层没有途径传命令片段，
+       * 数字码由主进程查表。这一层不做任何拼接。
+       */
+      pressKey: (payload: DeviceKeyeventInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.DEVICE_KEYEVENT, payload) as Promise<IpcResult<void>>,
+    },
+    mirror: {
+      /** 开始投屏（幂等：已在该设备上投屏时返回已有会话）。 */
+      start: (payload: MirrorStartInput): Promise<IpcResult<MirrorSession>> =>
+        deps.invoke(CH.MIRROR_START, payload) as Promise<IpcResult<MirrorSession>>,
+      /** 结束投屏。 */
+      stop: (payload: MirrorStopInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.MIRROR_STOP, payload) as Promise<IpcResult<void>>,
+      /** 当前全部会话。 */
+      list: (): Promise<IpcResult<MirrorSession[]>> =>
+        deps.invoke(CH.MIRROR_LIST) as Promise<IpcResult<MirrorSession[]>>,
+      /** 订阅会话变化；返回退订函数（组件卸载时必须调用）。 */
+      onChanged: (callback: (event: MirrorEvent) => void): (() => void) => {
+        const listener = (_event: unknown, payload: unknown): void => {
+          callback(payload as MirrorEvent)
+        }
+        deps.on(CH.MIRROR_CHANGED, listener)
+        return () => { deps.off(CH.MIRROR_CHANGED, listener) }
+      },
     },
   } satisfies DshApi
 }

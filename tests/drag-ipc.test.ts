@@ -1,4 +1,6 @@
+import { stubMirrorDeps } from './helpers/mirror-stubs'
 import { describe, it, expect, vi } from 'vitest'
+import { fakeWindow } from './fake-window'
 import { CH } from '../electron/ipc/channels'
 import { registerHandlers, type HandlerDeps, type IpcMainLike } from '../electron/ipc/handlers'
 import { DeviceManager } from '../electron/devices/manager'
@@ -7,6 +9,7 @@ import { DRAG_OUT_INPUT } from '../src/shared/api-contract'
 import type { TransferSnapshot, TransferTask } from '../src/shared/transfer'
 import { fakeBatch } from './fake-batch'
 import { fakeCapture } from './fake-capture'
+import { fakeApps } from './fake-apps'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -78,6 +81,15 @@ function harness(over: Partial<HandlerDeps> = {}, options: { hasDevice?: boolean
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    emitInstallProgress: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
     transfer: {
       enqueue: async () => task(),
       cancel: () => false,
@@ -198,6 +210,15 @@ describe('transfer:begin-drag-out 的前置检查', () => {
         pickDownloadDir: async () => '',
         batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    emitInstallProgress: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
         transfer: {
           enqueue: async () => task(), cancel: () => false, retry: () => false, get: () => undefined,
           snapshot: () => ({ tasks: [], running: 0, queued: 0 }), clearFinished: () => 0,

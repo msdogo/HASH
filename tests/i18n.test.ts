@@ -60,7 +60,6 @@ describe('i18n 基础能力', () => {
     for (const key of [
       'devices.title',
       'devices.empty',
-      'devices.all',
       'devices.adbChecking',
       'devices.adbUnusable',
       'devices.status.device',

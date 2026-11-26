@@ -70,6 +70,23 @@ export function serialTail(serial: string, n = 4): string {
 }
 
 /**
+ * 日志行里的设备标识：**型号 + serial 后 4 位**。
+ *
+ * 为什么两个都要：只有型号时，同型号的两台设备（例如两台一模一样的遥控器）
+ * 在日志里完全无法区分；只有 serial 尾巴时，用户对不上是哪台机器。
+ * 型号与尾巴相同时（设备没上报型号）只显示一次，不出现「A3P · A3P」。
+ */
+export function deviceLogTag(
+  device: { serial: string; model?: string } | undefined,
+  serial: string,
+): string {
+  const model = (device?.model ?? '').trim()
+  const tail = serialTail(serial)
+  if (model === '') return tail
+  return model === tail ? model : model + ' · ' + tail
+}
+
+/**
  * 设备行的主标题（裁决 9）。
  * 有型号显示型号；型号缺失/为空/全空白时回退 serial 后 4 位 ——
  * 绝不显示空字符串（那会让整行只剩一个状态点，用户分不清是哪台）。

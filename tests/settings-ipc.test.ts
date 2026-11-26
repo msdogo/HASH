@@ -1,10 +1,13 @@
+import { stubMirrorDeps } from './helpers/mirror-stubs'
 import { describe, it, expect } from 'vitest'
+import { fakeWindow } from './fake-window'
 import { CH } from '../electron/ipc/channels'
 import { registerHandlers, type HandlerDeps, type IpcMainLike } from '../electron/ipc/handlers'
 import { DeviceManager } from '../electron/devices/manager'
 import { E_ADB_NOT_FOUND, E_BAD_ARGS, E_NOT_FOUND } from '../src/shared/errors'
 import { fakeBatch } from './fake-batch'
 import { fakeCapture } from './fake-capture'
+import { fakeApps } from './fake-apps'
 import { fakeDrag } from './fake-drag'
 import { fakeLocalController } from './fake-local'
 import { fakeSettings } from './fake-settings'
@@ -61,6 +64,15 @@ function harness(over: Partial<HandlerDeps> = {}, options: {
     },
     batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
+    emitInstallProgress: () => undefined,
     drag: fakeDrag(),
     transfer: {
       enqueue: async () => { throw new Error('not used') },

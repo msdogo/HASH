@@ -12,12 +12,17 @@
     {
       "from": "resources/platform-tools",
       "to": "platform-tools"
+    },
+    {
+      "from": "resources/icon.png",
+      "to": "icon.png"
     }
   ],
   "asar": true,
   "beforePack": "scripts/before-pack.cjs",
   "afterPack": "scripts/after-pack.cjs",
   "win": {
+    "icon": "resources/icon.png",
     "target": [
       "nsis",
       "portable"

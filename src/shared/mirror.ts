@@ -25,6 +25,33 @@ export const DEFAULT_MAX_SIZE = 1024
  */
 export const MAX_SIZE_OPTIONS = [720, 1024, 1280, 1920] as const
 
+/**
+ * 一台设备的投屏会话。
+ *
+ * 放在 shared 而不是 electron/mirror/service.ts：渲染层的 DshApi 要引用它，
+ * 而渲染层不能 import 主进程目录（tsconfig 的 app 工程不含 electron/）。
+ */
+export interface MirrorSession {
+  serial: string
+  /** 子进程 pid（极早期退出时可能为 undefined）。 */
+  pid: number | undefined
+  /** 会话建立时刻（毫秒）。 */
+  startedAt: number
+  /** 窗口标题里的唯一 token（EnumWindows 靠它定位 HWND）。 */
+  token: string
+  /** scrcpy 来源与版本，供界面/日志显示。 */
+  source: 'bundled' | 'path'
+  version: string
+  /** 显示名（型号 + serial 尾号）。 */
+  title: string
+}
+
+/** 会话变化事件（主进程 → 渲染层）。 */
+export type MirrorEvent =
+  | { kind: 'started'; session: MirrorSession }
+  | { kind: 'exited'; serial: string; code: number | null }
+  | { kind: 'failed'; serial: string; code: string }
+
 /** 拼 scrcpy 命令行参数所需的输入。 */
 export interface ScrcpyArgsInput {
   /** 设备序列号。**每条 scrcpy 命令都必须带 -s**，与 adb 调用同一条红线。 */

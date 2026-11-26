@@ -1,4 +1,6 @@
+import { stubMirrorDeps } from './helpers/mirror-stubs'
 import { describe, it, expect, vi } from 'vitest'
+import { fakeWindow } from './fake-window'
 import { DeviceManager } from '../electron/devices/manager'
 import { CH, INVOKE_CHANNELS } from '../electron/ipc/channels'
 import {
@@ -15,6 +17,7 @@ import type { ListResult } from '../electron/fs/remote'
 import type { AdbState } from '../src/shared/types'
 import { fakeBatch } from './fake-batch'
 import { fakeCapture } from './fake-capture'
+import { fakeApps } from './fake-apps'
 import { fakeDrag } from './fake-drag'
 import { fakeSettings } from './fake-settings'
 
@@ -218,6 +221,15 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
     pickDownloadDir: async () => '',
     batch: fakeBatch(),
     capture: fakeCapture(),
+    // P1 第二批：本文件不测应用管理，空壳只为满足 HandlerDeps
+    apps: fakeApps(),
+    pickApk: async () => '',
+    windowOf: () => fakeWindow(),
+    closeWindowOf: () => undefined,
+    openSettings: () => undefined,
+    // 本文件不测投屏/按键：空壳只为满足 HandlerDeps（见 tests/mirror-*.test.ts）
+    ...stubMirrorDeps(),
+    emitInstallProgress: () => undefined,
     drag: fakeDrag(),
     ...over,
   }
