@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine, ListChecks, Search, X, Camera, CircleDot, Square } from 'lucide-react'
+import { FolderPlus, Pencil, Trash2, Copy, MoveRight, ArrowDownToLine, ListChecks, Search, X, Camera, CircleDot, Square, Smartphone } from 'lucide-react'
 import { isSearchClearKey, isSearchFocusKey } from '@shared/file-view'
 import { t } from '@shared/i18n'
 
@@ -39,6 +39,14 @@ export interface FileToolbarProps {
   onRecordStop: () => void
   /** 当前是否正在录屏（决定按钮显示「录屏」还是「停止录屏」）。 */
   recording: boolean
+  /* ---- P1 第三批：scrcpy 投屏 ---- */
+  /**
+   * 打开投屏窗口。
+   *
+   * 与截图/录屏同一判据（只受 ready 约束，与选中项无关）：
+   * 投的是整台设备的画面，跟选了几个文件没有关系。
+   */
+  onMirror: () => void
   /*
    * 【R10 删除】这里原本有一个 downloadHint（「没有本地目标目录」等提示）。
    * 提示区现在统一在**底部传输栏**（TransferDock）—— 简报明确要求的位置。
@@ -86,6 +94,13 @@ export function FileToolbar(props: FileToolbarProps) {
         onClick={props.recording ? props.onRecordStop : props.onRecordStart}
         disabled={disabled}
         danger={props.recording}
+      />
+      {/* 投屏：打开一个独立的原生嵌入窗口，不改当前页、不改选中项 */}
+      <ToolButton
+        icon={<Smartphone className="h-3.5 w-3.5" />}
+        label={t('mirror.open')}
+        onClick={props.onMirror}
+        disabled={disabled}
       />
       {/*
         * 全选（R2-2）。刻意只受 `disabled`（没有可用目录/没有设备）约束，

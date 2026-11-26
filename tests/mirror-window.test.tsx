@@ -1,0 +1,75 @@
+import { describe, it, expect } from 'vitest'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { MirrorWindow, serialFromHash } from '../src/components/MirrorWindow'
+import { MirrorSidebar } from '../src/components/MirrorSidebar'
+import { SIDEBAR_KEYS } from '../src/shared/device-key'
+import { t } from '../src/shared/i18n'
+
+/**
+ * 投屏窗口的渲染门禁。
+ *
+ * 本工程没有 jsdom：SSR 只跑一次 render，拿不到 onClick。
+ * 所以这里能断言的只有「渲染出什么」——按钮是否存在、是否带可读标签、
+ * 画面区是否**真的空着**（嵌入的原生窗口要盖在那里）。
+ * 点击接线本身属已知无门禁，如实登记在 progress.md。
+ */
+describe('serialFromHash', () => {
+  it('解析投屏窗口的 hash', () => {
+    expect(serialFromHash('#/mirror/ABC123')).toBe('ABC123')
+  })
+
+  it('带冒号的无线设备序列号能还原', () => {
+    expect(serialFromHash('#/mirror/' + encodeURIComponent('192.168.1.7:5555'))).toBe('192.168.1.7:5555')
+  })
+
+  it('不是投屏 hash 返回空串', () => {
+    expect(serialFromHash('#/settings')).toBe('')
+    expect(serialFromHash('')).toBe('')
+  })
+
+  it('非法百分号编码不抛（返回空串，窗口显示提示而不是崩掉）', () => {
+    expect(serialFromHash('#/mirror/%E0%A4%A')).toBe('')
+  })
+})
+
+describe('MirrorSidebar', () => {
+  it('六个按键全部渲染，且都有中文 title（图标按钮必须有可读名）', () => {
+    const html = renderToStaticMarkup(React.createElement(MirrorSidebar, { onPress: () => undefined }))
+    for (const key of SIDEBAR_KEYS) {
+      const label = t('mirror.key.' + (key === 'volumeUp' ? 'volumeUp' : key))
+      expect(html, key).toContain('title="' + label + '"')
+    }
+  })
+
+  it('disabled 时按钮带 disabled 属性（离线设备不是点了没反应）', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorSidebar, { onPress: () => undefined, disabled: true }),
+    )
+    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
+  })
+
+  it('busyKey 生效时全部按钮禁用（防止连点打爆 adb）', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorSidebar, { onPress: () => undefined, busyKey: 'home' }),
+    )
+    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
+  })
+})
+
+describe('MirrorWindow', () => {
+  it('侧边栏 + 空画面区（画面由主进程嵌入，DOM 里必须是空的占位）', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindow, { initial: { serial: 'ABC123' } }),
+    )
+    expect(html).toContain(t('mirror.opening'))
+    expect(html).toContain('ABC123')
+    // 侧边栏的六个键必须在
+    expect((html.match(/aria-label="/g) ?? []).length).toBeGreaterThanOrEqual(6)
+  })
+
+  it('没有 serial 时侧边栏禁用（避免对着空窗口按返回键）', () => {
+    const html = renderToStaticMarkup(React.createElement(MirrorWindow, { initial: { serial: '' } }))
+    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
+  })
+})

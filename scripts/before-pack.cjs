@@ -10,6 +10,21 @@
  * 加载方式无关。断言本体用动态 import 复用 .mjs，避免两处各写一份判定逻辑。
  */
 module.exports = async function beforePack() {
+  /*
+   * 两道断言都要过：adb 与 scrcpy 都是**必须随包分发**的运行时依赖，
+   * 缺任何一个都会打出一个「能装、能开、但功能报错」的包。
+   * scrcpy 缺失时的具体后果是：投屏按钮点了只得到「找不到投屏组件」。
+   */
+  const { assertScrcpy } = await import('./assert-scrcpy.mjs')
+  try {
+    const s = assertScrcpy()
+    console.log('[beforePack] 内置 scrcpy 校验通过：' + s.path + '（scrcpy ' + s.version + '，' + String(Math.round(s.bytes / 1024 / 1024)) + ' MB）')
+  } catch (err) {
+    const full = err instanceof Error ? err.message : String(err)
+    console.error(full)
+    throw new Error('内置 scrcpy 不可用，已中止打包（缺少 resources/scrcpy/scrcpy.exe，详见上方指引）')
+  }
+
   const { assertPlatformTools } = await import('./assert-platform-tools.mjs')
   try {
     const result = assertPlatformTools()

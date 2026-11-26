@@ -1,0 +1,127 @@
+import { useCallback, useEffect, useState } from 'react'
+import { MirrorSidebar } from './MirrorSidebar'
+import { errorText, t, tf } from '@shared/i18n'
+import type { DeviceKey } from '@shared/device-key'
+import type { MirrorEvent } from '@shared/mirror'
+import { WindowControls } from './WindowControls'
+
+/**
+ * 投屏窗口（每台设备一个）。
+ *
+ * ===== 布局 =====
+ * 顶栏（拖动区 + 关闭按钮）+ 主体：左侧 56px 侧边栏，右侧**故意留空**。
+ *
+ * 右侧那块空白由主进程用 SetParent 把 scrcpy 的原生窗口嵌进去
+ * （见 electron/mirror/window.ts）。所以这里绝不能在那块区域画任何东西 ——
+ * 原生子窗口永远画在渲染层之上，画了也看不见，只会让人误以为「那里该有内容」。
+ *
+ * ===== serial 从哪来 =====
+ * 主进程用 loadView(win, '#/mirror/<serial>') 打开，
+ * 这里读 location.hash 解析。与设置窗口同一手法（不打第二个 HTML 入口）。
+ */
+export interface MirrorWindowProps {
+  /**
+   * 渲染期注入（本工程没有 jsdom，SSR 只跑一次 render）。
+   *
+   * 生产不传 → 从 location.hash 解析。
+   */
+  initial?: { serial?: string }
+}
+
+/** 从 hash 里解析设备序列号；不是投屏窗口时返回空串。 */
+export function serialFromHash(hash: string): string {
+  const prefix = '#/mirror/'
+  if (!hash.startsWith(prefix)) return ''
+  try {
+    return decodeURIComponent(hash.slice(prefix.length))
+  } catch {
+    // 非法百分号编码：当成没有 serial（窗口会显示「未指定设备」而不是白屏崩掉）
+    return ''
+  }
+}
+
+export function MirrorWindow(props: MirrorWindowProps = {}) {
+  const serial = props.initial?.serial ?? (
+    typeof location === 'undefined' ? '' : serialFromHash(location.hash)
+  )
+  const [busyKey, setBusyKey] = useState<DeviceKey | null>(null)
+  const [notice, setNotice] = useState('')
+  const [ready, setReady] = useState(false)
+
+  /*
+   * 会话状态：主进程推 started/exited/failed。
+   *
+   * 这里只关心「这台设备的会话是不是还活着」——
+   * 会话结束后窗口由主进程关闭，所以正常情况下不会看到 exited；
+   * 但失败时要给出一条能看懂的原因，而不是一个静默的黑窗口。
+   */
+  useEffect(() => {
+    if (!window.api?.mirror) return
+    const off = window.api.mirror.onChanged((event: MirrorEvent) => {
+      if (event.kind === 'failed' && event.serial === serial) {
+        setNotice(errorText(event.code))
+      }
+      // started 事件带的是整个会话（不是单个 serial 字段），判定要读 session.serial
+      if (event.kind === 'started' && event.session.serial === serial) {
+        setReady(true)
+      }
+    })
+    return off
+  }, [serial])
+
+  const press = useCallback(async (key: DeviceKey) => {
+    if (serial === '' || busyKey !== null) return
+    setBusyKey(key)
+    try {
+      const result = await window.api.device.pressKey({ serial, key })
+      if (!result.ok) setNotice(errorText(result.error))
+    } finally {
+      setBusyKey(null)
+    }
+  }, [serial, busyKey])
+
+  return (
+    <div className="flex h-screen flex-col bg-neutral-900">
+      {/*
+        顶栏：拖动区 + 关闭按钮。
+        窗口是 frame:false —— 没有系统标题栏，用户唯一的「拖走/关掉」入口就在这里。
+        双击最大化由系统接管（app-region: drag 区域）。
+      */}
+      <header
+        className="flex h-9 shrink-0 items-center gap-2 border-b border-neutral-700 bg-neutral-800 pl-3"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <span className="truncate text-xs text-neutral-300">{t('mirror.running')}</span>
+        {serial !== '' && (
+          <span className="truncate text-[11px] text-neutral-500">{serial}</span>
+        )}
+        <span
+          className="ml-auto flex items-stretch"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <WindowControls />
+        </span>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <MirrorSidebar onPress={(key) => { void press(key) }} busyKey={busyKey} disabled={serial === ''} />
+        {/*
+          画面区：**空容器**。
+          主进程会把 scrcpy 的原生窗口 SetParent 到这块矩形的上方。
+          这里只放「还没就绪」的提示 —— 提示文字在嵌入完成前可见，
+          嵌入完成后会被原生窗口完全盖住（所以不需要额外隐藏逻辑）。
+        */}
+        <div className="relative min-w-0 flex-1">
+          <p className="absolute inset-x-0 top-1/2 -translate-y-1/2 px-6 text-center text-xs leading-relaxed text-neutral-500">
+            {notice !== '' ? notice : ready ? t('mirror.waiting') : t('mirror.opening')}
+          </p>
+        </div>
+      </div>
+      {notice !== '' && (
+        <div className="shrink-0 border-t border-amber-700 bg-amber-900/40 px-3 py-1.5 text-[11px] leading-snug text-amber-200">
+          {tf('mirror.embedFailed', { reason: notice })}
+        </div>
+      )}
+    </div>
+  )
+}

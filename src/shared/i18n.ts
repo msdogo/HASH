@@ -126,6 +126,23 @@ const messages: Record<string, string> = {
   'capture.record.stopped': '录屏已保存并复制路径：{path}',
   'capture.record.busy': '正在处理，请稍候…',
 
+  // ---- P1 第三批：scrcpy 投屏 ----
+  'mirror.open': '投屏',
+  'mirror.close': '关闭投屏',
+  'mirror.opening': '正在启动投屏…',
+  'mirror.waiting': '正在等待设备画面出现（首次启动约需 5～10 秒）…',
+  'mirror.embedFailed': '投屏窗口已启动，但画面没能嵌进来：{reason}。请关掉这个窗口重试',
+  'mirror.running': '投屏中',
+  // 侧边栏六个键的可见名（同时充当 title 与 aria-label）
+  'mirror.key.back': '返回',
+  'mirror.key.home': '主页',
+  'mirror.key.recents': '后台',
+  'mirror.key.volumeDown': '音量减',
+  'mirror.key.volumeUp': '音量加',
+  'mirror.key.power': '电源',
+  // 横屏/竖屏提示：设备旋转后窗口不会自动转，必须让用户知道能自己调
+  'mirror.hint': '若画面比例不对，请调整窗口大小',
+
   // ---- P1 第二批：应用管理 ----
   'nav.apps': '应用',
   'apps.title': '应用管理',

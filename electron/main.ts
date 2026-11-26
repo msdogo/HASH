@@ -23,6 +23,7 @@ import { createKeyService } from './device/keys'
 import { createMirrorService } from './mirror/service'
 import { locateScrcpy } from './mirror/binary'
 import { probeScrcpyVersion, startScrcpy } from './mirror/runner'
+import { createMirrorWindowManager } from './mirror/window'
 import { createWindowController } from './window/controller'
 import { closeOutcome, mayStartApp, restoreMainWindow } from './app/lifecycle'
 import { DragOutService } from './drag/service'
@@ -384,6 +385,45 @@ const keyService = createKeyService({
 })
 
 /**
+ * 投屏窗口管理器（每台设备一个窗口）。
+ *
+ * 与 mirrorService 分开：service 只管「scrcpy 进程活不活」，
+ * 窗口只管「画在屏幕上的那一块」。两者通过 started/exited 事件配合，
+ * 拆开之后 IPC 测试完全不需要 Electron 的 BrowserWindow。
+ *
+ * onClosed 走 void 是因为窗口的 'closed' 回调是同步的，而停止会话是异步的
+ * （要 killTree 等进程真死）；不 await 不影响正确性 —— 会话表在 stop 里先删。
+ */
+const mirrorWindows = createMirrorWindowManager({
+  preloadPath: path.join(dirname, 'preload.cjs'),
+  iconPath: path.join(process.resourcesPath, 'icon.png'),
+  loadView: (win, hash) => {
+    if (isDev) {
+      void win.loadURL((process.env.VITE_DEV_SERVER_URL as string) + hash)
+    } else {
+      void win.loadURL(APP_ENTRY_URL + hash)
+    }
+  },
+  onClosed: (serial) => {
+    void mirrorService.stop(serial).catch((err: unknown) => {
+      console.warn('[mirror] 关窗口时结束投屏失败：' + String(err))
+    })
+  },
+  onEmbedFailed: (serial, reason) => {
+    /*
+     * 嵌入失败：把窗口关掉并结束会话。
+     *
+     * 为什么不「留着窗口让用户看看」：剩下的是一个黑框 + 一条错误提示，
+     * 而 scrcpy 进程还在占着 ADB 通道。关掉重试是唯一有意义的出路 ——
+     * 与 service 的「失败就把会话清掉，不自动重启」同一条原则。
+     */
+    console.warn('[mirror] 嵌入失败（' + serial + '）：' + reason)
+    mirrorWindows.close(serial)
+    void mirrorService.stop(serial).catch(() => undefined)
+  },
+})
+
+/**
  * 投屏服务（P1 第三批：scrcpy）。
  *
  * locate 每次现查：用户可能中途才把 scrcpy 装到 PATH 上，
@@ -407,6 +447,15 @@ const mirrorService = createMirrorService({
     }),
   spawn: startScrcpy,
   emit: (event) => {
+    /*
+     * 会话事件 → 窗口 + 渲染层，两条路都要走。
+     *
+     * 窗口这条路先走：会话结束后渲染层收到 exited 时窗口已经在关，
+     * 顺序反过来会让用户看到「窗口里闪一下暂停态」。
+     */
+    if (event.kind === 'started') mirrorWindows.open(event.session)
+    else mirrorWindows.close(event.serial)
+
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue
       win.webContents.send(CH.MIRROR_CHANGED, event)
@@ -1047,6 +1096,8 @@ app.on('before-quit', () => {
   void mirrorService.dispose().catch((err: unknown) => {
     console.warn('[mirror] 退出时结束投屏失败：' + String(err))
   })
+  // 窗口必须一起关：宿主窗口先于子窗口销毁会留下一个悬空的原生窗口
+  mirrorWindows.closeAll()
   /*
    * 拖拽临时目录的兜底清理（简报 C 硬性要求）。
    *

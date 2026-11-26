@@ -16,9 +16,16 @@
     {
       "from": "resources/icon.png",
       "to": "icon.png"
+    },
+    {
+      "from": "resources/scrcpy",
+      "to": "scrcpy"
     }
   ],
   "asar": true,
+  "asarUnpack": [
+    "**/node_modules/koffi/**"
+  ],
   "beforePack": "scripts/before-pack.cjs",
   "afterPack": "scripts/after-pack.cjs",
   "win": {

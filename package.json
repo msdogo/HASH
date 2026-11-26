@@ -10,9 +10,11 @@
     "test": "vitest run",
     "fetch-platform-tools": "node scripts/fetch-platform-tools.mjs",
     "assert-platform-tools": "node scripts/assert-platform-tools.mjs",
+    "fetch-scrcpy": "node scripts/fetch-scrcpy.mjs",
+    "assert-scrcpy": "node scripts/assert-scrcpy.mjs",
     "bump": "node scripts/bump-version.mjs",
     "assert-version": "node scripts/assert-version.mjs",
-    "dist": "npm run fetch-platform-tools && npm run assert-platform-tools && npm run assert-version && npm run build && electron-builder"
+    "dist": "npm run fetch-platform-tools && npm run assert-platform-tools && npm run fetch-scrcpy && npm run assert-scrcpy && npm run assert-version && npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

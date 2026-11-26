@@ -4,6 +4,7 @@ import { TransferDock } from './components/TransferDock'
 import { LogBar } from './components/LogBar'
 import { WindowControls } from './components/WindowControls'
 import { SettingsWindow } from './components/SettingsWindow'
+import { MirrorWindow, serialFromHash } from './components/MirrorWindow'
 import { FilesPage } from '@/pages/FilesPage'
 import { OverviewPage } from '@/pages/OverviewPage'
 import { AppsPage } from '@/pages/AppsPage'
@@ -38,7 +39,20 @@ export interface AppProps {
    *
    * 生产不传 → 首屏永远是文件页 / 按 location.hash 分流。
    */
-  initial?: { page?: Page; settingsWindow?: boolean }
+  initial?: { page?: Page; settingsWindow?: boolean; mirrorSerial?: string }
+}
+
+/**
+ * 当前是否是「投屏窗口」。
+ *
+ * 三种窗口共用同一份渲染包（主 / 设置 / 投屏），差别只有「渲染哪棵树」。
+ * 与 isSettingsWindow 同一手法：生产读 hash，测试用 initial 注入。
+ */
+function mirrorSerialOf(props: AppProps): string {
+  if (props.initial?.mirrorSerial !== undefined) return props.initial.mirrorSerial
+  if (props.initial?.settingsWindow === true || props.initial?.page !== undefined) return ''
+  if (typeof location === 'undefined') return ''
+  return serialFromHash(location.hash)
 }
 
 /**
@@ -69,6 +83,17 @@ export function App(props: AppProps = {}) {
    */
   if (isSettingsWindow(props)) {
     return <SettingsWindow />
+  }
+
+  /*
+   * 投屏窗口：只渲染投屏那一棵树。
+   *
+   * 判断放在设置之后：两者互斥，先判设置是为了让
+   * 「initial.settingsWindow === true」这条注入路径不被 mirror 分支抢走。
+   */
+  const mirrorSerial = mirrorSerialOf(props)
+  if (mirrorSerial !== '') {
+    return <MirrorWindow initial={{ serial: mirrorSerial }} />
   }
 
   return (

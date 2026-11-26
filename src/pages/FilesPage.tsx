@@ -689,6 +689,19 @@ export function FilesPage() {
     }
   }, [serial, captureBusy, copyPath, setQueueNotice])
 
+  /*
+   * P1 第三批：打开投屏窗口。
+   *
+   * 会话在主进程建（幂等：已在投屏就聚焦已有窗口），渲染层只负责发起。
+   * 失败时把错误码交给底栏 —— 与截图/录屏同一套提示通道，
+   * 用户不需要分辨「这个功能的错误去哪看」。
+   */
+  const handleMirror = useCallback(async () => {
+    if (serial === null) return
+    const result = await window.api.mirror.start({ serial })
+    if (!result.ok) setQueueNotice(errorText(result.error))
+  }, [serial, setQueueNotice])
+
   const handleCopyTo = useCallback(() => {
     const targets = selectedTargets()
     if (targets.length === 0) { setQueueNotice(t('op.noSelection')); return }
@@ -793,6 +806,7 @@ export function FilesPage() {
         onScreenshot={() => { void handleScreenshot() }}
         onRecordStart={() => { void handleRecordStart() }}
         onRecordStop={() => { void handleRecordStop() }}
+        onMirror={() => { void handleMirror() }}
         recording={recording}
         /* R6：搜索框在工具条右端（不新增行高）。过滤词进 store 分片，切设备各记各的。 */
         query={current.query}

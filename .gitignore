@@ -3,6 +3,8 @@ dist/
 dist-electron/
 release/
 resources/platform-tools/
+# 内置 scrcpy（约 17 MB，随包分发但不入库；npm run fetch-scrcpy 可从零重建）
+resources/scrcpy/
 .superpowers/
 # 版本号机制的本机状态（上次 bump 的 commit / 上次打包的版本），不入库
 build-info.json
