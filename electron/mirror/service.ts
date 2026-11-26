@@ -1,7 +1,7 @@
 import type { DeviceSession } from '../../src/shared/types'
 import {
   E_ADB_NOT_FOUND,
-  E_MIRROR_ACTIVE,
+  E_MIRROR_START_FAILED,
   E_NO_SERIAL,
   E_SCRCPY_NOT_FOUND,
 } from '../../src/shared/errors'
@@ -145,8 +145,14 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
       const handle = deps.spawn({ scrcpyPath: located.path, adbPath: adb, args })
       if (handle === null) {
-        // 闸门已关（应用正在退出）：按启动失败处理，不登记会话
-        throw new Error(E_MIRROR_ACTIVE)
+        /*
+         * 闸门已关（应用正在退出）→ 按**启动失败**处理，不登记会话。
+         *
+         * 刻意不是 E_MIRROR_ACTIVE：那个码的意思是「这台设备已经在投屏了」，
+         * 而这里的真相是「应用要关了，起不了新进程」。给错码会把用户引向
+         * 「去关掉已有窗口」这条完全错误的动作。
+         */
+        throw new Error(E_MIRROR_START_FAILED)
       }
 
       const session: MirrorSession = {

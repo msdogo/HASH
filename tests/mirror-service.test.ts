@@ -3,6 +3,7 @@ import { createMirrorService, type SpawnScrcpy } from '../electron/mirror/servic
 import type { ScrcpyHandle } from '../electron/mirror/runner'
 import {
   E_ADB_NOT_FOUND,
+  E_MIRROR_START_FAILED,
   E_NO_SERIAL,
   E_SCRCPY_NOT_FOUND,
 } from '../src/shared/errors'
@@ -222,6 +223,17 @@ describe('mirror service', () => {
     await svc2.start('S2')
     await svc2.start('S1')
     expect(svc2.list().map((s) => s.serial)).toEqual(['S2', 'S1'])
+  })
+
+  it('子进程闸门已关（应用退出中）→ E_MIRROR_START_FAILED，**不是** E_MIRROR_ACTIVE', async () => {
+    /*
+     * 这条覆盖一个容易写错的语义：spawn 返回 null 表示「闸门关了、没起进程」，
+     * 那和「这台设备已经在投屏」是两件事。给错码会把用户引向
+     * 「去关掉已有窗口」——而根本没有窗口可关。
+     */
+    const { svc } = makeService({ spawn: () => null })
+    await expect(svc.start('S1')).rejects.toThrow(E_MIRROR_START_FAILED)
+    expect(svc.list()).toHaveLength(0)
   })
 
   it('会话里带型号标题（界面/窗口标题用）', async () => {
