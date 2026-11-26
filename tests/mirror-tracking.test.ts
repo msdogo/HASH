@@ -32,13 +32,18 @@ describe('scrcpy 子进程进全局跟踪集合', () => {
     const before = adbChildCount()
 
     /*
-     * 用 node 自己当替身：参数里给一个「睡 60 秒」的脚本。
-     * 这不是在测 scrcpy 的参数（那有专门的用例），只测「起进程这件事走了闸门」。
+     * 用 node 自己当替身：起一个「睡 60 秒」的脚本。
+     *
+     * 标记必须**唯一**：tests/children-shutdown.test.ts 会扫 wmic 里所有
+     * 带 'setTimeout' 字样的 node 进程来断言「系统层面没有残留」。
+     * 如果这里也用 setTimeout，那条用例会数到本文件起的替身进程而误报
+     * （实测踩过：整个套件 1 failed，单跑该文件却通过）。
+     * 换一个不可能与它撞车的标记，两个文件就能共存。
      */
     const handle = startScrcpy({
       scrcpyPath: process.execPath,
       adbPath: 'C:\\adb.exe',
-      args: ['-e', 'setTimeout(() => {}, 60000)'],
+      args: ['-e', 'setInterval(function adbfmMirrorTrackingProbe() {}, 60000)'],
     })
     expect(handle).not.toBeNull()
     if (handle === null) return
