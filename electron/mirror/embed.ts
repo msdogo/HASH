@@ -15,25 +15,28 @@ import { createRequire } from 'node:module'
  *   ① SetWindowLongPtrW(GWL_STYLE, style | WS_CHILD & ~WS_POPUP ...)
  *   ② SetParent
  *   ③ MoveWindow
- * 验收断言：GetParent(child) === parent。不成立就判失败，**不**当成嵌入成功。
+ * 验收断言：GetParent(child) === parent，且宿主移动后子窗口矩形跟着变。
+ *
+ * ===== koffi 指针的坑（实测踩过）=====
+ * koffi 把 void* 交回来是一个「外部对象」，**不能**直接 Number() 或做字符串拼接 ——
+ * 会抛 "Cannot convert object to primitive value"。必须用 koffi.address() 取数值，
+ * 且取回来的仍要是 number 才能与 Electron 的 HWND 比较。
+ * 本文件所有 HWND 一律先归一成 number 再参与运算（addr / hwndOf 两个函数）。
  */
 
-/**
- * 用到的 Win32 常量。
- *
- * GWL_STYLE = -16 是 Windows SDK 里 `#define GWL_STYLE (-16)` 的原值；
- * 其余都是 winuser.h 的位标志，写成十六进制便于与文档对照。
- */
+/** 用到的 Win32 常量（winuser.h 原值）。 */
 const GWL_STYLE = -16
 const WS_CHILD = 0x40000000
 const WS_POPUP = 0x80000000
 const WS_CAPTION = 0x00c00000
 const WS_THICKFRAME = 0x00040000
 const SW_SHOW = 5
+/** 窗口标题上限（Windows 标题实际不会超过这个量级；缓冲区只分配一次）。 */
+const TITLE_MAX = 4096
 
 /** 一个已嵌入的 scrcpy 窗口。 */
 export interface EmbeddedWindow {
-  /** scrcpy 的原生窗口句柄。 */
+  /** scrcpy 的原生窗口句柄（number）。 */
   childHwnd: number
   /** 解嵌：把窗口从宿主上摘下来（宿主销毁前应调用）。 */
   detach: () => void
@@ -53,22 +56,25 @@ export interface EmbedRect {
   height: number
 }
 
-/** koffi 用户的签名声明面（只列用到的）。 */
+/** koffi 的指针表示（不能当数字用，必须过 koffi.address）。 */
+type KoffiPtr = unknown
+
 interface Win32 {
-  EnumWindows: (callback: (hwnd: number, lParam: number) => boolean, lParam: number) => boolean
-  GetWindowTextW: (hwnd: number, buffer: Buffer, maxCount: number) => number
-  GetWindowThreadProcessId: (hwnd: number, processId: Buffer) => number
-  SetParent: (child: number, parent: number) => number
-  GetParent: (hwnd: number) => number
-  SetWindowLongPtrW: (hwnd: number, index: number, value: number) => number
-  GetWindowLongPtrW: (hwnd: number, index: number) => number
-  MoveWindow: (hwnd: number, x: number, y: number, width: number, height: number, repaint: boolean) => boolean
-  ShowWindow: (hwnd: number, cmd: number) => boolean
-  IsWindow: (hwnd: number) => boolean
+  address: (ptr: KoffiPtr) => number
+  EnumWindows: (callback: (hwnd: KoffiPtr) => boolean, lParam: number) => boolean
+  GetWindowTextW: (hwnd: KoffiPtr, buffer: Buffer, maxCount: number) => number
+  SetParent: (child: KoffiPtr, parent: KoffiPtr) => KoffiPtr
+  GetParent: (hwnd: KoffiPtr) => KoffiPtr
+  SetWindowLongPtrW: (hwnd: KoffiPtr, index: number, value: number) => number
+  GetWindowLongPtrW: (hwnd: KoffiPtr, index: number) => number
+  MoveWindow: (hwnd: KoffiPtr, x: number, y: number, w: number, h: number, repaint: boolean) => boolean
+  ShowWindow: (hwnd: KoffiPtr, cmd: number) => boolean
+  IsWindow: (hwnd: KoffiPtr) => boolean
+  GetWindowRect: (hwnd: KoffiPtr, rect: Buffer) => boolean
 }
 
 let win32: Win32 | null = null
-let loadError: string | null = null
+let loadError = ''
 
 /**
  * 惰性加载 user32。
@@ -79,69 +85,65 @@ let loadError: string | null = null
  */
 function lib(): Win32 {
   if (win32 !== null) return win32
-  try {
-    const require = createRequire(import.meta.url)
-    const koffi = require('koffi') as {
-      load: (name: string) => {
-        func: (definition: string) => (...args: never[]) => unknown
-      }
-      proto: (definition: string) => unknown
-    }
-    const user32 = koffi.load('user32.dll')
-    /* 回调原型必须先声明类型，koffi 才肯把 JS 函数传给 EnumWindows。 */
-    const enumProc = koffi.proto('bool __stdcall enumProc(void *hwnd, intptr lParam)')
-    const raw = {
-      EnumWindows: user32.func('bool __stdcall EnumWindows(enumProc *cb, intptr lParam)'),
-      GetWindowTextW: user32.func('int __stdcall GetWindowTextW(void *hwnd, _Out_ uint16_t *buf, int max)'),
-      GetWindowThreadProcessId: user32.func('uint32 __stdcall GetWindowThreadProcessId(void *hwnd, _Out_ uint32 *pid)'),
-      SetParent: user32.func('void *__stdcall SetParent(void *child, void *parent)'),
-      GetParent: user32.func('void *__stdcall GetParent(void *hwnd)'),
-      SetWindowLongPtrW: user32.func('intptr __stdcall SetWindowLongPtrW(void *hwnd, int index, intptr value)'),
-      GetWindowLongPtrW: user32.func('intptr __stdcall GetWindowLongPtrW(void *hwnd, int index)'),
-      MoveWindow: user32.func('bool __stdcall MoveWindow(void *hwnd, int x, int y, int w, int h, bool repaint)'),
-      ShowWindow: user32.func('bool __stdcall ShowWindow(void *hwnd, int cmd)'),
-      IsWindow: user32.func('bool __stdcall IsWindow(void *hwnd)'),
-    }
-    void enumProc
-    win32 = raw as unknown as Win32
-    return win32
-  } catch (err) {
-    loadError = err instanceof Error ? err.message : String(err)
-    throw new Error('user32 unavailable: ' + loadError)
+  const require = createRequire(import.meta.url)
+  const koffi = require('koffi') as {
+    load: (name: string) => { func: (definition: string) => (...args: never[]) => unknown }
+    proto: (definition: string) => unknown
+    address: (ptr: unknown) => bigint | number
   }
+  const user32 = koffi.load('user32.dll')
+  /* 回调原型必须先声明类型，koffi 才肯把 JS 函数传给 EnumWindows。 */
+  koffi.proto('bool __stdcall enumProc(void *hwnd, intptr lParam)')
+
+  win32 = {
+    /*
+     * 指针 → number。
+     *
+     * 两步都必须做：koffi.address 返回 bigint（或 number），
+     * 而 koffi 的 pointer 参数既能收 number 也能收原生指针对象 ——
+     * 统一成 number 之后，本文件里所有比较（GetParent === 宿主）才有意义。
+     */
+    address: (ptr) => Number(koffi.address(ptr)),
+    EnumWindows: user32.func('bool __stdcall EnumWindows(enumProc *cb, intptr lParam)') as never,
+    GetWindowTextW: user32.func('int __stdcall GetWindowTextW(void *hwnd, _Out_ uint16_t *buf, int max)') as never,
+    SetParent: user32.func('void *__stdcall SetParent(void *child, void *parent)') as never,
+    GetParent: user32.func('void *__stdcall GetParent(void *hwnd)') as never,
+    SetWindowLongPtrW: user32.func('intptr __stdcall SetWindowLongPtrW(void *hwnd, int index, intptr value)') as never,
+    GetWindowLongPtrW: user32.func('intptr __stdcall GetWindowLongPtrW(void *hwnd, int index)') as never,
+    MoveWindow: user32.func('bool __stdcall MoveWindow(void *hwnd, int x, int y, int w, int h, bool repaint)') as never,
+    ShowWindow: user32.func('bool __stdcall ShowWindow(void *hwnd, int cmd)') as never,
+    IsWindow: user32.func('bool __stdcall IsWindow(void *hwnd)') as never,
+    GetWindowRect: user32.func('bool __stdcall GetWindowRect(void *hwnd, _Out_ int32_t *rect)') as never,
+  }
+  return win32
 }
 
-/**
- * 标题缓冲区。
- *
- * Windows 的窗口标题理论上可以更长，但实际用到几百个字符已经很极端；
- * 4096 个 UTF-16 码元给足余量，且只分配一次（每次 EnumWindows 复用）。
- */
-const TITLE_BUFFER = Buffer.alloc(4096 * 2)
+/** 标题缓冲区（每次枚举复用，避免每窗口一次分配）。 */
+const TITLE_BUFFER = Buffer.alloc(TITLE_MAX * 2)
 
 /** 读出窗口标题；失败返回空串。 */
-function titleOf(hwnd: number): string {
-  const lib32 = lib()
-  const len = lib32.GetWindowTextW(hwnd, TITLE_BUFFER, 4096)
-  if (len <= 0) return ''
-  return TITLE_BUFFER.subarray(0, len * 2).toString('utf16le')
+function titleOf(hwnd: KoffiPtr): string {
+  const n = lib().GetWindowTextW(hwnd, TITLE_BUFFER, TITLE_MAX)
+  if (n <= 0) return ''
+  return TITLE_BUFFER.subarray(0, n * 2).toString('utf16le')
 }
 
 /**
- * 按标题**精确**匹配查找窗口。
+ * 按标题**精确**匹配查找窗口（同步一次）。
  *
  * 为什么精确而不是包含：前缀相同（`adbfm-scrcpy-`）的两个窗口必须靠后缀 token 区分，
- * 用 includes 会让两台设备的投屏互相认错 —— 表现为「B 的画面出现在 A 的窗口里」，
- * 这种缺陷排查起来极其昂贵。
+ * 用 includes 会让两台设备的投屏互相认错 —— 表现为「B 的画面出现在 A 的窗口里」。
+ *
+ * @returns HWND（number）；没找到返回 0。
  */
 export function findWindowOnce(title: string): number {
   try {
-    const lib32 = lib()
+    const l = lib()
     let found = 0
-    lib32.EnumWindows((hwnd) => {
+    l.EnumWindows((hwnd) => {
       if (titleOf(hwnd) === title) {
-        found = hwnd
-        return false // 找到即停，不为无关窗口继续枚举
+        found = l.address(hwnd)
+        return false // 找到即停
       }
       return true
     }, 0)
@@ -174,34 +176,34 @@ export async function findWindowByTitle(
 /**
  * 把一个 scrcpy 窗口嵌入宿主窗口的客户区。
  *
- * @param hostHwnd 宿主窗口 HWND（Electron 的 getNativeWindowHandle 转出来）。
- * @param childHwnd scrcpy 的 HWND。
- * @param rect 目标矩形（宿主客户区坐标）。
+ * @param hostHwnd 宿主 HWND（number，来自 hwndOf）。
+ * @param childHwnd scrcpy 的 HWND（number，来自 findWindowByTitle）。
+ * @param rect 目标矩形（宿主客户区坐标，物理像素）。
  */
 export function embedWindow(hostHwnd: number, childHwnd: number, rect: EmbedRect): EmbedResult {
   if (hostHwnd === 0 || childHwnd === 0) return { ok: false, reason: 'invalid hwnd' }
   try {
-    const lib32 = lib()
-    if (!lib32.IsWindow(childHwnd)) return { ok: false, reason: 'child window gone' }
+    const l = lib()
+    if (!l.IsWindow(childHwnd)) return { ok: false, reason: 'child window gone' }
 
     /* ① 先改样式。顺序反了就是 spike 里那个「假成功」。 */
-    const style = Number(lib32.GetWindowLongPtrW(childHwnd, GWL_STYLE))
+    const style = Number(l.GetWindowLongPtrW(childHwnd, GWL_STYLE))
     const nextStyle = (style | WS_CHILD) & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME
-    lib32.SetWindowLongPtrW(childHwnd, GWL_STYLE, nextStyle)
+    l.SetWindowLongPtrW(childHwnd, GWL_STYLE, nextStyle)
 
     /* ② 建立父子关系 */
-    lib32.SetParent(childHwnd, hostHwnd)
+    l.SetParent(childHwnd, hostHwnd)
 
     /* ③ 摆进客户区 */
-    lib32.MoveWindow(childHwnd, rect.x, rect.y, rect.width, rect.height, true)
-    lib32.ShowWindow(childHwnd, SW_SHOW)
+    l.MoveWindow(childHwnd, rect.x, rect.y, rect.width, rect.height, true)
+    l.ShowWindow(childHwnd, SW_SHOW)
 
     /*
      * 验收断言：GetParent 必须真的等于宿主。
      * 不等就说明样式没生效 —— 此时不能当真嵌入继续走，
      * 否则用户看到的是「窗口飘在屏幕左上角」这种更难解释的状态。
      */
-    const parent = Number(lib32.GetParent(childHwnd))
+    const parent = l.address(l.GetParent(childHwnd))
     if (parent !== hostHwnd) {
       return { ok: false, reason: 'GetParent mismatch: ' + String(parent) + ' != ' + String(hostHwnd) }
     }
@@ -212,7 +214,7 @@ export function embedWindow(hostHwnd: number, childHwnd: number, rect: EmbedRect
         childHwnd,
         detach: () => {
           try {
-            lib32.SetParent(childHwnd, 0)
+            l.SetParent(childHwnd, 0)
           } catch {
             // 解嵌失败无补救动作：调用方随后会直接 kill 进程
           }
@@ -220,23 +222,46 @@ export function embedWindow(hostHwnd: number, childHwnd: number, rect: EmbedRect
       },
     }
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    loadError = err instanceof Error ? err.message : String(err)
+    return { ok: false, reason: loadError }
   }
 }
 
 /** 宿主窗口尺寸变化时把子窗口重新铺满客户区。 */
 export function resizeEmbedded(childHwnd: number, rect: EmbedRect): boolean {
   try {
-    return lib().MoveWindow(childHwnd, rect.x, rect.y, rect.width, rect.height, true) as boolean
+    return lib().MoveWindow(childHwnd, rect.x, rect.y, rect.width, rect.height, true)
   } catch {
     return false
   }
 }
 
 /**
- * 把 Electron 的 nativeHandle Buffer 转成 HWND。
+ * 子窗口当前的屏幕矩形（验收「跟随宿主」用；坐标系为屏幕坐标）。
  *
- * 64 位下是 8 字节小端；HWND 实际值远小于 2^53，降成 number 不会丢精度。
+ * 为什么需要它：GetParent 相等只证明「父子关系建立了」，
+ * 而 spike 里那个假成功的窗口**也**能通过 SetParent 返回非零的弱检查。
+ * 真正能证明嵌入生效的是「宿主移动时子窗口跟着动」。
+ */
+export function windowRectOf(childHwnd: number): { left: number; top: number; right: number; bottom: number } | null {
+  try {
+    const buffer = Buffer.alloc(16)
+    if (!lib().GetWindowRect(childHwnd, buffer)) return null
+    return {
+      left: buffer.readInt32LE(0),
+      top: buffer.readInt32LE(4),
+      right: buffer.readInt32LE(8),
+      bottom: buffer.readInt32LE(12),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把 Electron 的 nativeHandle Buffer 转成 HWND（number）。
+ *
+ * 64 位下是 8 字节小端；HWND 实际值远小于 2^53，降成 number 不丢精度。
  */
 export function hwndOf(nativeHandle: Buffer): number {
   if (nativeHandle.length >= 8) return Number(nativeHandle.readBigUInt64LE(0))

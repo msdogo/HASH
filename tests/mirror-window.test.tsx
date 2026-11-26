@@ -57,10 +57,21 @@ describe('MirrorSidebar', () => {
   })
 })
 
+/**
+ * 用与 tests/app-nav.test.tsx 同一手法断言：把组件断言成一个「收 props 的普通组件」。
+ *
+ * 为什么需要这层断言：MirrorWindow 的签名是 `(props: MirrorWindowProps = {})`，
+ * React.createElement 的类型重载认不出「可选 props 的组件」，会报 attributes 不匹配。
+ * 这不是类型系统的妥协，而是「注入点只用于测试」这件事的如实表达。
+ */
+const MirrorWindowWithProps = MirrorWindow as unknown as (
+  props: { initial?: { serial?: string } },
+) => React.ReactElement
+
 describe('MirrorWindow', () => {
   it('侧边栏 + 空画面区（画面由主进程嵌入，DOM 里必须是空的占位）', () => {
     const html = renderToStaticMarkup(
-      React.createElement(MirrorWindow, { initial: { serial: 'ABC123' } }),
+      React.createElement(MirrorWindowWithProps, { initial: { serial: 'ABC123' } }),
     )
     expect(html).toContain(t('mirror.opening'))
     expect(html).toContain('ABC123')
@@ -69,7 +80,7 @@ describe('MirrorWindow', () => {
   })
 
   it('没有 serial 时侧边栏禁用（避免对着空窗口按返回键）', () => {
-    const html = renderToStaticMarkup(React.createElement(MirrorWindow, { initial: { serial: '' } }))
+    const html = renderToStaticMarkup(React.createElement(MirrorWindowWithProps, { initial: { serial: '' } }))
     expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
   })
 })

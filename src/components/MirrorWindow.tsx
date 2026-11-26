@@ -103,8 +103,13 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
         </span>
       </header>
 
+      {/*
+        主体：左画面、右按键。
+        顺序必须与 electron/mirror/window.ts 的 contentRect 一致（那边算的是
+        「画面矩形 = 整个客户区减去右侧 SIDEBAR_WIDTH」）；两边各写一份却不一致时，
+        表现是「画面压住了按键」或「按键与画面之间一条黑缝」，很难一眼看出原因。
+      */}
       <div className="flex min-h-0 flex-1">
-        <MirrorSidebar onPress={(key) => { void press(key) }} busyKey={busyKey} disabled={serial === ''} />
         {/*
           画面区：**空容器**。
           主进程会把 scrcpy 的原生窗口 SetParent 到这块矩形的上方。
@@ -116,6 +121,7 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
             {notice !== '' ? notice : ready ? t('mirror.waiting') : t('mirror.opening')}
           </p>
         </div>
+        <MirrorSidebar onPress={(key) => { void press(key) }} busyKey={busyKey} disabled={serial === ''} />
       </div>
       {notice !== '' && (
         <div className="shrink-0 border-t border-amber-700 bg-amber-900/40 px-3 py-1.5 text-[11px] leading-snug text-amber-200">

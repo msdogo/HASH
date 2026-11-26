@@ -18,7 +18,13 @@ import { SCRCPY_WINDOW_PREFIX } from '../../src/shared/mirror'
  * 所以渲染层只画侧边栏，其余部分保持透明/空。
  */
 
-/** 侧边栏宽度（与 MirrorWindow.tsx 的 w-14 = 56px 必须一致）。 */
+/**
+ * 侧边栏宽度（与 MirrorWindow.tsx 的 w-14 = 56px 必须一致）。
+ *
+ * 侧边栏在**右侧**：画面靠左、按键靠右。理由是手指习惯 ——
+ * 投屏窗口通常贴着屏幕左边放，把按键放在右手边（鼠标/触控板那一侧）
+ * 来回移动的距离最短；而且与 Escrcpy 一类工具的位置一致。
+ */
 export const SIDEBAR_WIDTH = 56
 
 export interface MirrorWindowManagerDeps {
@@ -174,7 +180,8 @@ function contentRect(win: BrowserWindow): { x: number; y: number; width: number;
   const scale = screen.getDisplayMatching(bounds).scaleFactor
   const sidebar = Math.round(SIDEBAR_WIDTH * scale)
   return {
-    x: sidebar,
+    // 侧边栏在右侧 → 画面从 x=0 开始，宽度扣掉侧边栏
+    x: 0,
     y: 0,
     width: Math.max(0, Math.round(bounds.width * scale) - sidebar),
     height: Math.round(bounds.height * scale),
