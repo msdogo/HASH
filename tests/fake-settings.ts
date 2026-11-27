@@ -1,5 +1,6 @@
 import type { SettingsController } from '../electron/ipc/handlers'
 import type { SettingsData } from '../src/shared/settings'
+import { DEFAULT_SCRCPY_ARGS } from '../src/shared/mirror'
 
 /**
  * 假设置控制器：只为满足 HandlerDeps。
@@ -29,6 +30,8 @@ export function fakeSettings(over: {
   appVersion?: string
   /** 自定义投屏参数（缺省是空串：只用内置参数）。 */
   scrcpyArgs?: string
+  /** 默认参数（缺省与生产一致，用真实的 DEFAULT_SCRCPY_ARGS）。 */
+  defaultScrcpyArgs?: string
 } = {}): SettingsController & { calls: Array<{ method: string; args: unknown[] }> } {
   const calls: Array<{ method: string; args: unknown[] }> = []
   // R9：设备目录表（fake 只做「存进去读出来」，不做校验 —— 校验是存储层的被测对象）
@@ -36,7 +39,8 @@ export function fakeSettings(over: {
   let current = over.downloadDir ?? 'C:/Users/me/Downloads'
   const defaultDir = over.defaultDownloadDir ?? 'C:/Users/me/Downloads'
   const appVersion = over.appVersion ?? '9.9.9-fixture'
-  let scrcpyArgs = over.scrcpyArgs ?? ''
+  const defaultScrcpyArgs = over.defaultScrcpyArgs ?? DEFAULT_SCRCPY_ARGS
+  let scrcpyArgs = over.scrcpyArgs ?? defaultScrcpyArgs
   return {
     calls,
     getAppVersion: () => { calls.push({ method: 'getAppVersion', args: [] }); return appVersion },
@@ -66,9 +70,15 @@ export function fakeSettings(over: {
       calls.push({ method: 'getScrcpyArgs', args: [] })
       return scrcpyArgs
     },
+    getDefaultScrcpyArgs: () => defaultScrcpyArgs,
     setScrcpyArgs: (raw) => {
       calls.push({ method: 'setScrcpyArgs', args: [raw] })
       scrcpyArgs = raw.trim()
+      return scrcpyArgs
+    },
+    resetScrcpyArgs: () => {
+      calls.push({ method: 'resetScrcpyArgs', args: [] })
+      scrcpyArgs = defaultScrcpyArgs
       return scrcpyArgs
     },
   }
@@ -81,7 +91,8 @@ export function fakeSettingsData(over: Partial<SettingsData> = {}): SettingsData
     defaultDownloadDir: 'C:/Users/me/Downloads',
     appVersion: '9.9.9-fixture',
     adb: { state: 'ok', source: 'path', path: 'C:/platform-tools/adb.exe', version: '1.0.41' },
-    scrcpyArgs: '',
+    scrcpyArgs: DEFAULT_SCRCPY_ARGS,
+    defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
     ...over,
   }
 }

@@ -18,6 +18,23 @@ export const SCRCPY_WINDOW_PREFIX = 'adbfm-scrcpy-'
 export const DEFAULT_MAX_SIZE = 1024
 
 /**
+ * 「投屏参数」输入框的默认值（用户第一次打开设置页看到的就是它）。
+ *
+ * ===== 为什么放在这里而不是硬编码进 buildScrcpyArgs =====
+ * 它是一条**可改的默认**，不是不可变的约束：用户可以把这行删掉。
+ * 如果写死在 buildScrcpyArgs 里，用户在输入框里怎么写都关不掉它 ——
+ * 那就会看到「设置里明明删了，行为却没变」这种最让人困惑的形态。
+ *
+ * ===== 为什么是 --no-mouse-hover =====
+ * 内嵌窗口里鼠标划过画面时，scrcpy 会把每次移动都当 hover 送到设备，
+ * 遥控器这类设备上会看到「光标到处乱飘」。点击与拖拽仍然照常转发。
+ *
+ * 与红线参数（-s / --window-title / --window-borderless / --max-size）的区别：
+ * 那几条改了会让嵌入或设备隔离直接失效，所以用户写不了；这条只是行为偏好。
+ */
+export const DEFAULT_SCRCPY_ARGS = '--no-mouse-hover'
+
+/**
  * 可选的最大分辨率档位。
  *
  * 1024 是默认值：这个尺寸在 1080p 屏幕上单窗口显示清晰，

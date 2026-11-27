@@ -39,6 +39,7 @@ function settingsWith(over: Partial<SettingsData> = {}): SettingsData {
     appVersion: '9.9.9-fixture',
     adb: { state: 'ok', source: 'path', path: 'C:/adb.exe', version: '1.0.41' },
     scrcpyArgs: '',
+    defaultScrcpyArgs: '',
     ...over,
   }
 }

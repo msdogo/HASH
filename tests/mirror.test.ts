@@ -14,6 +14,7 @@ import {
   parseScrcpyExtraArgs,
   SCRCPY_RESERVED_DISPLAY,
   windowFitSize,
+  DEFAULT_SCRCPY_ARGS,
 } from '../src/shared/mirror'
 
 describe('buildScrcpyArgs', () => {
@@ -36,6 +37,15 @@ describe('buildScrcpyArgs', () => {
   it('带 --no-audio', () => {
     const args = buildScrcpyArgs({ serial: 'ABC123', token: 't1', maxSize: DEFAULT_MAX_SIZE })
     expect(args).toContain('--no-audio')
+  })
+
+  it('不硬编码 --no-mouse-hover（它是可删的默认值，不是内置约束）', () => {
+    // 默认值走设置（DEFAULT_SCRCPY_ARGS → 输入框），不由 buildScrcpyArgs 强加：
+    // 写死在这里的话，用户在设置里删掉它也不会生效 —— 那是最让人困惑的形态。
+    const args = buildScrcpyArgs({ serial: 'ABC123', token: 't1', maxSize: DEFAULT_MAX_SIZE })
+    expect(args).not.toContain('--no-mouse-hover')
+    // 但默认值本身必须是它（用户第一次打开设置页看到的就是这行）
+    expect(DEFAULT_SCRCPY_ARGS).toBe('--no-mouse-hover')
   })
 
   it('maxSize 拼进 --max-size', () => {

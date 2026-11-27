@@ -7,6 +7,7 @@ import path from 'node:path'
 import { AdbClient } from '../electron/adb/client'
 import { TransferService } from '../electron/transfer/service'
 import { createSettingsStore } from '../electron/settings/store'
+import { DEFAULT_SCRCPY_ARGS } from '../src/shared/mirror'
 import { downloadDirForDownload } from '../src/shared/settings'
 import { shellQuote } from '../electron/adb/shellsafe'
 import { acquireDeviceLock, deviceSkipMessage, resolveSerial } from './device-lock'
@@ -104,6 +105,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
       filePath: storeDir,
       // 默认值指向这个干扰目录：如果实现里偷偷回退到「别的目录」，这条会红
       defaultDownloadDir: decoyDir,
+      defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
       warn: () => undefined,
     })
     store.setDownloadDir(settingsDir)
@@ -111,6 +113,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
     const reloaded = createSettingsStore({
       filePath: storeDir,
       defaultDownloadDir: decoyDir,
+      defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
       warn: () => undefined,
     })
     expect(reloaded.getDownloadDir()).toBe(settingsDir)
@@ -123,6 +126,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
       appVersion: '9.9.9-fixture',
       adb: { state: 'checking' },
       scrcpyArgs: '',
+      defaultScrcpyArgs: '',
     })
     expect(target).toBe(settingsDir)
 
@@ -173,6 +177,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
       const store = createSettingsStore({
         filePath: storeDir,
         defaultDownloadDir: defaultDir,
+        defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
         warn: () => undefined,
       })
       store.setDownloadDir(settingsDir)
@@ -187,6 +192,7 @@ describe.skipIf(skip)('真机：普通下载落到设置里的默认下载路径
         appVersion: '9.9.9-fixture',
         adb: { state: 'checking' },
         scrcpyArgs: '',
+        defaultScrcpyArgs: '',
       })
       expect(target).toBe(defaultDir)
 

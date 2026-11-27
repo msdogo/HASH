@@ -191,6 +191,24 @@ describe('自定义投屏参数：settings:set-scrcpy-args', () => {
     expect(result.error).toBe('E_SYNC_FAILED')
   })
 
+  it('快照里同时带默认值（界面据此判断「恢复默认」是否可点）', async () => {
+    const h = harness({}, { settings: fakeSettings({ scrcpyArgs: '', defaultScrcpyArgs: '--no-mouse-hover' }) })
+    const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: boolean; data: SettingsData }
+    expect(result.data.scrcpyArgs).toBe('')
+    expect(result.data.defaultScrcpyArgs).toBe('--no-mouse-hover')
+  })
+
+  it('恢复默认走控制器的 resetScrcpyArgs，而不是渲染层自己拼默认值', async () => {
+    const settings = fakeSettings({ scrcpyArgs: '' })
+    const h = harness({}, { settings })
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: settings.getDefaultScrcpyArgs() }) as {
+      ok: boolean
+      data: SettingsData
+    }
+    expect(result.ok).toBe(true)
+    expect(result.data.scrcpyArgs).toBe('--no-mouse-hover')
+  })
+
   it('settings:get 的快照里带当前参数（界面首屏要用）', async () => {
     const h = harness({}, { settings: fakeSettings({ scrcpyArgs: '--stay-awake' }) })
     const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: boolean; data: SettingsData }

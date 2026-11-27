@@ -155,7 +155,13 @@ export function SettingsPage(props: SettingsPageProps) {
       </div>
 
       {/* ---- 自定义投屏参数（可写，全局一套） ---- */}
-      <ScrcpyArgsCard disabled={loading} value={data?.scrcpyArgs ?? ''} saving={saving} onSave={saveScrcpyArgs} />
+      <ScrcpyArgsCard
+        disabled={loading}
+        value={data?.scrcpyArgs ?? ''}
+        defaultArgs={data?.defaultScrcpyArgs ?? ''}
+        saving={saving}
+        onSave={saveScrcpyArgs}
+      />
 
       {/* ---- adb 状态（只读） ---- */}
       <div className="rounded border border-neutral-300" data-testid="settings-adb">
@@ -219,6 +225,14 @@ export function SettingsPage(props: SettingsPageProps) {
 function ScrcpyArgsCard(props: {
   disabled: boolean
   value: string
+  /**
+   * 默认值（主进程给的 DEFAULT_SCRCPY_ARGS）。
+   *
+   * 「恢复默认」写回的是**它**，不是空串：默认参数是一行真实的参数
+   * （`--no-mouse-hover`），用户删掉之后要能一键拿回来。
+   * 想让参数全空，把输入框清空再点「保存」——那是两个不同的动作。
+   */
+  defaultArgs: string
   saving: boolean
   /**
    * 保存；返回是否成功。
@@ -266,8 +280,8 @@ function ScrcpyArgsCard(props: {
           </button>
           <button
             type="button"
-            disabled={props.disabled || props.saving || props.value === ''}
-            onClick={() => { void props.onSave('').then((ok) => { if (ok) setDraft(null) }) }}
+            disabled={props.disabled || props.saving || props.value === props.defaultArgs}
+            onClick={() => { void props.onSave(props.defaultArgs).then((ok) => { if (ok) setDraft(null) }) }}
             className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
           >
             {t('settings.scrcpyArgs.reset')}

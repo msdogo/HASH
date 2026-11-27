@@ -282,8 +282,12 @@ export interface SettingsController {
    * 读取时坏值已降级成空串，所以拿到的一定是可直接切分的字符串。
    */
   getScrcpyArgs(): string
+  /** 默认参数（「恢复默认」写回它，界面也用它判断当前是不是默认）。 */
+  getDefaultScrcpyArgs(): string
   /** 写自定义 scrcpy 参数；返回实际写入的值（已 trim）。 */
   setScrcpyArgs(raw: string): string
+  /** 恢复默认参数；返回实际写入的值。 */
+  resetScrcpyArgs(): string
 }
 
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
@@ -622,6 +626,7 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     appVersion: deps.settings.getAppVersion(),
     adb: toSettingsAdb(deps.adbState()),
     scrcpyArgs: deps.settings.getScrcpyArgs(),
+    defaultScrcpyArgs: deps.settings.getDefaultScrcpyArgs(),
   })
 
   handle(CH.SETTINGS_GET, (_event, payload): IpcResult<SettingsData> => {

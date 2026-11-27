@@ -69,7 +69,8 @@ export interface SettingsData {
   /**
    * 自定义 scrcpy 参数（原始输入，未切分）。
    *
-   * 空串 = 用户没填，投屏只用内置参数。
+   * 空串 = 用户主动清空（投屏只用内置参数）。首次使用读到的是
+   * DEFAULT_SCRCPY_ARGS（见 src/shared/mirror.ts），不是空串。
    *
    * 为什么存**原始字符串**而不是切好的数组：
    *   - 用户下次打开设置页要看到自己写的那一行原文（切完再拼回去必然变形）；
@@ -78,6 +79,13 @@ export interface SettingsData {
    *     被拒的那些参数已经找不回来了。
    */
   scrcpyArgs: string
+  /**
+   * 「投屏参数」的默认值 —— 「恢复默认」写回它，界面也用它判断当前是不是默认。
+   *
+   * 由主进程给（唯一来源是 src/shared/mirror.ts 的 DEFAULT_SCRCPY_ARGS），
+   * 渲染层不自己写一份：默认值将来要改，改一处就够。
+   */
+  defaultScrcpyArgs: string
 }
 
 /* ============ 绝对路径判定（shared 不能 import node:path） ============ */

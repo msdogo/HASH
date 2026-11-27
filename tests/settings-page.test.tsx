@@ -29,6 +29,7 @@ const SETTINGS: SettingsData = {
   appVersion: '7.42.13',
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/resources/platform-tools/adb.exe', version: '1.0.41' },
   scrcpyArgs: '',
+  defaultScrcpyArgs: '',
 }
 
 const PAGE = SettingsPage as unknown as (props: {
@@ -83,11 +84,20 @@ describe('自定义投屏参数卡片', () => {
     expect(isDisabled(save as string)).toBe(true)
   })
 
-  it('没有自定义参数时「恢复默认」不可点', () => {
-    const buttons = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '' } }).match(/<button\b[^>]*>[^<]*<\/button>/g) ?? []
+  it('已是默认值（--no-mouse-hover）时「恢复默认」不可点', () => {
+    const buttons = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '--no-mouse-hover', defaultScrcpyArgs: '--no-mouse-hover' } })
+      .match(/<button\b[^>]*>[^<]*<\/button>/g) ?? []
     const reset = buttons.find((b) => b.includes(t('settings.scrcpyArgs.reset')))
     expect(reset).toBeDefined()
     expect(isDisabled(reset as string)).toBe(true)
+  })
+
+  it('用户删掉默认值后「恢复默认」可点（能把默认那行拿回来）', () => {
+    const buttons = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '', defaultScrcpyArgs: '--no-mouse-hover' } })
+      .match(/<button\b[^>]*>[^<]*<\/button>/g) ?? []
+    const reset = buttons.find((b) => b.includes(t('settings.scrcpyArgs.reset')))
+    expect(reset).toBeDefined()
+    expect(isDisabled(reset as string)).toBe(false)
   })
 })
 

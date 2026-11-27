@@ -29,6 +29,13 @@ export interface SettingsStoreDeps {
   filePath: string
   /** 本机「下载」目录（生产是 app.getPath('downloads')），默认值与「恢复默认」都用它。 */
   defaultDownloadDir: string
+  /**
+   * 「投屏参数」的默认值（生产传 src/shared/mirror.ts 的 DEFAULT_SCRCPY_ARGS）。
+   *
+   * 由调用方给而不是在这里 import：存储层只该碰设置文件，
+   * 它不需要知道默认参数具体是什么，也就不该因为那个常量改了而重新编译。
+   */
+  defaultScrcpyArgs: string
   /** 告警出口（测试可注入以断言「坏值只记一次」）。缺省 console.warn。 */
   warn?: (message: string) => void
 }
@@ -73,11 +80,17 @@ export interface SettingsStore {
   /**
    * 自定义 scrcpy 参数（原始输入）。
    *
-   * 坏值（类型不对 / 存成了 null）一律降级成空串并 warn 一次，
-   * **不抛错** —— 与 getDownloadDir 同一条降级范式：一条投屏偏好不该
-   * 让设置页打不开，更不该让投屏整体不可用。
+   * 没设过 → 返回 **DEFAULT_SCRCPY_ARGS**（默认那行参数，用户可在输入框里删掉）；
+   * 用户显式存了空串 → 返回空串（那是他的选择，不能当成「没设过」再塞回默认值）。
+   *
+   * 坏值（类型不对 / 存成了 null）降级成默认值并 warn 一次，**不抛错** ——
+   * 与 getDownloadDir 同一条降级范式：一条投屏偏好不该让设置页打不开。
    */
   getScrcpyArgs(): string
+  /** 默认参数（「恢复默认」写回它，界面也用它判断当前是不是默认）。 */
+  getDefaultScrcpyArgs(): string
+  /** 恢复默认参数；返回实际写入的值。 */
+  resetScrcpyArgs(): string
   /**
    * 写自定义 scrcpy 参数；返回实际写入的值（已 trim）。
    *
@@ -253,13 +266,15 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
    */
   const getScrcpyArgs = (): string => {
     const stored = store.get('scrcpyArgs')
-    if (stored === undefined) return ''
+    // 没设过（首次启动 / 整个文件坏掉）→ 默认参数。这与「用户存了空串」是两件事，
+    // 后者会命中下面的 typeof 分支并原样返回空串。
+    if (stored === undefined) return deps.defaultScrcpyArgs
     if (typeof stored !== 'string') {
       warnOnce(
         'scrcpy-args:not-string',
-        '[settings] 自定义投屏参数不是字符串：' + JSON.stringify(stored) + '，已按空值处理',
+        '[settings] 自定义投屏参数不是字符串：' + JSON.stringify(stored) + '，已按默认值处理',
       )
-      return ''
+      return deps.defaultScrcpyArgs
     }
     return stored
   }
@@ -278,7 +293,9 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
     getDeviceCwd,
     setDeviceCwd,
     getScrcpyArgs,
+    getDefaultScrcpyArgs: () => deps.defaultScrcpyArgs,
     setScrcpyArgs,
+    resetScrcpyArgs: () => setScrcpyArgs(deps.defaultScrcpyArgs),
     storagePath: () => store.path,
   }
 }

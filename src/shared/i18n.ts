@@ -337,8 +337,8 @@ const messages: Record<string, string> = {
    *      因为它们是「嵌入 + 多设备隔离」的前提，让用户覆盖会直接把投屏弄坏。
    */
   'settings.scrcpyArgs.title': '投屏参数',
-  'settings.scrcpyArgs.desc': '追加给 scrcpy 的额外参数，例如 --turn-screen-off --show-touches。改完需要关掉投屏窗口重新打开才生效',
-  'settings.scrcpyArgs.placeholder': '留空表示只用内置参数',
+  'settings.scrcpyArgs.desc': '追加给 scrcpy 的参数，默认已带 --no-mouse-hover（不让鼠标划过画面时向设备发悬停事件），可以删掉或改成别的。改完需要关掉投屏窗口重新打开才生效',
+  'settings.scrcpyArgs.placeholder': '留空表示不追加任何参数',
   'settings.scrcpyArgs.save': '保存',
   'settings.scrcpyArgs.reset': '恢复默认',
   'settings.scrcpyArgs.empty': '当前没有自定义参数',

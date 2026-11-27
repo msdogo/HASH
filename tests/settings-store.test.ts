@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createSettingsStore, SETTINGS_FILE_NAME } from '../electron/settings/store'
+import { DEFAULT_SCRCPY_ARGS } from '../src/shared/mirror'
 import { E_INVALID_PATH, E_NOT_FOUND } from '../src/shared/errors'
 
 /*
@@ -28,6 +29,8 @@ function open(over: { defaultDownloadDir?: string } = {}) {
   return createSettingsStore({
     filePath: storeDir,
     defaultDownloadDir: over.defaultDownloadDir ?? defaultDir,
+    // 「投屏参数」默认值：与生产同一个常量，这样「没设过 → 读到默认值」可证
+    defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
     warn: (message) => { warnings.push(message) },
   })
 }
@@ -56,8 +59,33 @@ afterEach(() => {
 })
 
 describe('自定义 scrcpy 参数：持久化与坏值降级', () => {
-  it('首次启动读到空串（= 只用内置参数），不是 undefined', () => {
+  it('首次启动读到**默认参数**（不是空串：默认那行要出现在输入框里）', () => {
+    expect(open().getScrcpyArgs()).toBe(DEFAULT_SCRCPY_ARGS)
+    expect(open().getScrcpyArgs()).not.toBe('')
+  })
+
+  it('默认参数就是 --no-mouse-hover（用户第一次打开设置就能看到它）', () => {
+    expect(DEFAULT_SCRCPY_ARGS).toBe('--no-mouse-hover')
+  })
+
+  it('用户把它删掉存空串 → 读回空串，不会被默认值顶回去', () => {
+    const store = open()
+    store.setScrcpyArgs('')
+    // 关键区别：「没设过」→ 默认值；「显式存了空串」→ 空串
     expect(open().getScrcpyArgs()).toBe('')
+  })
+
+  it('resetScrcpyArgs 写回默认值（删掉之后能一键拿回来）', () => {
+    const store = open()
+    store.setScrcpyArgs('')
+    expect(store.getScrcpyArgs()).toBe('')
+    expect(store.resetScrcpyArgs()).toBe(DEFAULT_SCRCPY_ARGS)
+    expect(open().getScrcpyArgs()).toBe(DEFAULT_SCRCPY_ARGS)
+  })
+
+  it('坏值（数字）降级成**默认值**，不是空串', () => {
+    writeRaw(JSON.stringify({ scrcpyArgs: 123 }))
+    expect(open().getScrcpyArgs()).toBe(DEFAULT_SCRCPY_ARGS)
   })
 
   it('写 → 重建 store → 读回（值真的落盘了）', () => {
@@ -75,26 +103,16 @@ describe('自定义 scrcpy 参数：持久化与坏值降级', () => {
     expect(open().getScrcpyArgs()).toBe('--show-touches')
   })
 
-  it('空串合法：清空后读到空串（不是回退到某个默认参数集）', () => {
+  it('空串合法：显式清空后读到空串（不会回退到默认参数）', () => {
     const store = open()
     store.setScrcpyArgs('--show-touches')
     store.setScrcpyArgs('')
     expect(open().getScrcpyArgs()).toBe('')
   })
 
-  it('存储里是数字（手改坏）→ 降级成空串，不抛错', () => {
-    /*
-     * 这里**不会**告警：electron-store 的 schema 在读取时就把类型错的值清成了 undefined，
-     * 我的类型判定（typeof !== 'string'）实际只防「schema 被改掉」这种未来情况。
-     * 断言写成「有告警」就是在测一条走不到的分支 —— 上一版就是这么写错的。
-     */
-    writeRaw(JSON.stringify({ scrcpyArgs: 123 }))
-    expect(open().getScrcpyArgs()).toBe('')
-  })
-
-  it('整个文件是坏 JSON → 读空串，不崩', () => {
+  it('整个文件是坏 JSON → 读默认值，不崩', () => {
     writeRaw('{ not json')
-    expect(open().getScrcpyArgs()).toBe('')
+    expect(open().getScrcpyArgs()).toBe(DEFAULT_SCRCPY_ARGS)
   })
 
   it('与其它设置项互不干扰（写参数不动 downloadDir）', () => {
@@ -264,8 +282,8 @@ describe('R2-2 注入式设计：存储位置由调用方决定', () => {
   it('两个不同 filePath 的 store 互不干扰（生产每个用户目录一份）', () => {
     const other = mkdtempSync(path.join(tmpdir(), 'adbfm-settings-other-'))
     try {
-      const a = createSettingsStore({ filePath: storeDir, defaultDownloadDir: defaultDir, warn: () => undefined })
-      const b = createSettingsStore({ filePath: other, defaultDownloadDir: defaultDir, warn: () => undefined })
+      const a = createSettingsStore({ filePath: storeDir, defaultDownloadDir: defaultDir, defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS, warn: () => undefined })
+      const b = createSettingsStore({ filePath: other, defaultDownloadDir: defaultDir, defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS, warn: () => undefined })
       a.setDownloadDir(customDir)
       expect(a.getDownloadDir()).toBe(customDir)
       expect(b.getDownloadDir()).toBe(defaultDir)
@@ -278,7 +296,7 @@ describe('R2-2 注入式设计：存储位置由调用方决定', () => {
     const nested = path.join(storeDir, 'nested', 'deep')
     // 前提自证：构造之前这些目录确实不存在（否则这条用例是空转）
     expect(existsSync(nested)).toBe(false)
-    const store = createSettingsStore({ filePath: nested, defaultDownloadDir: defaultDir, warn: () => undefined })
+    const store = createSettingsStore({ filePath: nested, defaultDownloadDir: defaultDir, defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS, warn: () => undefined })
     expect(store.setDownloadDir(customDir)).toBe(customDir)
     // electron-store 会自建目录：写完必须真的在 nested 下留了文件
     expect(existsSync(nested)).toBe(true)

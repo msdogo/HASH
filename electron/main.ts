@@ -22,6 +22,7 @@ import { AppsService } from './apps/service'
 import { createKeyService } from './device/keys'
 import { createOrientationProbe } from './mirror/orientation'
 import { createMirrorService } from './mirror/service'
+import { DEFAULT_SCRCPY_ARGS } from '../src/shared/mirror'
 import { locateScrcpy } from './mirror/binary'
 import { probeScrcpyVersion, startScrcpy } from './mirror/runner'
 import { createMirrorWindowManager } from './mirror/window'
@@ -186,6 +187,8 @@ function settings(): ReturnType<typeof createSettingsStore> {
     settingsStore = createSettingsStore({
       filePath: app.getPath('userData'),
       defaultDownloadDir: app.getPath('downloads'),
+      // 「投屏参数」的默认值：用户第一次打开设置页看到的就是这一行，可删可改
+      defaultScrcpyArgs: DEFAULT_SCRCPY_ARGS,
     })
   }
   return settingsStore
@@ -918,7 +921,9 @@ app.whenReady().then(async () => {
               setDeviceCwd: (serial, cwd) => { settings().setDeviceCwd(serial, cwd) },
               // 自定义投屏参数（全局一套）：与其它设置项同一个设置文件、同一条降级范式
               getScrcpyArgs: () => settings().getScrcpyArgs(),
+              getDefaultScrcpyArgs: () => settings().getDefaultScrcpyArgs(),
               setScrcpyArgs: (raw) => settings().setScrcpyArgs(raw),
+              resetScrcpyArgs: () => settings().resetScrcpyArgs(),
             },
             transfer: transfer.controller,
             batch: batchService,
