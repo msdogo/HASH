@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   closeOutcome,
+  decideStartup,
   mayStartApp,
   restoreMainWindow,
   type RestorableWindow,
@@ -28,6 +29,48 @@ describe('单实例：没拿到锁就不能继续启动', () => {
    */
   it('没拿到锁必须为 false（否则第二个实例会画出窗口再消失）', () => {
     expect(mayStartApp(false)).toBe(false)
+  })
+})
+
+/*
+ * 第二道锁（跨 user-data-dir 的全局互斥体）的判定。
+ *
+ * 触发这次改动的现场：装了正式版（默认 userData）的同时又跑了一份构建产物
+ * （自带 --user-data-dir），两个实例都活着，任务栏 4 个图标。
+ * Electron 的锁绑在 userData 上，管不了这件事。
+ */
+describe('启动闸门：两道锁', () => {
+  const base = { electronLock: true, globalLock: true, allowMultiInstance: false } as const
+
+  it('两道锁都在 → 启动', () => {
+    expect(decideStartup({ ...base })).toBe(true)
+  })
+
+  it('Electron 锁没拿到 → 不启动（与 mayStartApp 一致）', () => {
+    expect(decideStartup({ ...base, electronLock: false })).toBe(false)
+  })
+
+  /* 这就是本次要修的那条：userData 不同，Electron 锁放行，靠全局锁拦住。 */
+  it('全局锁被别人持有 → 不启动（即使 Electron 锁拿到了）', () => {
+    expect(decideStartup({ ...base, globalLock: false })).toBe(false)
+  })
+
+  /*
+   * fail-open：探测失败（非 Windows / koffi 加载不出来）必须放行。
+   * 把它当 false 的话，探测一旦异常应用就永远打不开，且用户看不到任何原因。
+   */
+  it('全局锁探测失败（null）→ 放行，不能把应用锁死', () => {
+    expect(decideStartup({ ...base, globalLock: null })).toBe(true)
+  })
+
+  /* 联调要「正式版 + 构建产物」并存：允许跳过全局锁。 */
+  it('allowMultiInstance → 跳过全局锁', () => {
+    expect(decideStartup({ ...base, globalLock: false, allowMultiInstance: true })).toBe(true)
+  })
+
+  /* 但跳过全局锁不能连 Electron 的锁一起跳过。 */
+  it('allowMultiInstance 仍然不能绕过 Electron 锁', () => {
+    expect(decideStartup({ ...base, electronLock: false, allowMultiInstance: true })).toBe(false)
   })
 })
 

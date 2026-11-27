@@ -27,7 +27,8 @@ import { locateScrcpy } from './mirror/binary'
 import { probeScrcpyVersion, startScrcpy } from './mirror/runner'
 import { createMirrorWindowManager } from './mirror/window'
 import { createWindowController } from './window/controller'
-import { closeOutcome, mayStartApp, restoreMainWindow } from './app/lifecycle'
+import { closeOutcome, decideStartup, restoreMainWindow } from './app/lifecycle'
+import { acquireGlobalInstanceLock } from './app/instance-lock'
 import { DragOutService } from './drag/service'
 import type { TransferEvent } from './transfer/manager'
 import { FsOpsService } from './fs/op-service'
@@ -65,21 +66,47 @@ registerAppScheme()
  * 而且两个进程各自 spawn 的 adb 子进程会互相抢设备（adb devices 抖动、
  * 传输中断）。这类故障现场极难复现，所以从根上不允许第二个实例存在。
  *
- * requestSingleInstanceLock 是原子操作（基于命名互斥体）：
- * 返回 false 说明已有实例在跑，此时立刻退出，并把已有窗口提到前台
- * （用户双击图标时期望看到那个窗口，而不是什么都没发生）。
+ * 第一道：requestSingleInstanceLock（原子操作，互斥体绑在 userData 目录上）。
+ * 返回 false 说明同一 userData 下已有实例在跑 → 立刻退出。
+ *
+ * 但它**只覆盖同一个 userData**：换一个 --user-data-dir 启动就能绕过它，
+ * 所以下面还有第二道与 userData 无关的全局锁。
  */
 const gotTheLock = app.requestSingleInstanceLock()
+
+/*
+ * 第二道锁：**跨 user-data-dir** 的全局互斥体（见 app/instance-lock.ts）。
+ *
+ * Electron 那把锁绑在 userData 目录上，所以「装了正式版 + 同时跑一份构建产物
+ * （自带 --user-data-dir）」会两个都启动成功 —— 实测任务栏 4 个图标，
+ * 且两个进程各起一套 adb 子进程抢同一台设备。
+ *
+ * 联调需要并存时置 ADB_FM_ALLOW_MULTI_INSTANCE=1：此时只跳过这道全局锁，
+ * Electron 的锁仍然生效，正常双击图标依旧只有一个实例。
+ */
+const allowMultiInstance = process.env.ADB_FM_ALLOW_MULTI_INSTANCE === '1'
+// 逃生开关打开时连探测都不做：联调场景不需要这把锁，也没必要为它加载 kernel32。
+const globalLock = allowMultiInstance
+  ? { held: null, release: () => {} }
+  : acquireGlobalInstanceLock()
+const canStart = decideStartup({
+  electronLock: gotTheLock,
+  globalLock: globalLock.held,
+  allowMultiInstance,
+})
+
 /*
  * 没有锁就**什么都不要再做**。
  *
  * 只写 app.quit() 是不够的：quit 是异步的「发起」，当前模块会继续往下跑，
  * 于是 app.whenReady() 照样回调、照样 createWindow() —— 第二个实例的窗口
  * 先画出来，再随进程一起消失，用户看到「闪一下」。
- * 正常应用第二次双击图标应当是**毫无反应**，所以用 mayStartApp 把
+ * 正常应用第二次双击图标应当是**毫无反应**，所以用 canStart 把
  * 「建窗口 / 起托盘」这些有可见副作用的代码整块挡在外面。
  */
-if (!mayStartApp(gotTheLock)) {
+if (!canStart) {
+  // 没启动成功就立刻还掉全局互斥体，否则它会一直指着本进程。
+  globalLock.release()
   app.quit()
 } else {
   /*
@@ -89,7 +116,7 @@ if (!mayStartApp(gotTheLock)) {
    * 之前这里会 restore()+focus()，再加上第二个实例自己还画了一次窗口
    * （app.quit() 是异步的，模块继续执行到 createWindow），合起来就是
    * 「窗口闪一下」。现在两处都堵住：这里不做任何事，whenReady 里
-   * mayStartApp 也把建窗口/起托盘挡在外面。
+   * canStart 也把建窗口/起托盘挡在外面。
    *
    * 窗口被最小化到任务栏时，回来的路径是任务栏按钮或托盘图标 —— 都在。
    */
@@ -433,6 +460,14 @@ const mirrorWindows = createMirrorWindowManager({
     console.warn('[mirror] 嵌入失败（' + serial + '）：' + reason)
     mirrorWindows.close(serial)
     void mirrorService.stop(serial).catch(() => undefined)
+    /*
+     * 窗口已经关掉，渲染层那条琥珀色提示也就跟着消失了 —— 用户什么原因都看不到，
+     * 只会觉得「点了一下投屏，闪一下就没了」。所以再用一个对话框把原因说出来。
+     */
+    const owner = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    const opts = { type: 'error' as const, message: '投屏失败', detail: reason }
+    if (owner === undefined) void dialog.showMessageBox(opts)
+    else void dialog.showMessageBox(owner, opts)
   },
 })
 
@@ -834,7 +869,7 @@ app.whenReady().then(async () => {
    * 不挡住的话，第二个实例会真的建窗口、真的起托盘，然后随进程消失 ——
    * 表现为「双击图标，窗口闪一下」。正常应用此时应当毫无反应。
    */
-  if (!mayStartApp(gotTheLock)) return
+  if (!canStart) return
   createTray()
   // 生产模式：把 dist 用 app:// 提供出来（C2）。dev 模式不需要。
   if (!isDev) {
@@ -1105,6 +1140,9 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   // 置位：此后主窗口的 close 不再被拦（关闭 = 真关），清理流程得以继续。
   isQuitting = true
+  // 还掉全局单实例互斥体。进程退出时内核也会回收，这里显式放是为了
+  // 「quit 被拦下 / 又继续活着」的路径不留下一个指向自己的锁。
+  globalLock.release()
   // 托盘必须先销毁：否则进程退出后会在托盘区留一个点不动的僵尸图标。
   if (tray !== undefined && !tray.isDestroyed()) {
     tray.destroy()
