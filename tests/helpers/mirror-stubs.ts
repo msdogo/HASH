@@ -16,6 +16,7 @@ export function stubMirrorDeps(): {
   keys: KeyService
   mirror: MirrorService
   emitMirror: () => void
+  resetMirrorSize: (event: unknown, serial: string) => void
 } {
   const keys: KeyService = {
     press: async (_serial: string, _key: DeviceKey): Promise<void> => undefined,
@@ -36,5 +37,17 @@ export function stubMirrorDeps(): {
     onDeviceChanged: async (): Promise<void> => undefined,
     dispose: async (): Promise<void> => undefined,
   }
-  return { keys, mirror, emitMirror: (): void => undefined }
+  return {
+    keys,
+    mirror,
+    emitMirror: (): void => undefined,
+    /*
+     * 重置投屏窗口尺寸的替身。
+     *
+     * 与 keys/mirror 一起放在这里，理由相同：HandlerDeps 是必填的，
+     * 每加一项就让所有只关心别的通道的 IPC 测试编译失败 —— 收成一处，
+     * 那些测试的正文才不会被无关样板淹没，同时仍然是一份显式依赖。
+     */
+    resetMirrorSize: (): void => undefined,
+  }
 }

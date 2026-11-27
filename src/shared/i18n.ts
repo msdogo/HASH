@@ -177,6 +177,7 @@ const messages: Record<string, string> = {
   'window.maximize': '最大化',
   'window.restore': '还原',
   'window.close': '关闭',
+  'mirror.resetSize': '重置窗口大小',
   // ---- 托盘（关闭 = 退到后台之后的唯一入口）----
   'tray.show': '显示主界面',
   'tray.quit': '退出',

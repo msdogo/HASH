@@ -6,6 +6,7 @@ import type { MirrorEvent } from '@shared/mirror'
 import { WindowControls } from './WindowControls'
 import { useDeviceStore } from '@/store/deviceStore'
 import { deviceLabel } from '@shared/device-view'
+import { RotateCcw } from 'lucide-react'
 
 /**
  * 投屏窗口（每台设备一个）。
@@ -87,6 +88,17 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
     return off
   }, [serial])
 
+  /*
+   * 重置窗口大小。
+   *
+   * 失败静默：这个动作没有"失败态"可言 —— 窗口不在时主进程那边是空操作。
+   * 给用户弹一条错误反而会让他以为投屏坏了。
+   */
+  const resetSize = useCallback(async () => {
+    if (serial === '') return
+    await window.api.mirror.resetSize({ serial })
+  }, [serial])
+
   const press = useCallback(async (key: DeviceKey) => {
     if (serial === '' || busyKey !== null) return
     setBusyKey(key)
@@ -143,6 +155,34 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
           className="ml-auto flex items-stretch"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {/*
+            * 重置窗口大小。
+            *
+            * 用户拉大/缩小窗口后，画面按宽高比居中并留黑边（那是他自己的选择）；
+            * 拉乱了想恢复时，没有这个按钮就只能关掉重开 —— 而重开要等 6~8 秒
+            * scrcpy 重建窗口，代价明显。
+            *
+            * 放在三个窗口按钮**左侧**并留一条分隔线：它们是不同性质的操作
+            * （重置内容布局 vs 控制系统窗口），混在一排会让误点变成"把窗口弄没了"。
+            */}
+          <button
+            type="button"
+            onClick={() => { void resetSize() }}
+            disabled={serial === ''}
+            title={t('mirror.resetSize')}
+            aria-label={t('mirror.resetSize')}
+            className={
+              'flex w-10 items-center justify-center border-r border-neutral-300 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900' +
+              (serial === '' ? ' cursor-not-allowed opacity-40' : '')
+            }
+          >
+            {/*
+              * 与三个窗口按钮同尺寸（w-10 + h-3.5 图标）。
+              * 第一版用了更小的图标，在 1455 宽的窗口里几乎看不见 ——
+              * 一排按钮里"有一个明显比别的小"本身就是缺陷。
+              */}
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
           <WindowControls />
         </span>
       </header>

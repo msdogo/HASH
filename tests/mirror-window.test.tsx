@@ -147,7 +147,41 @@ describe('MirrorWindow', () => {
   })
 
   it('没有 serial 时侧边栏禁用（避免对着空窗口按返回键）', () => {
-    const html = renderToStaticMarkup(React.createElement(MirrorWindowWithProps, { initial: { serial: '' } }))
-    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
+    /*
+     * 只数**侧边栏里**的 disabled，不数整页。
+     *
+     * 原先数整页的 disabled=""（恰好 6）。加了顶栏的「重置窗口」按钮之后
+     * 它也是 disabled，于是变成 7 —— 那种断言测的是"页面上有几个 disabled"，
+     * 而不是"侧边栏是不是全禁用"，一加按钮就红，红的原因与它要锁的东西无关。
+     */
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: '' } }),
+    )
+    const sidebar = /<nav[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? ''
+    expect(sidebar).not.toBe('')
+    expect((sidebar.match(/disabled=""/g) ?? []).length).toBe(6)
+  })
+
+  it('顶栏有「重置窗口大小」按钮（拉乱窗口后能一键恢复）', () => {
+    /*
+     * 这个按钮的价值在于**不关窗口**就能恢复默认尺寸 ——
+     * 关掉重开要等 6~8 秒 scrcpy 重建窗口。
+     */
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: 'ABC123' } }),
+    )
+    expect(html).toContain('aria-label="' + t('mirror.resetSize') + '"')
+    // 有 serial 时它必须可点（不能像侧边栏那样被禁用）
+    const resetBtn = new RegExp('<button[^>]*aria-label="' + t('mirror.resetSize') + '"[^>]*>').exec(html)?.[0] ?? ''
+    expect(resetBtn).not.toBe('')
+    expect(resetBtn).not.toContain('disabled')
+  })
+
+  it('没有 serial 时重置按钮也禁用（没有会话可重置）', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: '' } }),
+    )
+    const resetBtn = new RegExp('<button[^>]*aria-label="' + t('mirror.resetSize') + '"[^>]*>').exec(html)?.[0] ?? ''
+    expect(resetBtn).toContain('disabled')
   })
 })

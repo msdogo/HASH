@@ -162,6 +162,14 @@ export const CH = {
   WINDOW_OPEN_SETTINGS: 'window:open-settings',
   /** event（主进程 → 渲染层）：最大化状态变了（双击标题栏 / 系统快捷键也要跟上）。 */
   WINDOW_MAXIMIZED_CHANGED: 'window:maximized-changed',
+  /**
+   * invoke：把投屏窗口恢复到默认尺寸（用户手动放大/缩小之后用）。
+   *
+   * 单独一条通道，不复用 window:toggle-maximize：那个是「最大化/还原」，
+   * 语义是铺满屏幕；而「重置窗口」要回到的是**按画面宽高比算出来的默认尺寸**，
+   * 与屏幕大小无关。两者用同一个通道会让「还原」和「重置」互相打架。
+   */
+  MIRROR_RESET_SIZE: 'mirror:reset-size',
   /*
    * 设备按键（投屏侧边栏的六个按钮）。
    *
@@ -245,6 +253,7 @@ export const INVOKE_CHANNELS = [
   CH.MIRROR_START,
   CH.MIRROR_STOP,
   CH.MIRROR_LIST,
+  CH.MIRROR_RESET_SIZE,
 ] as const
 
 /** 由主进程单向推送的通道（webContents.send，绝不 handle）。 */

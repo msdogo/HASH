@@ -351,6 +351,9 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 当前全部会话。 */
       list: (): Promise<IpcResult<MirrorSession[]>> =>
         deps.invoke(CH.MIRROR_LIST) as Promise<IpcResult<MirrorSession[]>>,
+      /** 把投屏窗口恢复到默认尺寸（用户手动放大/缩小之后用）。 */
+      resetSize: (payload: MirrorStopInput): Promise<IpcResult<void>> =>
+        deps.invoke(CH.MIRROR_RESET_SIZE, payload) as Promise<IpcResult<void>>,
       /** 订阅会话变化；返回退订函数（组件卸载时必须调用）。 */
       onChanged: (callback: (event: MirrorEvent) => void): (() => void) => {
         const listener = (_event: unknown, payload: unknown): void => {

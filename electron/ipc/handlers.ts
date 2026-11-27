@@ -139,6 +139,14 @@ export interface HandlerDeps {
    * （没有窗口时安全空操作、最大化/还原共用一个按钮）有专门测试。
    */
   windowOf: (event: unknown) => WindowController
+  /**
+   * 把投屏窗口恢复到默认尺寸（按发起命令的那个投屏窗口的 serial）。
+   *
+   * 为什么需要「按 sender 反查 serial」：投屏窗口的 hash 里带着 serial
+   * （#/mirror/<serial>），渲染层把它传上来即可 —— 但主进程一侧仍要校验它
+   * 确实是当前在投屏的设备，否则一个窗口能重置另一个窗口的尺寸。
+   */
+  resetMirrorSize: (event: unknown, serial: string) => void
   /** 关掉发起命令的那个窗口；没有窗口时是安全空操作。 */
   closeWindowOf: (event: unknown) => void
   /**
@@ -1042,6 +1050,19 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
    */
   handle(CH.WINDOW_CLOSE, (event): IpcResult<void> => {
     deps.closeWindowOf(event)
+    return { ok: true, data: undefined }
+  })
+
+  /*
+   * 重置投屏窗口尺寸。
+   *
+   * 载荷只有 serial，且必须过 zod —— 与其它通道同一条铁律：
+   * 渲染层送进来的东西一律当作不可信输入。
+   */
+  handle(CH.MIRROR_RESET_SIZE, (event, payload): IpcResult<void> => {
+    const parsed = preflight<{ serial: string }>(payload, MIRROR_STOP_INPUT)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    deps.resetMirrorSize(event, parsed.data.serial)
     return { ok: true, data: undefined }
   })
 

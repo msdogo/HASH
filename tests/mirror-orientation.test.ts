@@ -50,22 +50,34 @@ describe('parseScreenSize', () => {
 })
 
 describe('videoSizeFor', () => {
-  it('横屏 1920x1200 → 1024x640（与生产实测的 scrcpy 子窗口尺寸一致）', () => {
+  it('横屏 1920x1200 → 原样输出（1920 档不再缩小，这是清晰度修复的核心）', () => {
+    /*
+     * 默认档从 1024 提到 1920 的直接后果：设备长边 ≤1920 时**完全不缩放**。
+     * 这正是用户报"投屏有点模糊"的根因 —— 1024 档把 1920×1200 压成 1024×640
+     * 再在 PC 上放大，细笔画被抹平。
+     */
     expect(videoSizeFor({ width: 1920, height: 1200 }, DEFAULT_MAX_SIZE)).toEqual({
-      width: 1024,
-      height: 640,
+      width: 1920,
+      height: 1200,
     })
   })
 
-  it('竖屏 1080x1920 → 576x1024（长边缩到 maxSize）', () => {
+  it('竖屏 1080x1920 → 原样输出（长边正好等于 maxSize）', () => {
     expect(videoSizeFor({ width: 1080, height: 1920 }, DEFAULT_MAX_SIZE)).toEqual({
-      width: 576,
-      height: 1024,
+      width: 1080,
+      height: 1920,
     })
   })
 
-  it('短边按比例，长边精确等于 maxSize', () => {
-    const v = videoSizeFor({ width: 1920, height: 1200 }, DEFAULT_MAX_SIZE)
+  it('超过 1920 的设备仍会缩到 1920（4K 设备不把解码压满）', () => {
+    expect(videoSizeFor({ width: 3840, height: 2160 }, DEFAULT_MAX_SIZE)).toEqual({
+      width: 1920,
+      height: 1080,
+    })
+  })
+
+  it('短边按比例，长边精确等于 maxSize（用超过上限的设备验证）', () => {
+    const v = videoSizeFor({ width: 3840, height: 2160 }, DEFAULT_MAX_SIZE)
     expect(Math.max(v.width, v.height)).toBe(DEFAULT_MAX_SIZE)
   })
 

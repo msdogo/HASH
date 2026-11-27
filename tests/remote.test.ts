@@ -680,18 +680,33 @@ describe('真机集成（skipIf 无设备）', () => {
      * 【审查轮 2】设备自适应：不猜某个具体名字（修前写死 /acct，SM-S9360 上没有）。
      * 【审查轮 3 / M3】但「找不到就跳过」是个假护栏 —— 注入 metaKnown 变异后它照样绿。
      *
-     * 现在改成**自己造样本**：在 /data/local/tmp 下建一个 mtime 精确为 epoch 的文件
-     * （`touch -d @0`，真机 toybox 支持），再用解析器读它，
-     * 断言 mtime === 0 且 metaKnown === true。设备上没有现成样本也无所谓 ——
-     * 这条断言在任何 Android 上都必须能红/能绿，而不是靠运气碰上 /acct。
+     * 现在改成**自己造样本**：在 /data/local/tmp 下建一个 mtime 精确为 epoch 的文件，
+     * 再用解析器读它，断言 mtime === 0 且 metaKnown === true。
+     * 设备上没有现成样本也无所谓 —— 这条断言在任何 Android 上都必须能红/能绿。
+     *
+     * 【设备兼容性修正】原来用的是 `touch -d @0`，而那不是所有 toybox 都认：
+     *   - DJI RC Plus 2（Android 11）支持；
+     *   - MI 6 报 `touch: bad '@0'`、退出码 1，文件保持**创建时间**。
+     * 于是这条用例在 MI 6 上必然红，而红的原因与它要锁的东西（解析器）
+     * 毫无关系 —— 真正的解析路径是对的（实测 mtime=0、metaKnown=true）。
+     * 换成 `touch -t 197001010800`（POSIX 的 [[CC]YY]MMDDhhmm 形式），
+     * 两台设备实测都返回 0，且不依赖 busybox 扩展。
+     *
+     * 另外：给 touch 加 `--` 分隔符，避免文件名被当成选项。
      */
     const epochDir = '/data/local/tmp/t7-epoch'
     const epochFile = epochDir + '/epoch.bin'
     cleanup.push(epochDir)
-    await client.run(['shell', 'mkdir -p ' + shellQuote(epochDir) + ' && echo hi > ' + shellQuote(epochFile) + ' && touch -d @0 ' + shellQuote(epochFile)], {
+    const made = await client.run(['shell', 'mkdir -p ' + shellQuote(epochDir) + ' && echo hi > ' + shellQuote(epochFile) + ' && touch -t 197001010800 -- ' + shellQuote(epochFile)], {
       adbPath: ADB,
       timeoutMs: 30_000,
     })
+    /*
+     * 造样本失败就**明确报出来**，而不是让下面的 mtime 断言给出误导性的失败。
+     * 修前正是如此：touch 失败 -> 文件是创建时间 -> 断言报
+     * 「expected 1795747380000 to be 0」，看起来像解析器坏了。
+     */
+    expect(made.code, '设备上应能用 touch -t 造出 epoch 样本（stderr: ' + made.stderr + '）').toBe(0)
     const listed = await listDir(client, ADB, epochDir)
     const epochEntry = listed.find((e) => e.name === 'epoch.bin')
     expect(epochEntry, '真机上应能列出刚创建的 epoch.bin').toBeDefined()

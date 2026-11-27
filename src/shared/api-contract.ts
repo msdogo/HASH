@@ -710,6 +710,13 @@ export interface DshApi {
     stop(payload: MirrorStopInput): Promise<IpcResult<void>>
     /** 当前全部会话（多设备并行）。 */
     list(): Promise<IpcResult<MirrorSession[]>>
+    /**
+     * 把投屏窗口恢复到默认尺寸。
+     *
+     * 用户手动放大/缩小之后，画面按宽高比居中并留黑边（那是用户的选择）；
+     * 这个操作把窗口退回「刚好装下画面」的初始尺寸，常用于"调乱了想恢复"。
+     */
+    resetSize(payload: MirrorStopInput): Promise<IpcResult<void>>
     /** 订阅会话变化；返回退订函数。 */
     onChanged(callback: (event: MirrorEvent) => void): Unsubscribe
   }

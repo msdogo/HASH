@@ -985,6 +985,13 @@ app.whenReady().then(async () => {
              * 窗口已销毁时返回 undefined，控制器内部按「没有窗口」安全空操作。
              */
             windowOf: (event) => createWindowController(() => windowOfEvent(event)),
+  /*
+   * 重置投屏窗口尺寸。
+   *
+   * 只认**当前在投屏**的 serial：resetSize 在窗口管理器里对不存在的条目是空操作，
+   * 所以这里不需要额外校验 —— 传一个乱写的 serial 进来也不会影响别的窗口。
+   */
+  resetMirrorSize: (_event, serial) => { mirrorWindows.resetSize(serial) },
             closeWindowOf: (event) => {
               const win = windowOfEvent(event)
               // 关窗口 → 没有窗口了才 window-all-closed → quit。关设置窗口不会退出程序。

@@ -63,6 +63,15 @@ export interface MirrorWindowManager {
   closeAll: () => void
   /** 当前打开的窗口数（测试与日志用）。 */
   count: () => number
+  /**
+   * 把窗口恢复到「刚好装下画面」的默认尺寸。
+   *
+   * 用户手动放大/缩小之后，画面会按 fitRect 居中并留出黑边（那是用户自己的选择）。
+   * 这个操作把窗口退回初始尺寸 —— 也就是第一次打开时的那个尺寸。
+   *
+   * 幂等 + 安全空操作：窗口不存在 / 已销毁时什么也不做（不抛）。
+   */
+  resetSize: (serial: string) => void
 }
 
 export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): MirrorWindowManager {
@@ -247,6 +256,36 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
 
     count(): number {
       return entries.size
+    },
+
+    resetSize(serial: string): void {
+      const entry = entries.get(serial)
+      if (entry === undefined || entry.win.isDestroyed()) return
+
+      /*
+       * 默认尺寸必须用**会话里记下的 screen** 重新算，而不是缓存首次的尺寸。
+       *
+       * 为什么：设备可能中途转过屏。用缓存值会把横屏设备的窗口"重置"成竖的，
+       * 而用户看到的是一个比原来更离谱的窗口。
+       * 与 open() 完全同一套算式（videoSizeFor → windowFitSize），
+       * 所以「重置」的结果与「重新打开」逐像素一致。
+       */
+      const video = videoSizeFor(entry.session.screen, DEFAULT_MAX_SIZE)
+      const size = windowFitSize(video.width, video.height, screen.getDisplayMatching(entry.win.getBounds()).scaleFactor)
+      entry.win.setContentSize(size.width, size.height)
+
+      /*
+       * 嵌入的子窗口不会跟着窗口自己变 —— 必须显式 MoveWindow。
+       *
+       * 顺序：先设窗口尺寸，再摆子窗口。反过来的话 fitRect 用的是**旧的**
+       * 客户区大小，画面会按旧尺寸居中，看起来像"重置没生效"。
+       */
+      if (entry.embedded !== null) {
+        resizeEmbedded(
+          entry.embedded.childHwnd,
+          fitRect(hostArea(entry.win), video.width, video.height),
+        )
+      }
     },
   }
 }
