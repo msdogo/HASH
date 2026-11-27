@@ -107,6 +107,45 @@ describe('MirrorWindow', () => {
     expect(textOnly).not.toContain('9N9CN2G0012A3P')
   })
 
+  it('顶栏用 items-stretch，右上角三个按钮才撑满高度', () => {
+    /*
+     * 用户实测反馈：三个按钮是「顶栏中间一撮悬空的小方块」。
+     * 根因是顶栏用了 items-center —— WindowControls 里虽写了 h-full，
+     * 但父容器高度由内容决定，100% 撑不到顶栏。
+     *
+     * 这条用例锁两件事：① 用 items-stretch；② 不能用 items-center。
+     * 只断言 ① 不够：两个类可以同时存在，而 items-center 在 CSS 里后写者胜，
+     * 按钮照样不满高 —— 那正是最初的样子。
+     */
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: 'ABC123' } }),
+    )
+    const header = /<header[^>]*>/.exec(html)?.[0] ?? ''
+    expect(header).toContain('items-stretch')
+    expect(header).not.toContain('items-center')
+  })
+
+  it('顶栏与侧栏用浅色主题，与主应用一致（不再是深色条）', () => {
+    // 深色是投屏窗口最初的写法。用户要求与主应用统一 ——
+    // 主应用顶栏是浅底 + neutral-300 分隔线，设备栏是 #F0F2F5。
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: 'ABC123' } }),
+    )
+    expect(html).not.toContain('bg-neutral-800')
+    expect(html).toContain('border-neutral-300')
+    // 侧栏底色与主应用设备栏同一个值
+    expect(html).toContain('#F0F2F5')
+  })
+
+  it('画面区仍是深色（视频画布，通留白不能是白底）', () => {
+    // 这一条与上一条不矛盾：顶栏/侧栏跟主应用统一，
+    // 但画面是视频画布，letterbox 留白必须是深色，否则画面像贴在白纸上。
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: 'ABC123' } }),
+    )
+    expect(html).toContain('bg-neutral-900')
+  })
+
   it('没有 serial 时侧边栏禁用（避免对着空窗口按返回键）', () => {
     const html = renderToStaticMarkup(React.createElement(MirrorWindowWithProps, { initial: { serial: '' } }))
     expect((html.match(/disabled=""/g) ?? []).length).toBe(6)

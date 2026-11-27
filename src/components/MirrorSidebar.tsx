@@ -54,7 +54,11 @@ export function MirrorSidebar(props: MirrorSidebarProps) {
   return (
     <nav
       aria-label={t('mirror.open')}
-      className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-neutral-700 bg-neutral-900 py-2"
+      /*
+       * 颜色与主应用的设备栏一致（浅底 #F0F2F5 + neutral-300 分隔线）。
+       * 边框在**左**侧：这块按键栏在画面右边，分隔线要贴着画面那一侧。
+       */
+      className="flex w-14 shrink-0 flex-col items-center gap-1 border-l border-neutral-300 bg-[#F0F2F5] py-2"
     >
       {SIDEBAR_KEYS.map((key) => {
         const Icon = ICONS[key]
@@ -71,10 +75,10 @@ export function MirrorSidebar(props: MirrorSidebarProps) {
             className={
               'flex h-10 w-10 items-center justify-center rounded-md transition-colors ' +
               (props.disabled === true
-                ? 'cursor-not-allowed text-neutral-600'
+                ? 'cursor-not-allowed text-neutral-400'
                 : busy
-                  ? 'bg-neutral-700 text-white'
-                  : 'text-neutral-300 hover:bg-neutral-700 hover:text-white active:bg-neutral-600')
+                  ? 'bg-neutral-300 text-neutral-900'
+                  : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900 active:bg-neutral-300')
             }
           >
             <Icon className="h-4 w-4" aria-hidden="true" />

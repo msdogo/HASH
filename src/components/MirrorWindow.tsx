@@ -99,17 +99,30 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
   }, [serial, busyKey])
 
   return (
-    <div className="flex h-screen flex-col bg-neutral-900">
+    <div className="flex h-screen flex-col bg-[#F7F8FA]">
       {/*
         顶栏：拖动区 + 关闭按钮。
         窗口是 frame:false —— 没有系统标题栏，用户唯一的「拖走/关掉」入口就在这里。
         双击最大化由系统接管（app-region: drag 区域）。
       */}
       <header
-        className="flex h-9 shrink-0 items-center gap-2 border-b border-neutral-700 bg-neutral-800 pl-3"
+        className="flex h-9 shrink-0 items-stretch gap-2 border-b border-neutral-300 bg-[#F7F8FA] pl-3"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        <span className="truncate text-xs text-neutral-300">{t('mirror.running')}</span>
+        {/*
+          * items-stretch 而不是 items-center —— 这一条同时解决两件事：
+          *
+          * ① 右上角三个按钮必须撑满顶栏高度。用 items-center 时，那个
+          *    「ml-auto」的容器高度由内容决定，里面的 WindowControls 虽然写了
+          *    h-full，100% 也只是撑到内容高度 —— 三个按钮于是变成顶栏中间
+          *    一撮悬空的小方块。主应用顶栏用的就是 items-stretch（见 App.tsx），
+          *    这里照抄，两处观感才一致。
+          * ② 颜色与主应用一致（浅底 + neutral-300 分隔线），不再是深色条。
+          *
+          * 文字另包一层 items-center：拉伸是给按钮容器的，文字本身仍要垂直居中。
+          */}
+        <span className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-xs text-neutral-900">{t('mirror.running')}</span>
         {serial !== '' && (
           /*
            * 显示**设备名**而不是完整序列号。
@@ -125,6 +138,7 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
             {deviceLabel({ serial, model })}
           </span>
         )}
+        </span>
         <span
           className="ml-auto flex items-stretch"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -146,7 +160,13 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
           这里只放「还没就绪」的提示 —— 提示文字在嵌入完成前可见，
           嵌入完成后会被原生窗口完全盖住（所以不需要额外隐藏逻辑）。
         */}
-        <div className="relative min-w-0 flex-1">
+        {/*
+          * 画面区保持深色：它是一块**视频画布**，scrcpy 按宽高比居中后
+          * 上下/左右会留出真正的留白（letterbox）。浅色留白会让画面像
+          * 「贴在一张白纸上」，深色才是视频播放器该有的样子。
+          * 顶栏与侧栏跟主应用统一，这一块刻意不跟 —— 理由是用途不同，不是遗漏。
+          */}
+        <div className="relative min-w-0 flex-1 bg-neutral-900">
           <p className="absolute inset-x-0 top-1/2 -translate-y-1/2 px-6 text-center text-xs leading-relaxed text-neutral-500">
             {notice !== '' ? notice : ready ? t('mirror.waiting') : t('mirror.opening')}
           </p>

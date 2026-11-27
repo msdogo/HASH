@@ -5,6 +5,7 @@ import {
   SCRCPY_WINDOW_PREFIX,
   availableRect,
   fitRect,
+  needsRaise,
   videoSizeFor,
   windowFitSize,
   type Rect,
@@ -12,7 +13,10 @@ import {
 import {
   embedWindow,
   findWindowByTitle,
+  isEmbeddedOnTop,
+  raiseEmbedded,
   resizeEmbedded,
+  visibleChildHandles,
   windowRectOf,
   type EmbeddedWindow,
 } from './embed'
@@ -112,7 +116,9 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
         minWidth: 240,
         minHeight: 320,
         frame: false,
-        backgroundColor: '#111827',
+        // 与主窗口一致（main.ts 的 #F7F8FA）：窗口第一帧到渲染完成之间
+        // 露出的底色不能是深色，否则每次开会闪一下黑框。
+        backgroundColor: '#F7F8FA',
         show: false,
         webPreferences: {
           preload: deps.preloadPath,
@@ -188,13 +194,46 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
          * 必须显式 MoveWindow。用 'resize' 而不是 'resized'：前者在拖拽过程中
          * 就持续触发，画面能跟着一起变；后者只在松手时触发一次，拖拽期间是个洞。
          */
+        const childHwnd = result.window.childHwnd
         const onResize = (): void => {
           if (win.isDestroyed()) return
           // 尺寸变化后按同一宽高比重新居中（拉伸窗口不会拉伸画面）
-          resizeEmbedded(result.window!.childHwnd, fitRect(hostArea(win), videoWidth, videoHeight))
+          resizeEmbedded(childHwnd, fitRect(hostArea(win), videoWidth, videoHeight))
+          /*
+           * resize 之后必须重新提层。
+           *
+           * 实测（Win32 EnumChildWindows 采样）：宿主每 resize 一次，Chromium 就把自己的
+           * Chrome_RenderWidgetHostHWND 重新插回 z 序最顶，把 scrcpy 压到下面；而被压下去的
+           * 窗口画面照常有（被合成），鼠标事件却全被渲染层吃掉 ——
+           * 这就是「投屏刚开始能点、一会儿之后点不动」的真正成因。
+           * 而且覆盖是粘住的：尺寸改回去也不会自己恢复，只能显式 SetWindowPos。
+           */
+          raiseEmbedded(hostHwnd, childHwnd)
         }
         win.on('resize', onResize)
         entry.cleanup.push(() => { win.off('resize', onResize) })
+
+        /*
+         * 看门狗：兜住「不是 resize 引起」的抢层。
+         *
+         * 已知的触发点除了 resize 还有切焦点、DPI 变化、Chromium 自己重排；逐个去挂监听
+         * 既漏又难验证。这里改成轮询**事实**：只读一次子窗口 z 序，发现第一个可见子窗口
+         * 不是 scrcpy 才动手。读操作没有副作用，动手的那次也只在真被压住时发生 ——
+         * 所以正常情况下这个定时器对画面完全无感（不会每 500ms 抖一下）。
+         *
+         * 500ms 是「来得及」与「不折腾」的折中：真被压住后最多半秒内自动恢复，
+         * 而人手点一下的间隔远大于它。
+         */
+        const watchdog = setInterval(() => {
+          if (win.isDestroyed()) return
+          if (!needsRaise(visibleChildHandles(hostHwnd), childHwnd)) return
+          raiseEmbedded(hostHwnd, childHwnd)
+        }, ZORDER_WATCHDOG_MS)
+        // 不让这个定时器拖住应用退出（与 devices/apps 的轮询同一手法）
+        watchdog.unref?.()
+        entry.cleanup.push(() => { clearInterval(watchdog) })
+        // 补一次：嵌入发生在 setContentSize 之后，上一轮 resize 可能已经把子窗口压下去了
+        if (!isEmbeddedOnTop(hostHwnd, childHwnd)) raiseEmbedded(hostHwnd, childHwnd)
       })()
     },
 
@@ -211,6 +250,14 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
     },
   }
 }
+
+/**
+ * z 序看门狗的轮询周期（毫秒）。
+ *
+ * 与被压住后的恢复延迟等价：用户点下去之前最多有这么久是「点不动」的。
+ * 再小没有收益（人手一次点击的间隔远大于 500ms），只会多读几次窗口链。
+ */
+const ZORDER_WATCHDOG_MS = 500
 
 /** 宿主窗口的 HWND。 */
 function hwndOfHost(win: BrowserWindow): number {

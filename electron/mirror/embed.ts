@@ -34,6 +34,14 @@ const SW_SHOW = 5
 /** 窗口标题上限（Windows 标题实际不会超过这个量级；缓冲区只分配一次）。 */
 const TITLE_MAX = 4096
 
+/** 枚举兄弟窗口用（winuser.h 原值）。 */
+const GW_CHILD = 5
+const GW_HWNDNEXT = 2
+/** SetWindowPos：插到 z 序最顶。 */
+const HWND_TOP = 0
+/** SetWindowPos 标志：只改 z 序，不动位置/尺寸、不抢焦点、不碰 owner 的 z 序。 */
+const SWP_ONLY_ZORDER = 0x0001 | 0x0002 | 0x0010 | 0x0200
+
 /** 一个已嵌入的 scrcpy 窗口。 */
 export interface EmbeddedWindow {
   /** scrcpy 的原生窗口句柄（number）。 */
@@ -71,6 +79,17 @@ interface Win32 {
   ShowWindow: (hwnd: KoffiPtr, cmd: number) => boolean
   IsWindow: (hwnd: KoffiPtr) => boolean
   GetWindowRect: (hwnd: KoffiPtr, rect: Buffer) => boolean
+  GetWindow: (hwnd: KoffiPtr, cmd: number) => KoffiPtr
+  IsWindowVisible: (hwnd: KoffiPtr) => boolean
+  SetWindowPos: (
+    hwnd: KoffiPtr,
+    after: KoffiPtr,
+    x: number,
+    y: number,
+    cx: number,
+    cy: number,
+    flags: number,
+  ) => boolean
 }
 
 let win32: Win32 | null = null
@@ -114,8 +133,84 @@ function lib(): Win32 {
     ShowWindow: user32.func('bool __stdcall ShowWindow(void *hwnd, int cmd)') as never,
     IsWindow: user32.func('bool __stdcall IsWindow(void *hwnd)') as never,
     GetWindowRect: user32.func('bool __stdcall GetWindowRect(void *hwnd, _Out_ int32_t *rect)') as never,
+    GetWindow: user32.func('void *__stdcall GetWindow(void *hwnd, uint32_t cmd)') as never,
+    IsWindowVisible: user32.func('bool __stdcall IsWindowVisible(void *hwnd)') as never,
+    SetWindowPos:
+      user32.func('bool __stdcall SetWindowPos(void *hwnd, void *after, int x, int y, int cx, int cy, uint32_t flags)') as never,
   }
   return win32
+}
+
+/**
+ * 宿主窗口里**可见**的子窗口句柄，按 z 序从上到下。
+ *
+ * 为什么要这个列表（实机踩到的第五个缺陷）：投屏窗口里有两个兄弟子窗口 ——
+ * Chromium 的渲染窗口和我们 SetParent 进来的 scrcpy 窗口，谁在上面谁收鼠标。
+ * 只要宿主 resize 一次，Chromium 就把它自己重新插回最顶，把 scrcpy 压下去，
+ * 于是「画面还在、鼠标点了没反应」。
+ *
+ * 不可见的子窗口要过滤掉：scrcpy 自己会挂一个 0×0 的 OimeTsfNotifyWindow，
+ * 它没有鼠标区域，留在列表里会让「第一个是不是我」这条判定永远为假。
+ *
+ * @returns 句柄列表；枚举失败返回空数组（调用方据此决定不动手）。
+ */
+export function visibleChildHandles(parentHwnd: number): number[] {
+  if (parentHwnd === 0) return []
+  try {
+    const l = lib()
+    const out: number[] = []
+    let cursor: KoffiPtr = l.GetWindow(parentHwnd, GW_CHILD)
+    // 防御性上限：正常情况下宿主只有几个子窗口，跑满说明句柄链有问题
+    for (let guard = 0; guard < 32; guard++) {
+      let handle = 0
+      try {
+        handle = l.address(cursor)
+      } catch {
+        // GetWindow 返回 null 时 koffi 的指针转换会抛，按链尾处理
+        break
+      }
+      if (handle === 0) break
+      if (l.IsWindowVisible(handle)) out.push(handle)
+      cursor = l.GetWindow(cursor, GW_HWNDNEXT)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 把已嵌入的 scrcpy 窗口提到宿主客户区 z 序的最顶层。
+ *
+ * 只改 z 序：SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER。
+ * 前两个保证不打断 fitRect 算好的位置尺寸，NOACTIVATE 保证不把焦点从用户手上的
+ * 输入框抢走，NOOWNERZORDER 保证只影响兄弟窗口的顺序。
+ *
+ * @returns 是否真的把它放到了顶层（false 多半意味着窗口已经没了）。
+ */
+export function raiseEmbedded(hostHwnd: number, childHwnd: number): boolean {
+  if (hostHwnd === 0 || childHwnd === 0) return false
+  try {
+    const l = lib()
+    if (!l.IsWindow(childHwnd)) return false
+    l.SetWindowPos(childHwnd, HWND_TOP, 0, 0, 0, 0, SWP_ONLY_ZORDER)
+    // 用「再枚举一次」验收，而不是信任 SetWindowPos 的返回值：
+    // 它返回 true 只代表调用成功，不代表最终顺序（可能有别的窗口刚好插进来）。
+    return isEmbeddedOnTop(hostHwnd, childHwnd)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * scrcpy 子窗口是不是宿主客户区里最上层的可见子窗口（= 鼠标会落到它身上）。
+ *
+ * 判定逻辑放在 shared/mirror.ts 的 needsRaise 里（纯函数，有单测）；
+ * 这里只负责把 Win32 的事实读出来。
+ */
+export function isEmbeddedOnTop(hostHwnd: number, childHwnd: number): boolean {
+  const order = visibleChildHandles(hostHwnd)
+  return order.length > 0 && order[0] === childHwnd
 }
 
 /** 标题缓冲区（每次枚举复用，避免每窗口一次分配）。 */
@@ -197,6 +292,15 @@ export function embedWindow(hostHwnd: number, childHwnd: number, rect: EmbedRect
     /* ③ 摆进客户区 */
     l.MoveWindow(childHwnd, rect.x, rect.y, rect.width, rect.height, true)
     l.ShowWindow(childHwnd, SW_SHOW)
+
+    /*
+     * ④ 显式把它提到 z 序最顶。
+     *
+     * 不依赖 ShowWindow 的副作用：它可能把窗口显示出来但排在 Chromium 渲染子窗口
+     * 下面 —— 那种情况下画面能看见（原生窗口被压住也会被合成），鼠标却全被
+     * WebView 吃掉，正是「投屏一会儿之后点不动」的现场。窗口一建出来就要在上面。
+     */
+    l.SetWindowPos(childHwnd, HWND_TOP, 0, 0, 0, 0, SWP_ONLY_ZORDER)
 
     /*
      * 验收断言：GetParent 必须真的等于宿主。

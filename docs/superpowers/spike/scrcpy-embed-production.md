@@ -191,7 +191,50 @@ scrcpy 自己的窗口要 6–8 秒才建好，量到视频尺寸后才能算出
    用 CDP 驱动测试时若只按 `url.includes('index.html')` 找主窗口，
    会连到投屏窗口里去找「投屏」按钮 —— 那里当然没有。必须排除 `#/mirror`。
 
-## 八、为什么要两份报告
+## 八、观感收尾：按钮不满高 + 深色主题（0.10.7）
+
+用户看过 0.10.6 的截图后又提了两条，都属"看起来不像一个应用"的问题：
+
+### 1. 右上角三个按钮不满高
+
+根因是投屏顶栏用了 `items-center`。`WindowControls` 内部虽然写了 `h-full`，
+但父容器（那个 `ml-auto` 的 span）高度由**内容**决定，`100%` 只撑到内容高度 ——
+三个按钮于是变成顶栏中间一撮悬空的小方块。
+
+主应用顶栏用的是 `items-stretch`（`App.tsx`），投屏这一处自己写成了 `items-center`。
+改回 `items-stretch` 即可；文字另包一层 `items-center` 保持垂直居中。
+
+值得记一笔：**这个 bug 之前就修过一次**（`WindowControls.tsx` 文件头写着
+「早先写死 h-8 而顶栏是 py-2 撑开的 40px」）。同一个观感问题换了个成因又出现一次 ——
+所以这次补了断言，同时锁 `items-stretch` 存在 **且** `items-center` 不存在：
+只断言前者不够，两个类可以共存，而 CSS 里后写者胜。
+
+### 2. 顶栏与侧栏是深色，与主应用割裂
+
+投屏窗口最初按"深色播放器"的思路写（`bg-neutral-900` / `bg-neutral-800` /
+`hover:bg-neutral-700`），而主应用是浅色（顶栏 `#F7F8FA`、设备栏 `#F0F2F5`、
+分隔线 `neutral-300`）。两个窗口并排时像两套不同的软件。
+
+| 位置 | 改前 | 改后 |
+| --- | --- | --- |
+| 窗口底色 | `bg-neutral-900` | `#F7F8FA`（同 main.ts） |
+| 顶栏 | `bg-neutral-800` + `border-neutral-700` | `#F7F8FA` + `border-neutral-300` |
+| 侧栏 | `bg-neutral-900` + `border-r` | `#F0F2F5` + `border-l`（同设备栏） |
+| 侧栏按钮 | `text-neutral-300` / hover `neutral-700` | `text-neutral-600` / hover `neutral-200` |
+
+侧栏边框从 `border-r` 改成 `border-l`：这块按键栏在画面**右边**，
+分隔线要贴着画面那一侧，否则线画在窗口外沿上，看着像少了一条边。
+
+**画面区刻意保持深色**（`bg-neutral-900`）。它不是"界面"，是一块视频画布 ——
+scrcpy 按宽高比居中后四周会留出真正的 letterbox，浅色留白会让画面像贴在一张白纸上。
+顶栏/侧栏跟主应用统一、画面保持深色，这是用途不同，不是漏改。
+
+窗口的 `backgroundColor` 也从 `#111827` 改成 `#F7F8FA`：第一帧到渲染完成之间
+露出的底色不能是深色，否则每次开会闪一下黑框。
+
+![浅色主题后的投屏窗口](./mirror-light-theme.png)
+
+## 九、为什么要两份报告
 
 - `scrcpy-embed-result.md`（spike）证的是「**这个思路可行**」—— 它用 PowerShell 复刻，
   因为当时连 koffi 都还没装，用最少的未知数回答「SetParent 会不会黑屏」。

@@ -232,6 +232,48 @@ export function videoSizeFor(screen: ScreenSize, maxSize: number): ScreenSize {
 /** 探测不出分辨率时的回退值（常见竖屏手机 1080×1920，缩到 1024 长边）。 */
 export const DEFAULT_SCREEN: ScreenSize = { width: 1080, height: 1920 }
 
+/* ============ 嵌入窗口的 z 序判定 ============ */
+
+/**
+ * 宿主窗口里「鼠标会落到谁身上」—— 该不该把 scrcpy 子窗口重新提到最上层。
+ *
+ * ===== 为什么需要这条判定（实机踩到的第五个缺陷）=====
+ * 投屏窗口是「Chromium 的渲染子窗口 + 我们 SetParent 进来的 scrcpy 子窗口」两个兄弟窗口，
+ * 谁在 z 序上面谁收鼠标。实测：
+ *   - 刚嵌入时 ShowWindow 会把 scrcpy 顶上去，所以「投屏成功后一会儿鼠标是能点的」；
+ *   - 之后**只要宿主窗口发生一次 resize**（嵌入流程自己那次 setContentSize、用户拉窗口、
+ *     甚至切焦点引起的重排），Chromium 就把自己的 Chrome_RenderWidgetHostHWND 重新插回
+ *     z 序最顶，把 scrcpy 压到下面；
+ *   - 而且这个覆盖是「粘住」的：尺寸改回去也不回升，MoveWindow 又只改位置不动 z 序。
+ *
+ * 症状正是用户报的「画面还在，鼠标点了没反应」—— 事件全被渲染层吃掉，
+ * 而侧边栏按键走 adb 所以看起来一切正常。
+ *
+ * @param visibleTopDown 宿主窗口的**可见**子窗口句柄，按 z 序从上到下。
+ * @param childHwnd 我们嵌进去的那个 scrcpy 窗口句柄。
+ * @returns true = 需要把它提到顶层。
+ *
+ * 判定只看「是不是第一个」：z 序里只有最上面那个窗口能收到鼠标。
+ * 不可见的子窗口（scrcpy 自己的 OimeTsfNotifyWindow 就是 0×0 且不可见）
+ * 由调用方在枚举时过滤掉，所以这里不做可见性判断 —— 那是 Win32 的事，不是纯函数的。
+ */
+export function needsRaise(visibleTopDown: readonly number[], childHwnd: number): boolean {
+  if (childHwnd === 0) return false
+  /*
+   * 列表为空 = 宿主还没有子窗口（或枚举失败）。
+   *
+   * 此时**不**提层：没有证据说明它被压住了，而无条件 SetWindowPos 会在
+   * 每个看门狗周期都触发一次重排，画面会抖。
+   */
+  if (visibleTopDown.length === 0) return false
+  /*
+   * 找不到 childHwnd = 窗口已经被销毁或还没挂上去。
+   * 提一个不存在的窗口没有意义（SetWindowPos 会失败），交给调用方处理。
+   */
+  if (!visibleTopDown.includes(childHwnd)) return false
+  return visibleTopDown[0] !== childHwnd
+}
+
 /** 拼 scrcpy 命令行参数所需的输入。 */
 export interface ScrcpyArgsInput {
   /** 设备序列号。**每条 scrcpy 命令都必须带 -s**，与 adb 调用同一条红线。 */

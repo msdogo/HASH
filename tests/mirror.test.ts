@@ -10,6 +10,7 @@ import {
   classifyScrcpyFailure,
   fitRect,
   mirrorTitleOf,
+  needsRaise,
   parseScrcpyExtraArgs,
   SCRCPY_RESERVED_DISPLAY,
   windowFitSize,
@@ -340,5 +341,45 @@ describe('自定义 scrcpy 参数：红线参数被拒绝', () => {
   it('界面用的清单与判定表覆盖同一组参数（有条目、不重复）', () => {
     expect(SCRCPY_RESERVED_DISPLAY.length).toBe(4)
     expect(new Set(SCRCPY_RESERVED_DISPLAY).size).toBe(SCRCPY_RESERVED_DISPLAY.length)
+  })
+})
+
+/**
+ * z 序判定（第五个实机缺陷）。
+ *
+ * 症状：投屏成功后一会儿鼠标点不动，画面却正常。
+ * 成因：宿主 resize 时 Chromium 把渲染子窗口插回 z 序最顶，把 scrcpy 压下去；
+ * 被压住的窗口画面照样合成，鼠标事件却全被渲染层吃掉。
+ *
+ * 这里锁的是「什么时候要动手」：动手太频繁会抖，不动手就点不动。
+ */
+describe('needsRaise', () => {
+  it('scrcpy 已在最顶层 → 不动手（否则每 500ms 抖一次）', () => {
+    expect(needsRaise([100, 200], 100)).toBe(false)
+  })
+
+  it('scrcpy 被渲染层压到下面 → 必须动手', () => {
+    expect(needsRaise([200, 100], 100)).toBe(true)
+  })
+
+  it('scrcpy 排在第三个也要动手（中间多几个兄弟窗口同理）', () => {
+    expect(needsRaise([200, 300, 100], 100)).toBe(true)
+  })
+
+  it('列表为空（还没挂上 / 枚举失败）→ 不动手', () => {
+    expect(needsRaise([], 100)).toBe(false)
+  })
+
+  it('列表里没有 scrcpy（已被销毁）→ 不动手', () => {
+    expect(needsRaise([200, 300], 100)).toBe(false)
+  })
+
+  it('句柄是 0 → 不动手（SetWindowPos 对 0 必然失败，不要白调一次）', () => {
+    expect(needsRaise([200], 0)).toBe(false)
+    expect(needsRaise([], 0)).toBe(false)
+  })
+
+  it('只有一个子窗口且就是它 → 不动手', () => {
+    expect(needsRaise([100], 100)).toBe(false)
   })
 })
