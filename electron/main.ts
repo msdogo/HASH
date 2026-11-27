@@ -463,6 +463,13 @@ const mirrorService = createMirrorService({
    * 但那样遥控器这类横屏设备每次投屏都会「先竖后横」跳一下 —— 必须接上。
    */
   probeScreen: (serial, adbPath) => orientationProbe.screenOf(serial, adbPath),
+  /*
+   * 自定义 scrcpy 参数每次启动现取（用户在设置里改完立刻点投屏也要生效）。
+   *
+   * 放在这里而不是建服务时读一次：设置是用户可以随时改的，
+   * 缓存下来就会出现「改了设置、重启应用才生效」这种说不清的行为。
+   */
+  getExtraArgs: () => settings().getScrcpyArgs(),
   emit: (event) => {
     /*
      * 会话事件 → 窗口 + 渲染层，两条路都要走。
@@ -909,6 +916,9 @@ app.whenReady().then(async () => {
               // R9：按设备序列号记住上次停留的目录
               getDeviceCwd: (serial) => settings().getDeviceCwd(serial),
               setDeviceCwd: (serial, cwd) => { settings().setDeviceCwd(serial, cwd) },
+              // 自定义投屏参数（全局一套）：与其它设置项同一个设置文件、同一条降级范式
+              getScrcpyArgs: () => settings().getScrcpyArgs(),
+              setScrcpyArgs: (raw) => settings().setScrcpyArgs(raw),
             },
             transfer: transfer.controller,
             batch: batchService,

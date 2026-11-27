@@ -229,6 +229,25 @@ export const SETTINGS_PICK_DOWNLOAD_DIR_INPUT = z.unknown()
 /** settings:reset-download-dir 入参（无意义载荷，统一走 unknown 保持「一律 zod 校验」）。 */
 export const SETTINGS_RESET_DOWNLOAD_DIR_INPUT = z.unknown()
 
+/**
+ * settings:set-scrcpy-args 入参。
+ *
+ * 空串**合法**：它表示「不用自定义参数」，是用户点「恢复默认」的自然结果，
+ * 与 downloadDir 的「空串不是用默认」正相反 —— 那里空串没有合理语义，
+ * 这里空串恰好就是「没有额外参数」。
+ *
+ * max(500)：一行参数写 500 字已经远超正常用法（常用参数都是十几字符），
+ * 上限存在的意义是拦住「把整个 shell 脚本粘进来」而不是表达业务规则。
+ *
+ * 这里**不**做红线过滤：过滤发生在启动投屏时（electron/mirror/service.ts），
+ * 存的时候保留用户原文，界面才能告诉他「你写的这条被忽略了」，
+ * 而不是在他保存时静默删掉。
+ */
+export const SETTINGS_SET_SCRCPY_ARGS_INPUT = z.object({
+  scrcpyArgs: z.string().max(500),
+})
+export type SettingsSetScrcpyArgsInput = z.infer<typeof SETTINGS_SET_SCRCPY_ARGS_INPUT>
+
 /* ===== R9：按设备序列号记住上次停留的目录 ===== */
 
 /**
@@ -534,6 +553,13 @@ export interface DshApi {
     pickDownloadDir(): Promise<IpcResult<string>>
     /** 恢复默认（写回本机「下载」目录）。 */
     resetDownloadDir(): Promise<IpcResult<SettingsData>>
+    /**
+     * 写自定义 scrcpy 参数（一行文本，全局一套）。
+     *
+     * 原样落盘，不在保存时过滤：被红线拒绝的参数要能在界面上显示出来
+     * （「已忽略：--max-size=720」），否则用户以为自己保存失败了。
+     */
+    setScrcpyArgs(payload: SettingsSetScrcpyArgsInput): Promise<IpcResult<SettingsData>>
     /* ---- R9：按设备记住上次停留的目录 ---- */
     /**
      * 读某台设备上次停留的目录。

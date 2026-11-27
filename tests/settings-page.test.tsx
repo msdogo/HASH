@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { SettingsPage } from '../src/pages/SettingsPage'
 import { FileToolbar } from '../src/components/FileToolbar'
 import { t, tf } from '../src/shared/i18n'
+import { SCRCPY_RESERVED_DISPLAY } from '../src/shared/mirror'
 import type { SettingsData } from '../src/shared/settings'
 
 /*
@@ -27,6 +28,7 @@ const SETTINGS: SettingsData = {
   // R7：故意不是 package.json 里的真实版本，这样「渲染的是 appVersion 而不是写死的 0.1.0」才可证
   appVersion: '7.42.13',
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/resources/platform-tools/adb.exe', version: '1.0.41' },
+  scrcpyArgs: '',
 }
 
 const PAGE = SettingsPage as unknown as (props: {
@@ -49,6 +51,45 @@ function buttonWithTitle(html: string, title: string): string {
 function isDisabled(tag: string): boolean {
   return /\sdisabled=""/.test(tag)
 }
+
+describe('自定义投屏参数卡片', () => {
+  it('渲染卡片标题、说明与输入框（输入框里是当前生效值）', () => {
+    const html = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '--stay-awake' } })
+    expect(html).toContain('data-testid="settings-scrcpy-args"')
+    expect(html).toContain('data-testid="settings-scrcpy-args-input"')
+    expect(html).toContain(t('settings.scrcpyArgs.title'))
+    expect(html).toContain(t('settings.scrcpyArgs.desc'))
+    // 值是用户上次保存的原文
+    expect(html).toContain('value="--stay-awake"')
+  })
+
+  it('空参数时显示「当前没有自定义参数」，输入框为空', () => {
+    const html = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '' } })
+    expect(html).toContain(t('settings.scrcpyArgs.empty'))
+    expect(html).toContain('value=""')
+  })
+
+  it('把会被忽略的参数清单渲染出来（用户得知道哪些写了不生效）', () => {
+    const html = settingsHtml({ data: SETTINGS })
+    expect(html).toContain(t('settings.scrcpyArgs.reserved'))
+    for (const item of SCRCPY_RESERVED_DISPLAY) expect(html).toContain(item)
+  })
+
+  it('没改动时「保存」不可点（避免一次无意义的写盘）', () => {
+    const html = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '--stay-awake' } })
+    const buttons = html.match(/<button\b[^>]*>[^<]*<\/button>/g) ?? []
+    const save = buttons.find((b) => b.includes(t('settings.scrcpyArgs.save')))
+    expect(save).toBeDefined()
+    expect(isDisabled(save as string)).toBe(true)
+  })
+
+  it('没有自定义参数时「恢复默认」不可点', () => {
+    const buttons = settingsHtml({ data: { ...SETTINGS, scrcpyArgs: '' } }).match(/<button\b[^>]*>[^<]*<\/button>/g) ?? []
+    const reset = buttons.find((b) => b.includes(t('settings.scrcpyArgs.reset')))
+    expect(reset).toBeDefined()
+    expect(isDisabled(reset as string)).toBe(true)
+  })
+})
 
 describe('R2-2 设置页：默认下载路径（可写）', () => {
   it('渲染出当前下载路径（含完整绝对路径）', () => {

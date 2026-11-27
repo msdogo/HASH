@@ -23,6 +23,13 @@ interface SettingsState {
   pickDownloadDir: () => Promise<string | null>
   /** 恢复默认（系统「下载」目录）。 */
   resetDownloadDir: () => Promise<boolean>
+  /**
+   * 写自定义 scrcpy 参数；返回是否成功。
+   *
+   * 语义与 setDownloadDir 完全一致：失败时把错误码落到 error、不动 data ——
+   * 界面因此永远不会出现「显示已改、实际没写进去」的分叉。
+   */
+  setScrcpyArgs: (raw: string) => Promise<boolean>
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -66,6 +73,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   resetDownloadDir: async () => {
     const result = await window.api.settings.resetDownloadDir()
+    if (!result.ok) {
+      set({ error: result.error })
+      return false
+    }
+    set({ data: result.data, error: null })
+    return true
+  },
+  setScrcpyArgs: async (raw) => {
+    const result = await window.api.settings.setScrcpyArgs({ scrcpyArgs: raw })
     if (!result.ok) {
       set({ error: result.error })
       return false

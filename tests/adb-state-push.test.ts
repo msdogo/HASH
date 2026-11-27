@@ -166,6 +166,9 @@ describe('I9 渲染层可主动拉取 adb 状态（不依赖广播时机）', ()
           // R9：本文件不测目录记忆，空壳只为满足 SettingsController
           getDeviceCwd: () => undefined,
           setDeviceCwd: () => undefined,
+          // 自定义投屏参数：本文件不测，空壳只为满足 SettingsController
+          getScrcpyArgs: () => '',
+          setScrcpyArgs: (raw: string) => raw,
         },
         pickDownloadDir: async () => '',
         // 本文件不测批量：空壳只为满足 HandlerDeps（批量有 tests/batch-*.test.ts）

@@ -10,6 +10,8 @@ import {
   classifyScrcpyFailure,
   fitRect,
   mirrorTitleOf,
+  parseScrcpyExtraArgs,
+  SCRCPY_RESERVED_DISPLAY,
   windowFitSize,
 } from '../src/shared/mirror'
 
@@ -225,5 +227,118 @@ describe('MAX_SIZE_OPTIONS', () => {
       expect(MAX_SIZE_OPTIONS[i]).toBeGreaterThan(0)
       if (i > 0) expect(MAX_SIZE_OPTIONS[i]).toBeGreaterThan(MAX_SIZE_OPTIONS[i - 1])
     }
+  })
+})
+
+describe('自定义 scrcpy 参数：追加与切分', () => {
+  it('extraArgs 追加在固定参数**之后**（我们的参数优先，不被用户值顶掉）', () => {
+    const args = buildScrcpyArgs({
+      serial: 'ABC123',
+      token: 't1',
+      maxSize: 1024,
+      extraArgs: ['--turn-screen-off', '--show-touches'],
+    })
+    expect(args.slice(-2)).toEqual(['--turn-screen-off', '--show-touches'])
+    // 固定参数仍在原位：-s serial 必须是开头两个
+    expect(args.slice(0, 2)).toEqual(['-s', 'ABC123'])
+    expect(args.indexOf('--max-size=1024')).toBeLessThan(args.indexOf('--turn-screen-off'))
+  })
+
+  it('不给 extraArgs 时参数与修前完全一致（不多出空串参数）', () => {
+    const withoutExtra = buildScrcpyArgs({ serial: 'ABC123', token: 't1', maxSize: 1024 })
+    const withEmpty = buildScrcpyArgs({ serial: 'ABC123', token: 't1', maxSize: 1024, extraArgs: [] })
+    expect(withoutExtra).toEqual(withEmpty)
+    expect(withoutExtra).not.toContain('')
+  })
+
+  it('空串 / 纯空白 → 零个参数', () => {
+    expect(parseScrcpyExtraArgs('').args).toEqual([])
+    expect(parseScrcpyExtraArgs('   \t  ').args).toEqual([])
+  })
+
+  it('按空白切分多个参数', () => {
+    expect(parseScrcpyExtraArgs('--turn-screen-off  --show-touches').args).toEqual([
+      '--turn-screen-off',
+      '--show-touches',
+    ])
+  })
+
+  it('成对引号里的空格不切断参数', () => {
+    expect(parseScrcpyExtraArgs('--crop="100:200:300:400" --x=1').args).toEqual([
+      '--crop=100:200:300:400',
+      '--x=1',
+    ])
+    expect(parseScrcpyExtraArgs("--record 'C:/a b/c.mp4'").args).toEqual(['--record', 'C:/a b/c.mp4'])
+  })
+
+  it('未闭合的引号按「到结尾都是值」处理（不吞掉用户写的东西）', () => {
+    expect(parseScrcpyExtraArgs('--record "C:/a b').args).toEqual(['--record', 'C:/a b'])
+  })
+})
+
+describe('自定义 scrcpy 参数：红线参数被拒绝', () => {
+  it('-s / --serial 被拒绝（否则会投到别的设备上）', () => {
+    const a = parseScrcpyExtraArgs('-s OTHERDEV')
+    expect(a.args).toEqual([])
+    expect(a.ignored).toEqual(['-s', 'OTHERDEV'])
+    const b = parseScrcpyExtraArgs('--serial=OTHERDEV')
+    expect(b.args).toEqual([])
+    expect(b.ignored).toEqual(['--serial=OTHERDEV'])
+  })
+
+  it('带值保留项的**值**也被吃掉（否则游离参数会被 scrcpy 当成设备序列号）', () => {
+    // 这是修前的真实缺陷：只丢 -s，OTHERDEV 会作为位置参数传给 scrcpy = 绕过红线
+    const r = parseScrcpyExtraArgs('-s OTHERDEV --show-touches')
+    expect(r.args).toEqual(['--show-touches'])
+    expect(r.ignored).toEqual(['-s', 'OTHERDEV'])
+  })
+
+  it('紧随开关后面的参数不被连坐（--window-borderless 不吃值）', () => {
+    const r = parseScrcpyExtraArgs('--window-borderless --show-touches')
+    expect(r.args).toEqual(['--show-touches'])
+    expect(r.ignored).toEqual(['--window-borderless'])
+  })
+
+  it('下一个 token 是另一个开关时不吞（--max-size --show-touches）', () => {
+    const r = parseScrcpyExtraArgs('--max-size --show-touches')
+    expect(r.args).toEqual(['--show-touches'])
+    expect(r.ignored).toEqual(['--max-size'])
+  })
+
+  it('--window-title / --window-borderless 被拒绝（嵌入靠它们定位窗口）', () => {
+    const r = parseScrcpyExtraArgs('--window-title=hack --window-borderless')
+    expect(r.args).toEqual([])
+    expect(r.ignored).toEqual(['--window-title=hack', '--window-borderless'])
+  })
+
+  it('--max-size 两种写法都被拒绝（窗口初始尺寸按 1024 预计算）', () => {
+    expect(parseScrcpyExtraArgs('--max-size=720').ignored).toEqual(['--max-size=720'])
+    // 空格写法会连同值一起被吃掉，不留一个游离的 '720'
+    expect(parseScrcpyExtraArgs('--max-size 720').ignored).toEqual(['--max-size', '720'])
+  })
+
+  it('被拒的只剔除自己，其余参数照常保留', () => {
+    const r = parseScrcpyExtraArgs('--turn-screen-off --max-size=720 --show-touches')
+    expect(r.args).toEqual(['--turn-screen-off', '--show-touches'])
+    expect(r.ignored).toEqual(['--max-size=720'])
+  })
+
+  it('大小写与多余横线也能认出来（--Max-Size / ---serial）', () => {
+    expect(parseScrcpyExtraArgs('--Max-Size=720').ignored).toHaveLength(1)
+    expect(parseScrcpyExtraArgs('---serial').ignored).toHaveLength(1)
+  })
+
+  it('长得像但不相关的参数不被误杀（--stay-awake / -S）', () => {
+    expect(parseScrcpyExtraArgs('--stay-awake --show-touches').args).toEqual([
+      '--stay-awake',
+      '--show-touches',
+    ])
+    // 大小写归一化：-S 落到保留项 s 上，一并拒掉（宁可多拒，也不赌 scrcpy 版本行为）
+    expect(parseScrcpyExtraArgs('-S').ignored).toEqual(['-S'])
+  })
+
+  it('界面用的清单与判定表覆盖同一组参数（有条目、不重复）', () => {
+    expect(SCRCPY_RESERVED_DISPLAY.length).toBe(4)
+    expect(new Set(SCRCPY_RESERVED_DISPLAY).size).toBe(SCRCPY_RESERVED_DISPLAY.length)
   })
 })

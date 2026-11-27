@@ -328,6 +328,21 @@ const messages: Record<string, string> = {
   'settings.downloadDir.empty': '还没有读到下载路径',
   'settings.downloadDir.loading': '正在读取设置…',
   'settings.downloadDir.reload': '重新读取',
+  /*
+   * 自定义 scrcpy 参数：全局一套，一个输入框。
+   *
+   * 说明里必须写清两件用户一定会遇到的问题：
+   *   1. 改完要关掉投屏窗口重开才生效（参数是启动时交给 scrcpy 的，改不了运行中的进程）；
+   *   2. 有几类参数会被忽略（-s / 窗口标题 / 窗口边框 / 最大分辨率），
+   *      因为它们是「嵌入 + 多设备隔离」的前提，让用户覆盖会直接把投屏弄坏。
+   */
+  'settings.scrcpyArgs.title': '投屏参数',
+  'settings.scrcpyArgs.desc': '追加给 scrcpy 的额外参数，例如 --turn-screen-off --show-touches。改完需要关掉投屏窗口重新打开才生效',
+  'settings.scrcpyArgs.placeholder': '留空表示只用内置参数',
+  'settings.scrcpyArgs.save': '保存',
+  'settings.scrcpyArgs.reset': '恢复默认',
+  'settings.scrcpyArgs.empty': '当前没有自定义参数',
+  'settings.scrcpyArgs.reserved': '这些参数会影响投屏窗口的嵌入，会被忽略：',
   'settings.adb.title': 'adb 状态',
   'settings.adb.source': '来源',
   'settings.adb.path': '路径',
@@ -409,7 +424,7 @@ const errorTexts: Record<ErrorCode, string> = {
   E_RECORD_ACTIVE: '这台设备已经在录屏了。请先点「停止录屏」，把这一条录制结束掉再开始新的',
   E_NOT_RECORDING: '这台设备当前没有在录屏，没有文件需要停止。录制可能已经到时间上限自动结束了',
   // ---- scrcpy 投屏 ----
-  E_MIRROR_START_FAILED: '投屏没有启动成功。请在日志栏查看 scrcpy 的原始输出，或换一台设备试试',
+  E_MIRROR_START_FAILED: '投屏没有启动成功。请在日志栏查看 scrcpy 的原始输出；如果刚改过「投屏参数」，先清空再试一次',
   E_SCRCPY_NOT_FOUND: '找不到投屏组件（scrcpy）。安装包可能不完整，请重新安装应用；开发环境请运行 npm run fetch-scrcpy',
   E_SCRCPY_NOT_EXECUTABLE: '投屏组件存在但无法运行（可能缺少 DLL 或被安全软件拦截）。请检查 resources/scrcpy 目录',
   E_SCRCPY_NO_ADB: '投屏组件找不到可用的 adb。请确认内置 adb 未被删除或隔离，重启应用后重试',

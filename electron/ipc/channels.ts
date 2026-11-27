@@ -72,6 +72,14 @@ export const CH = {
   SETTINGS_GET: 'settings:get',
   /** invoke：写默认下载路径（zod 校验 + 主进程路径闸门）。 */
   SETTINGS_SET_DOWNLOAD_DIR: 'settings:set-download-dir',
+  /**
+   * invoke：写自定义 scrcpy 参数（一行文本，原样落盘）。
+   *
+   * 独立一条而不是并进 set-download-dir：两者校验规则完全不同
+   * （路径要过绝对路径闸门，参数只过长度），合用一个通道就得在里面分情况，
+   * 「一个通道一件事」在这里同样是精确校验的前提。
+   */
+  SETTINGS_SET_SCRCPY_ARGS: 'settings:set-scrcpy-args',
   /** invoke：弹出目录选择框挑默认下载路径（取消返回空串，不改本地栏）。 */
   SETTINGS_PICK_DOWNLOAD_DIR: 'settings:pick-download-dir',
   /** invoke：恢复默认下载路径（写回系统「下载」目录）。 */
@@ -191,6 +199,7 @@ export const INVOKE_CHANNELS = [
   // R2-2：设置（默认下载路径）
   CH.SETTINGS_GET,
   CH.SETTINGS_SET_DOWNLOAD_DIR,
+  CH.SETTINGS_SET_SCRCPY_ARGS,
   CH.SETTINGS_PICK_DOWNLOAD_DIR,
   CH.SETTINGS_RESET_DOWNLOAD_DIR,
   // R9：按设备记住上次停留的目录

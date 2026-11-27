@@ -29,6 +29,7 @@ import {
   SETTINGS_RESET_DOWNLOAD_DIR_INPUT,
   SETTINGS_SET_DEVICE_CWD_INPUT,
   SETTINGS_SET_DOWNLOAD_DIR_INPUT,
+  SETTINGS_SET_SCRCPY_ARGS_INPUT,
   TRANSFER_CLEAR_INPUT,
   TRANSFER_ENQUEUE_INPUT,
   TRANSFER_ID_INPUT,
@@ -275,6 +276,14 @@ export interface SettingsController {
    * 非法入参（空 serial / 空 cwd / 非绝对路径）在存储层被静默拒绝 + warn。
    */
   setDeviceCwd(serial: string, cwd: string): void
+  /**
+   * 自定义 scrcpy 参数（全局一套，原始输入）。
+   *
+   * 读取时坏值已降级成空串，所以拿到的一定是可直接切分的字符串。
+   */
+  getScrcpyArgs(): string
+  /** 写自定义 scrcpy 参数；返回实际写入的值（已 trim）。 */
+  setScrcpyArgs(raw: string): string
 }
 
 /** 本地目录访问的最小面（electron/fs/local 的 LocalFs 满足它）。 */
@@ -612,6 +621,7 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     defaultDownloadDir: deps.settings.getDefaultDownloadDir(),
     appVersion: deps.settings.getAppVersion(),
     adb: toSettingsAdb(deps.adbState()),
+    scrcpyArgs: deps.settings.getScrcpyArgs(),
   })
 
   handle(CH.SETTINGS_GET, (_event, payload): IpcResult<SettingsData> => {
@@ -640,6 +650,25 @@ export function registerHandlers(deps: HandlerDeps, ipc: IpcMainLike): void {
     if (!parsed.ok) return fail(parsed.error)
     try {
       deps.settings.setDownloadDir(parsed.data.downloadDir)
+      return { ok: true, data: settingsSnapshot() }
+    } catch (err) {
+      return fail(toErrorCode(err))
+    }
+  })
+
+  /**
+   * 写自定义 scrcpy 参数。
+   *
+   * 与 set-download-dir 同构：写成功才返回新快照，失败时**一个字节都不写**。
+   * 差别在错误面：这里只有 zod 的「太长」一种拒绝理由，
+   * 内容合法性（哪些参数会被忽略）不在这里判定 —— 那是启动投屏时的事，
+   * 而且它只影响「参数是否生效」，不该拦住保存。
+   */
+  handle(CH.SETTINGS_SET_SCRCPY_ARGS, (_event, payload): IpcResult<SettingsData> => {
+    const parsed = preflight<{ scrcpyArgs: string }>(payload, SETTINGS_SET_SCRCPY_ARGS_INPUT)
+    if (!parsed.ok) return fail(parsed.error)
+    try {
+      deps.settings.setScrcpyArgs(parsed.data.scrcpyArgs)
       return { ok: true, data: settingsSnapshot() }
     } catch (err) {
       return fail(toErrorCode(err))

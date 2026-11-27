@@ -144,6 +144,61 @@ describe('R2-2 settings:get 返回一份完整快照', () => {
   })
 })
 
+describe('自定义投屏参数：settings:set-scrcpy-args', () => {
+  it('入参逐字透传给控制器，并返回带新值的快照', async () => {
+    const settings = fakeSettings()
+    const h = harness({}, { settings })
+    const raw = '--turn-screen-off --show-touches'
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: raw }) as {
+      ok: boolean
+      data: SettingsData
+    }
+    expect(result.ok).toBe(true)
+    const call = settings.calls.find((c) => c.method === 'setScrcpyArgs')
+    expect(call?.args).toEqual([raw])
+    // 快照必须带上新值（界面据此更新输入框，不必再 get 一次）
+    expect(result.data.scrcpyArgs).toBe(raw)
+  })
+
+  it('空串合法（= 只用内置参数），不是参数错误', async () => {
+    const h = harness()
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: '' }) as { ok: boolean }
+    expect(result.ok).toBe(true)
+  })
+
+  it('超过 500 字符 → E_BAD_ARGS，且**不调用**控制器（一个字节都不写）', async () => {
+    const settings = fakeSettings()
+    const h = harness({}, { settings })
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: 'x'.repeat(501) }) as { ok: boolean; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe(E_BAD_ARGS)
+    expect(settings.calls.some((c) => c.method === 'setScrcpyArgs')).toBe(false)
+  })
+
+  it('类型不对（不是字符串）→ E_BAD_ARGS', async () => {
+    const h = harness()
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: 123 }) as { ok: boolean; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe(E_BAD_ARGS)
+  })
+
+  it('控制器抛异常 → 收敛成错误码，不穿过 ipcMain.handle', async () => {
+    const settings = fakeSettings()
+    settings.setScrcpyArgs = () => { throw new Error('E_SYNC_FAILED') }
+    const h = harness({}, { settings })
+    const result = await h.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, { scrcpyArgs: '--x' }) as { ok: boolean; error: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('E_SYNC_FAILED')
+  })
+
+  it('settings:get 的快照里带当前参数（界面首屏要用）', async () => {
+    const h = harness({}, { settings: fakeSettings({ scrcpyArgs: '--stay-awake' }) })
+    const result = await h.invoke(CH.SETTINGS_GET, null) as { ok: boolean; data: SettingsData }
+    expect(result.ok).toBe(true)
+    expect(result.data.scrcpyArgs).toBe('--stay-awake')
+  })
+})
+
 describe('R7 版本号：settingsSnapshot 的 appVersion 来自控制器的 getAppVersion', () => {
   /*
    * 这一组证明的是**行为**：版本号是「控制器的返回值」透传出来的，而不是 IPC 层

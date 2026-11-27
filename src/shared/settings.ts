@@ -66,6 +66,18 @@ export interface SettingsData {
   appVersion: string
   /** adb 的只读状态（不给改）。 */
   adb: SettingsAdb
+  /**
+   * 自定义 scrcpy 参数（原始输入，未切分）。
+   *
+   * 空串 = 用户没填，投屏只用内置参数。
+   *
+   * 为什么存**原始字符串**而不是切好的数组：
+   *   - 用户下次打开设置页要看到自己写的那一行原文（切完再拼回去必然变形）；
+   *   - 红线过滤发生在使用点（electron/mirror/service.ts），
+   *     存的时候不做过滤 —— 否则用户把 `--max-size` 从输入框里删掉再存，
+   *     被拒的那些参数已经找不回来了。
+   */
+  scrcpyArgs: string
 }
 
 /* ============ 绝对路径判定（shared 不能 import node:path） ============ */

@@ -240,6 +240,13 @@ export interface ScrcpyArgsInput {
   token: string
   /** 最大分辨率（长边像素）。 */
   maxSize: number
+  /**
+   * 用户在设置里填的自定义参数（已过 parseScrcpyExtraArgs 过滤）。
+   *
+   * 追加在**固定参数之后**：固定参数是嵌入与多设备隔离的前提，
+   * 顺序写反会让用户的值被我们覆盖，而覆盖是静默的 —— 用户会以为自己填错了。
+   */
+  extraArgs?: readonly string[]
 }
 
 /**
@@ -259,6 +266,8 @@ export function buildScrcpyArgs(input: ScrcpyArgsInput): string[] {
     '--window-title=' + SCRCPY_WINDOW_PREFIX + input.token,
     '--no-audio',
     '--max-size=' + String(input.maxSize),
+    // 自定义参数放最后：我们自己的固定参数优先，用户值只做追加
+    ...(input.extraArgs ?? []),
   ]
 }
 
@@ -285,4 +294,145 @@ export function classifyScrcpyFailure(stderr: string): string {
   if (/Could not find any ADB device|Could not find ADB device/i.test(stderr)) return 'E_DEVICE_OFFLINE'
   if (/Could not start adb server|Command not found: \[.*adb/i.test(stderr)) return 'E_SCRCPY_NO_ADB'
   return 'E_MIRROR_START_FAILED'
+}
+
+/* ============ 自定义 scrcpy 参数（设置页的一个输入框） ============ */
+
+/**
+ * 用户**不能**覆盖的参数。
+ *
+ * 每一条都是「写错了不是难看，而是功能直接坏」：
+ *   - `-s` / `--serial`：会把画面投到**另一台设备**上，用户完全看不出发生了什么；
+ *   - `--window-title`：嵌入靠标题里的唯一 token 找 HWND，改掉就永远找不到窗口；
+ *   - `--window-borderless`：有边框的 scrcpy 窗口 SetParent 之后画面异常（spike 实测）；
+ *   - `--max-size`：投屏窗口的初始尺寸按 DEFAULT_MAX_SIZE 预先算好，
+ *     用户改了会让窗口「先按 1024 建、再校正」，也就是用户可见的跳变。
+ *
+ * 存的是**比较用的归一化形式**（去前导横线、小写、只留主干），
+ * 这样 `--max-size 720` 与 `--max-size=720` 能被同一条规则拦下。
+ */
+const RESERVED_SCRCPY_OPTIONS: readonly { name: string; takesValue: boolean }[] = [
+  // 带值的四项：写 `-s X` 时 X 也得一起丢掉，否则它会变成一个游离参数
+  { name: 's', takesValue: true },
+  { name: 'serial', takesValue: true },
+  { name: 'window-title', takesValue: true },
+  { name: 'max-size', takesValue: true },
+  // 纯开关：没有值可丢，紧跟其后的参数是用户自己的，不能连坐
+  { name: 'window-borderless', takesValue: false },
+]
+
+/**
+ * 给界面显示的「会被忽略的参数」清单。
+ *
+ * 与上面的判定表分开写：判定表存归一化形式（`s`），这里存用户看得懂的形式（`-s`）。
+ * 合成一份会让要么判定漏掉 `--serial`、要么界面显示一行没有横线的怪东西。
+ */
+export const SCRCPY_RESERVED_DISPLAY: readonly string[] = [
+  '-s / --serial',
+  '--window-title',
+  '--window-borderless',
+  '--max-size',
+]
+
+/**
+ * 把用户填的一整行参数切成 argv。
+ *
+ * ===== 为什么要自己切，而不是 raw.split(' ') =====
+ * `--crop=100:200` 这种没空格没关系，但 `--window-title="a b"`（用户想传带空格的
+ * 值）用空格切会变成两个参数，其中一个是残缺的引号串，scrcpy 直接报"invalid argument"。
+ * 所以支持成对引号：遇 `"` 或 `'` 进入引号模式，直到同一个字符再闭合。
+ *
+ * ===== 为什么不做 shell 语法（反斜杠转义 / 变量展开） =====
+ * 这里**不是 shell**：scrcpy 收到的是 argv 数组，多余的解释只会制造
+ * 「我写的命令在命令行能跑、在这里跑不了」的困惑。只做「空白分隔 + 成对引号」两件事。
+ *
+ * @returns args 是可直接追加进 argv 的片段；ignored 是被拒绝的原始参数（界面要显示出来，
+ *          否则用户填的值静默消失，他会以为是自己没保存）。
+ */
+export function parseScrcpyExtraArgs(raw: string): { args: string[]; ignored: string[] } {
+  const args: string[] = []
+  const ignored: string[] = []
+
+  const tokens = splitArgs(raw)
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]
+    const reserved = reservedScrcpyOption(token)
+    if (reserved === undefined) {
+      args.push(token)
+      continue
+    }
+    ignored.push(token)
+    /*
+     * 带值的保留项还要吃掉它的值。
+     *
+     * 不吃的话 `-s OTHERDEV` 会变成「`-s` 被拒 + `OTHERDEV` 作为游离参数传给 scrcpy」——
+     * 而 scrcpy 的游离参数恰恰就是设备序列号，等于换个写法绕过了红线。
+     * 只在没有 `=` 时才吃下一个 token：`--max-size=720` 的值已经在同一个 token 里。
+     * 下一个 token 以 `-` 开头时不吞（那是用户的下一个开关，不是一个值）。
+     */
+    if (reserved.takesValue && !token.includes('=')) {
+      const next = tokens[i + 1]
+      if (next !== undefined && !next.startsWith('-')) {
+        ignored.push(next)
+        i++
+      }
+    }
+  }
+  return { args, ignored }
+}
+
+/**
+ * 按空白切分，支持成对引号。
+ *
+ * 未闭合的引号（用户写了一半）按「到结尾为止都是值」处理，而不是丢弃 ——
+ * 丢弃会让用户填的东西凭空少一段，比给 scrcpy 一个奇怪的参数更难排查。
+ */
+function splitArgs(raw: string): string[] {
+  const out: string[] = []
+  let current = ''
+  let quote: string | null = null
+  let started = false // 区分「空串参数」与「还没开始」（'' 是合法参数，不能被吞掉）
+
+  for (const ch of raw) {
+    if (quote !== null) {
+      if (ch === quote) quote = null
+      else current += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      started = true
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+      if (started || current !== '') {
+        out.push(current)
+        current = ''
+        started = false
+      }
+      continue
+    }
+    current += ch
+    started = true
+  }
+  if (started || current !== '') out.push(current)
+  return out
+}
+
+/**
+ * 这个参数是不是被红线保留的选项。
+ *
+ * 三种写法都要认：`-s`、`--serial`、`--serial=ABC`。
+ * 归一化后前面两段都落到 `s` / `serial` 上，所以只比较主干即可。
+ */
+function reservedScrcpyOption(token: string): { name: string; takesValue: boolean } | undefined {
+  if (!token.startsWith('-')) return undefined
+  const body = token.replace(/^-+/, '')
+  /*
+   * 归一化时**忽略大小写**：scrcpy 自己的选项是大小写敏感的，我们用更严的判定 ——
+   * `--MAX-SIZE=720` 在 scrcpy 那儿会被当未知参数忽略，但用户显然是想改分辨率；
+   * 与其赌每个版本的行为，不如统一拒掉并在界面上显示出来。
+   */
+  const name = (body.split('=')[0] ?? '').toLowerCase()
+  return RESERVED_SCRCPY_OPTIONS.find((option) => option.name === name)
 }

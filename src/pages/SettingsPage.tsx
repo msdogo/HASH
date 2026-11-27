@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
-import { Download, FolderOpen, Info, RotateCcw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Download, FolderOpen, Info, MonitorSmartphone, RotateCcw } from 'lucide-react'
 import type { AdbSource } from '@shared/types'
 import { errorText, t, tf } from '@shared/i18n'
 import { useSettingsStore } from '@/store/settingsStore'
+import { SCRCPY_RESERVED_DISPLAY } from '@shared/mirror'
 
 /**
  * 设置页（R2-2）。
@@ -63,6 +64,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const load = useSettingsStore((state) => state.load)
   const pickDownloadDir = useSettingsStore((state) => state.pickDownloadDir)
   const resetDownloadDir = useSettingsStore((state) => state.resetDownloadDir)
+  const setScrcpyArgs = useSettingsStore((state) => state.setScrcpyArgs)
 
   const data = props.initial?.data === undefined ? storeData : props.initial.data
   const loading = props.initial?.loading === undefined ? storeLoading : props.initial.loading
@@ -70,6 +72,23 @@ export function SettingsPage(props: SettingsPageProps) {
 
   // 进入设置页时读一次（幂等：store 内部已在加载中时不会重复发请求）
   useEffect(() => { void load() }, [load])
+
+  /*
+   * 投屏参数的保存态：只影响按钮文案，不影响数据来源。
+   *
+   * 本页的数据仍然只有 store 一份（保存成功后 store 用主进程回的快照覆盖），
+   * 这里的 saving 纯粹是「这一下点过了」的即时反馈，
+   * 所以不需要在失败时回滚 —— 失败会走 error 横幅，值本来就没变。
+   */
+  const [saving, setSaving] = useState(false)
+  const saveScrcpyArgs = async (raw: string): Promise<boolean> => {
+    setSaving(true)
+    try {
+      return await setScrcpyArgs(raw)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const downloadDir = data?.downloadDir ?? ''
   const isDefault = data !== null && downloadDir === data.defaultDownloadDir
@@ -135,6 +154,9 @@ export function SettingsPage(props: SettingsPageProps) {
         </div>
       </div>
 
+      {/* ---- 自定义投屏参数（可写，全局一套） ---- */}
+      <ScrcpyArgsCard disabled={loading} value={data?.scrcpyArgs ?? ''} saving={saving} onSave={saveScrcpyArgs} />
+
       {/* ---- adb 状态（只读） ---- */}
       <div className="rounded border border-neutral-300" data-testid="settings-adb">
         <div className="flex items-center gap-2 border-b border-neutral-300 px-3 py-2">
@@ -179,6 +201,90 @@ export function SettingsPage(props: SettingsPageProps) {
         </div>
       </div>
     </section>
+  )
+}
+
+/**
+ * 自定义投屏参数卡片（全局一套，一个输入框）。
+ *
+ * ===== 为什么输入框是受控的、且初值来自 data 而不是自己记 =====
+ * 用户在别处（另一个设置窗口）改了参数后回到这里，必须看到**当前生效值**，
+ * 而不是他上次敲了一半没保存的草稿。所以 value 由 props 给，
+ * 只有「用户正在输入」这一种情况才会用本地 draft 覆盖它。
+ *
+ * ===== 为什么「恢复默认」就是保存空串 =====
+ * 空串在这个字段里是合法语义（= 只用内置参数），与 downloadDir 那边
+ * 「空串不是用默认」正好相反。单独造一个 reset 通道只会多一条没有新语义的路。
+ */
+function ScrcpyArgsCard(props: {
+  disabled: boolean
+  value: string
+  saving: boolean
+  /**
+   * 保存；返回是否成功。
+   *
+   * 返回值不是装饰：失败时必须**保留草稿**，否则用户敲的一行参数被清掉，
+   * 而错误横幅只说「保存失败」—— 他得重新敲一遍。
+   */
+  onSave: (raw: string) => Promise<boolean>
+}) {
+  // null = 没有草稿，显示 props.value（用户没在编辑）
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? props.value
+  const dirty = draft !== null && draft !== props.value
+
+  return (
+    <div className="mb-4 rounded border border-neutral-300" data-testid="settings-scrcpy-args">
+      <div className="flex items-center gap-2 border-b border-neutral-300 px-3 py-2">
+        <MonitorSmartphone className="h-3.5 w-3.5 shrink-0 text-neutral-600" aria-hidden="true" />
+        <span className="text-xs font-medium text-neutral-900">{t('settings.scrcpyArgs.title')}</span>
+        <span className="ml-auto text-[10px] text-neutral-400">
+          {props.value === '' ? t('settings.scrcpyArgs.empty') : ''}
+        </span>
+      </div>
+      <div className="flex flex-col gap-2 px-3 py-2.5">
+        <p className="text-[11px] leading-snug text-neutral-500">{t('settings.scrcpyArgs.desc')}</p>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={shown}
+            disabled={props.disabled}
+            placeholder={t('settings.scrcpyArgs.placeholder')}
+            onChange={(event) => { setDraft(event.target.value) }}
+            className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 font-mono text-[11px] text-neutral-800 placeholder:text-neutral-400 disabled:opacity-40"
+            data-testid="settings-scrcpy-args-input"
+          />
+          <button
+            type="button"
+            disabled={props.disabled || props.saving || !dirty}
+            onClick={() => {
+              void props.onSave(shown).then((ok) => { if (ok) setDraft(null) })
+            }}
+            className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
+          >
+            {t('settings.scrcpyArgs.save')}
+          </button>
+          <button
+            type="button"
+            disabled={props.disabled || props.saving || props.value === ''}
+            onClick={() => { void props.onSave('').then((ok) => { if (ok) setDraft(null) }) }}
+            className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-200 disabled:opacity-40"
+          >
+            {t('settings.scrcpyArgs.reset')}
+          </button>
+        </div>
+        {/*
+          * 被忽略的参数清单：写死在这里而不是从主进程取。
+          * 它是「产品规则」（嵌入前提），不是运行时事实；
+          * 真正的判定在 src/shared/mirror.ts 的 parseScrcpyExtraArgs，
+          * 两边共用一个来源 SOURCE 会更好，但那是 shared 常量，这里直接渲染即可。
+          */}
+        <p className="text-[10px] leading-snug text-neutral-400">
+          {t('settings.scrcpyArgs.reserved')}
+          {SCRCPY_RESERVED_DISPLAY.join('、')}
+        </p>
+      </div>
+    </div>
   )
 }
 

@@ -11,6 +11,7 @@ import {
   buildScrcpyArgs,
   classifyScrcpyFailure,
   mirrorTitleOf,
+  parseScrcpyExtraArgs,
   type ScreenSize,
 } from '../../src/shared/mirror'
 import type { ScrcpyLocation } from './binary'
@@ -78,6 +79,13 @@ export interface MirrorServiceDeps {
    * 但生产（electron/main.ts）必须传，否则「先竖后横」的跳变会回来。
    */
   probeScreen?: (serial: string, adbPath: string) => Promise<ScreenSize>
+  /**
+   * 用户在设置里填的自定义参数（原始一行文本）。
+   *
+   * 可缺省：缺省就没有自定义参数（既有测试不必全部补桩）。
+   * 每次 start 现取 —— 用户可能刚在设置里改完就点了投屏。
+   */
+  getExtraArgs?: () => string
   /** 推事件给渲染层。 */
   emit: (event: MirrorEvent) => void
   /** 时间源（注入以便测试确定 startedAt）。 */
@@ -158,7 +166,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
       const startedAt = now()
       const token = makeToken(serial, startedAt)
-      const args = buildScrcpyArgs({ serial, token, maxSize: DEFAULT_MAX_SIZE })
+      /*
+       * 自定义参数在**这里**过滤，而不是在保存时过滤。
+       *
+       * 保存时过滤会让用户「填了被静默删掉」；在这里过滤 + 界面显示被拒项，
+       * 用户才知道自己写的那条没生效。被拒的项不影响启动（继续用剩余参数），
+       * 否则一个 `--max-size` 能让整个投屏起不来，而它本可以直接忽略。
+       */
+      const extra = parseScrcpyExtraArgs(deps.getExtraArgs?.() ?? '')
+      const args = buildScrcpyArgs({
+        serial,
+        token,
+        maxSize: DEFAULT_MAX_SIZE,
+        extraArgs: extra.args,
+      })
 
       /*
        * 先问方向，再起进程。

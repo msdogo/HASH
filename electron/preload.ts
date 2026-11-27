@@ -28,6 +28,7 @@ import type {
   SettingsGetDeviceCwdInput,
   SettingsSetDeviceCwdInput,
   SettingsSetDownloadDirInput,
+  SettingsSetScrcpyArgsInput,
   TransferEnqueueInput,
   TransferIdInput,
 } from '../src/shared/api-contract'
@@ -185,6 +186,14 @@ export function buildApi(deps: PreloadDeps): DshApi {
       /** 恢复默认下载路径。 */
       resetDownloadDir: (): Promise<IpcResult<SettingsData>> =>
         deps.invoke(CH.SETTINGS_RESET_DOWNLOAD_DIR, null) as Promise<IpcResult<SettingsData>>,
+      /**
+       * 写自定义 scrcpy 参数（全局一套）。
+       *
+       * 空串合法（= 只用内置参数）。被红线忽略的参数不在这里拦 ——
+       * 存原文，界面才能把「已忽略：--max-size=720」显示出来。
+       */
+      setScrcpyArgs: (payload: SettingsSetScrcpyArgsInput): Promise<IpcResult<SettingsData>> =>
+        deps.invoke(CH.SETTINGS_SET_SCRCPY_ARGS, payload) as Promise<IpcResult<SettingsData>>,
       /* ---- R9：按设备记住上次停留的目录 ---- */
       /** 读该设备上次停留的目录；空串 = 没有记录（不是错误）。 */
       getDeviceCwd: (payload: SettingsGetDeviceCwdInput): Promise<IpcResult<string>> =>

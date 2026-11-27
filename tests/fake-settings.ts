@@ -27,6 +27,8 @@ export function fakeSettings(over: {
    * 「版本是控制器透传的」，若默认值恰好等于真实版本，实现里写死成真实版本也能过。
    */
   appVersion?: string
+  /** 自定义投屏参数（缺省是空串：只用内置参数）。 */
+  scrcpyArgs?: string
 } = {}): SettingsController & { calls: Array<{ method: string; args: unknown[] }> } {
   const calls: Array<{ method: string; args: unknown[] }> = []
   // R9：设备目录表（fake 只做「存进去读出来」，不做校验 —— 校验是存储层的被测对象）
@@ -34,6 +36,7 @@ export function fakeSettings(over: {
   let current = over.downloadDir ?? 'C:/Users/me/Downloads'
   const defaultDir = over.defaultDownloadDir ?? 'C:/Users/me/Downloads'
   const appVersion = over.appVersion ?? '9.9.9-fixture'
+  let scrcpyArgs = over.scrcpyArgs ?? ''
   return {
     calls,
     getAppVersion: () => { calls.push({ method: 'getAppVersion', args: [] }); return appVersion },
@@ -59,6 +62,15 @@ export function fakeSettings(over: {
       calls.push({ method: 'setDeviceCwd', args: [serial, cwd] })
       deviceCwds[serial] = cwd
     },
+    getScrcpyArgs: () => {
+      calls.push({ method: 'getScrcpyArgs', args: [] })
+      return scrcpyArgs
+    },
+    setScrcpyArgs: (raw) => {
+      calls.push({ method: 'setScrcpyArgs', args: [raw] })
+      scrcpyArgs = raw.trim()
+      return scrcpyArgs
+    },
   }
 }
 
@@ -69,6 +81,7 @@ export function fakeSettingsData(over: Partial<SettingsData> = {}): SettingsData
     defaultDownloadDir: 'C:/Users/me/Downloads',
     appVersion: '9.9.9-fixture',
     adb: { state: 'ok', source: 'path', path: 'C:/platform-tools/adb.exe', version: '1.0.41' },
+    scrcpyArgs: '',
     ...over,
   }
 }

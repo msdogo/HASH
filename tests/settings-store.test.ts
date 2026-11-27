@@ -55,6 +55,58 @@ afterEach(() => {
   }
 })
 
+describe('自定义 scrcpy 参数：持久化与坏值降级', () => {
+  it('首次启动读到空串（= 只用内置参数），不是 undefined', () => {
+    expect(open().getScrcpyArgs()).toBe('')
+  })
+
+  it('写 → 重建 store → 读回（值真的落盘了）', () => {
+    const first = open()
+    first.setScrcpyArgs('--turn-screen-off --show-touches')
+    const parsed: unknown = JSON.parse(readRaw())
+    expect(parsed).toMatchObject({ scrcpyArgs: '--turn-screen-off --show-touches' })
+
+    expect(open().getScrcpyArgs()).toBe('--turn-screen-off --show-touches')
+  })
+
+  it('写入时 trim（首尾空白不落盘）', () => {
+    const store = open()
+    expect(store.setScrcpyArgs('  --show-touches  ')).toBe('--show-touches')
+    expect(open().getScrcpyArgs()).toBe('--show-touches')
+  })
+
+  it('空串合法：清空后读到空串（不是回退到某个默认参数集）', () => {
+    const store = open()
+    store.setScrcpyArgs('--show-touches')
+    store.setScrcpyArgs('')
+    expect(open().getScrcpyArgs()).toBe('')
+  })
+
+  it('存储里是数字（手改坏）→ 降级成空串，不抛错', () => {
+    /*
+     * 这里**不会**告警：electron-store 的 schema 在读取时就把类型错的值清成了 undefined，
+     * 我的类型判定（typeof !== 'string'）实际只防「schema 被改掉」这种未来情况。
+     * 断言写成「有告警」就是在测一条走不到的分支 —— 上一版就是这么写错的。
+     */
+    writeRaw(JSON.stringify({ scrcpyArgs: 123 }))
+    expect(open().getScrcpyArgs()).toBe('')
+  })
+
+  it('整个文件是坏 JSON → 读空串，不崩', () => {
+    writeRaw('{ not json')
+    expect(open().getScrcpyArgs()).toBe('')
+  })
+
+  it('与其它设置项互不干扰（写参数不动 downloadDir）', () => {
+    const store = open()
+    store.setDownloadDir(customDir)
+    store.setScrcpyArgs('--show-touches')
+    const reopened = open()
+    expect(reopened.getDownloadDir()).toBe(customDir)
+    expect(reopened.getScrcpyArgs()).toBe('--show-touches')
+  })
+})
+
 describe('R2-2 持久化：写 → 重建 store → 读回', () => {
   it('set 之后落盘，重建一个全新 store 仍读到同一个值', () => {
     const first = open()

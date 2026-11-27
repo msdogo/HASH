@@ -38,6 +38,7 @@ function settingsWith(over: Partial<SettingsData> = {}): SettingsData {
     // R7：下载判定不看版本号，这里只是把 SettingsData 补齐（字段是必填的）
     appVersion: '9.9.9-fixture',
     adb: { state: 'ok', source: 'path', path: 'C:/adb.exe', version: '1.0.41' },
+    scrcpyArgs: '',
     ...over,
   }
 }

@@ -26,6 +26,7 @@ const SETTINGS: SettingsData = {
   defaultDownloadDir: 'C:/Users/me/Downloads',
   appVersion: '9.9.9-fixture',
   adb: { state: 'ok', source: 'bundled', path: 'C:/app/platform-tools/adb.exe', version: '1.0.41' },
+  scrcpyArgs: '',
 }
 
 /** 各页的「只可能在这一页出现」的标记（由实测渲染输出确定，不是猜的）。 */

@@ -51,6 +51,7 @@ function makeService(opts: {
   events?: unknown[]
   now?: number
   probeScreen?: (serial: string, adbPath: string) => Promise<ScreenSize>
+  getExtraArgs?: () => string
 }) {
   const sp = fakeSpawn()
   const events: unknown[] = opts.events ?? []
@@ -62,6 +63,7 @@ function makeService(opts: {
     emit: (e) => { events.push(e) },
     now: () => opts.now ?? 1_700_000_000_000,
     ...(opts.probeScreen === undefined ? {} : { probeScreen: opts.probeScreen }),
+    ...(opts.getExtraArgs === undefined ? {} : { getExtraArgs: opts.getExtraArgs }),
   })
   return { svc, sp, events }
 }
@@ -99,6 +101,51 @@ describe('mirror service', () => {
     const { svc } = makeService({ probeScreen: async () => ({ width: 1920, height: 1200 }) })
     const session = await svc.start('S1')
     expect(session.screen).toEqual({ width: 1920, height: 1200 })
+  })
+
+  it('自定义参数追加进 scrcpy 命令行（设置在启动时生效）', async () => {
+    const { svc, sp } = makeService({ getExtraArgs: () => '--turn-screen-off --show-touches' })
+    await svc.start('S1')
+    expect(sp.calls[0].args).toEqual(
+      expect.arrayContaining(['--turn-screen-off', '--show-touches']),
+    )
+    // 固定参数一个都不能少
+    expect(sp.calls[0].args.slice(0, 2)).toEqual(['-s', 'S1'])
+    expect(sp.calls[0].args).toEqual(expect.arrayContaining(['--no-audio', '--max-size=1024']))
+  })
+
+  it('红线参数在启动时被剔除，但**不影响**启动（不是拒绝启动）', async () => {
+    const { svc, sp } = makeService({ getExtraArgs: () => '--max-size=720 -s OTHERDEV --show-touches' })
+    await svc.start('S1')
+    const args = sp.calls[0].args
+    expect(args).not.toContain('--max-size=720')
+    expect(args).not.toContain('OTHERDEV')
+    expect(args).toContain('--max-size=1024')
+    expect(args).toContain('--show-touches')
+    // -s 仍然是自己的设备
+    expect(args.slice(0, 2)).toEqual(['-s', 'S1'])
+  })
+
+  it('未注入 getExtraArgs（旧调用方）→ 只用内置参数，不抛错', async () => {
+    const { svc, sp } = makeService({})
+    await svc.start('S1')
+    expect(sp.calls[0].args).toEqual([
+      '-s', 'S1', '--window-borderless', '--window-title=' + SCRCPY_WINDOW_PREFIX + 'S1-1700000000000', '--no-audio', '--max-size=1024',
+    ])
+  })
+
+  it('自定义参数每次 start 现取（用户改完设置立刻点投屏能生效）', async () => {
+    let current = '--show-touches'
+    const { svc, sp } = makeService({
+      devices: { S1: device('S1'), S2: device('S2') },
+      getExtraArgs: () => current,
+    })
+    await svc.start('S1')
+    current = '--stay-awake'
+    await svc.start('S2')
+    expect(sp.calls[0].args).toContain('--show-touches')
+    expect(sp.calls[1].args).toContain('--stay-awake')
+    expect(sp.calls[1].args).not.toContain('--show-touches')
   })
 
   it('未注入探测（旧调用方）→ 会话里是默认尺寸，不抛错', async () => {

@@ -70,6 +70,21 @@ export interface SettingsStore {
    * 写不进去不该让浏览中断。
    */
   setDeviceCwd(serial: string, cwd: string): void
+  /**
+   * 自定义 scrcpy 参数（原始输入）。
+   *
+   * 坏值（类型不对 / 存成了 null）一律降级成空串并 warn 一次，
+   * **不抛错** —— 与 getDownloadDir 同一条降级范式：一条投屏偏好不该
+   * 让设置页打不开，更不该让投屏整体不可用。
+   */
+  getScrcpyArgs(): string
+  /**
+   * 写自定义 scrcpy 参数；返回实际写入的值（已 trim）。
+   *
+   * 空串是合法输入（= 清空，只用内置参数），所以不像 downloadDir 那样拒绝空值。
+   * 长度上限由 IPC 层的 zod 管（500），存储层不重复设一个不同的上限。
+   */
+  setScrcpyArgs(raw: string): string
   /** 存储文件路径（诊断 / 报告用，不参与判定）。 */
   storagePath(): string
 }
@@ -98,7 +113,11 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
    * 实测（node 环境，electron-store 12.0.0）：坏 JSON → get 返回 undefined，
    * 随后一次 set 会把文件重写成合法 JSON。所以「坏值」与「坏文件」走同一条降级路径。
    */
-  const store = new Store<{ downloadDir?: string; deviceCwds?: Record<string, string> }>({
+  const store = new Store<{
+    downloadDir?: string
+    deviceCwds?: Record<string, string>
+    scrcpyArgs?: string
+  }>({
     cwd: deps.filePath,
     name: SETTINGS_FILE_NAME,
     clearInvalidConfig: true,
@@ -111,7 +130,11 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
      * 这里声明 type: 'object' 只为拦住「整个值不是对象」这种形态，
      * 免得一个手改坏的文件让 electron-store 在读取时抛出去。
      */
-    schema: { downloadDir: { type: 'string' }, deviceCwds: { type: 'object' } },
+    schema: {
+      downloadDir: { type: 'string' },
+      deviceCwds: { type: 'object' },
+      scrcpyArgs: { type: 'string' },
+    },
   })
 
   /** 已告警过的原因（同一条坏值只吵一次）。 */
@@ -221,6 +244,32 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
     store.set('deviceCwds', { ...map, [key]: value })
   }
 
+  /**
+   * 读自定义 scrcpy 参数。
+   *
+   * electron-store 的 schema 会把**类型错**的值（例如存成数字）清成 undefined，
+   * 所以这里只剩「没设过」与「字符串」两种情况；仍然再判一次类型，
+   * 因为 schema 校验的是写入时的手改文件，不是每次读取。
+   */
+  const getScrcpyArgs = (): string => {
+    const stored = store.get('scrcpyArgs')
+    if (stored === undefined) return ''
+    if (typeof stored !== 'string') {
+      warnOnce(
+        'scrcpy-args:not-string',
+        '[settings] 自定义投屏参数不是字符串：' + JSON.stringify(stored) + '，已按空值处理',
+      )
+      return ''
+    }
+    return stored
+  }
+
+  const setScrcpyArgs = (raw: string): string => {
+    const value = raw.trim()
+    store.set('scrcpyArgs', value)
+    return value
+  }
+
   return {
     getDownloadDir,
     getDefaultDownloadDir: () => deps.defaultDownloadDir,
@@ -228,6 +277,8 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
     resetDownloadDir: () => setDownloadDir(deps.defaultDownloadDir),
     getDeviceCwd,
     setDeviceCwd,
+    getScrcpyArgs,
+    setScrcpyArgs,
     storagePath: () => store.path,
   }
 }
