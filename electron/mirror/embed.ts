@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { hasTopmostExStyle } from '../../src/shared/mirror'
 
 /**
  * scrcpy 窗口的 Win32 嵌入（方案 C：HWND + SetParent）。
@@ -41,6 +42,17 @@ const GW_HWNDNEXT = 2
 const HWND_TOP = 0
 /** SetWindowPos 标志：只改 z 序，不动位置/尺寸、不抢焦点、不碰 owner 的 z 序。 */
 const SWP_ONLY_ZORDER = 0x0001 | 0x0002 | 0x0010 | 0x0200
+/** SetWindowPos 标志：只改置顶位，不动位置/尺寸、不抢焦点、不激活。 */
+const SWP_ONLY_TOPMOST = 0x0001 | 0x0002 | 0x0010
+/** GWL_EXSTYLE 与它的「置顶」位。 */
+const GWL_EXSTYLE = -20
+/**
+ * HWND_NOTOPMOST（winuser.h 的 (HWND)-2）。
+ *
+ * 用 32 位形式 0xFFFFFFFE 而不是 -2：koffi 的 `void *` 形参对负数会做符号扩展，
+ * 实测只有这个写法真的把窗口从置顶带里摘下来（`0x200108` → `0x200100`）。
+ */
+const HWND_NOTOPMOST = 0xfffffffe
 
 /** 一个已嵌入的 scrcpy 窗口。 */
 export interface EmbeddedWindow {
@@ -139,6 +151,59 @@ function lib(): Win32 {
       user32.func('bool __stdcall SetWindowPos(void *hwnd, void *after, int x, int y, int cx, int cy, uint32_t flags)') as never,
   }
   return win32
+}
+
+/**
+ * 读窗口的扩展样式（GWL_EXSTYLE）。读不到返回 0。
+ *
+ * 为什么要单独一个函数：置顶位（WS_EX_TOPMOST）只在这里读得到，
+ * 而「投屏窗口不许置顶」这条要求只能靠运行期反复核对 —— 它不在我们的代码里，
+ * 是系统/框架在某些时机补上的（实测宿主窗口会在投屏后十几秒变成 0x200108）。
+ */
+export function exStyleOf(hwnd: number): number {
+  if (hwnd === 0) return 0
+  try {
+    return Number(lib().GetWindowLongPtrW(hwnd, GWL_EXSTYLE)) >>> 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 宿主窗口现在是不是「总在最前」。
+ *
+ * 判定本身在 shared/mirror.ts 的 hasTopmostExStyle（纯函数，有单测），
+ * 这里只负责把 Win32 的事实读出来。
+ */
+export function hostIsTopmost(hostHwnd: number): boolean {
+  return hasTopmostExStyle(exStyleOf(hostHwnd))
+}
+
+/**
+ * 把宿主窗口从「总在最前」的带子里摘下来（幂等；本来不置顶就是空操作）。
+ *
+ * ===== 为什么必须做这件事 =====
+ * 投屏窗口一旦置顶，用户切到浏览器/聊天工具时它照样盖在上面 ——
+ * 在用户眼里就是「投屏把我要用的东西挡住了」。实测宿主窗口会在投屏后十几秒
+ * 自己变成 WS_EX_TOPMOST（0x200100 → 0x200108），来源不在本工程代码里，
+ * 所以只能在运行期反复核对并清掉。
+ *
+ * 不能只改 exstyle 位：试过 SetWindowLongPtrW(GWL_EXSTYLE, ex & ~8)，
+ * 读回来立刻又是 0x200108 —— 置顶是窗口站里的一个带子，只能通过 SetWindowPos 改。
+ *
+ * @returns 调用后它确实不再是置顶（false = 清理失败，调用方可以下轮再试）。
+ */
+export function clearHostTopmost(hostHwnd: number): boolean {
+  if (hostHwnd === 0) return true
+  try {
+    const l = lib()
+    if (!l.IsWindow(hostHwnd)) return true
+    if (!hostIsTopmost(hostHwnd)) return true
+    l.SetWindowPos(hostHwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_ONLY_TOPMOST)
+    return !hostIsTopmost(hostHwnd)
+  } catch {
+    return false
+  }
 }
 
 /**

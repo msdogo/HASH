@@ -15,6 +15,26 @@
 export const SCRCPY_WINDOW_PREFIX = 'adbfm-scrcpy-'
 
 /**
+ * scrcpy 窗口被嵌入前的「暂存位置」（屏幕外）。
+ *
+ * ===== 为什么必须把它挪出屏幕（用户反馈的第二次闪烁）=====
+ * scrcpy 的窗口一建出来就是**独立顶层窗口**并在自己的位置显示，约 0.4 秒后才被
+ * SetParent 拽进投屏窗口。实机采样（EnumWindows，每 40ms）：
+ *   t=3.11s 建 SDL_app（隐藏）→ t=3.31s vis=true（在自己的位置）→ t=3.67s parent=宿主。
+ * 这 0.36 秒里用户看到的是一张**浮在桌面上的投屏画面**，然后它突然跳进窗口 ——
+ * 就是用户说的「scrcpy 界面 B」。
+ *
+ * 给它一个屏幕外的坐标，窗口照常创建、照常渲染（实测 --window-x=-32000 时
+ * 窗口 rect 稳定停在 -32008，画面正常解码），只是没人看得见；
+ * 等 MoveWindow 把它摆进客户区时才第一次真正露面。
+ *
+ * -32000 是 Win32 惯用的「离屏」坐标（SM_XVIRTUALSCREEN 最小也就 -7680 量级），
+ * 单屏/多屏/负坐标副屏都不会误露出来。
+ */
+export const SCRCPY_OFFSCREEN_X = -32000
+export const SCRCPY_OFFSCREEN_Y = -32000
+
+/**
  * 默认最大分辨率（设备侧先缩放到这个长边再送 PC）。
  *
  * ===== 为什么从 1024 提到 1920（用户反馈"投屏有点模糊"）=====
@@ -266,6 +286,28 @@ export const DEFAULT_SCREEN: ScreenSize = { width: 1080, height: 1920 }
 /* ============ 嵌入窗口的 z 序判定 ============ */
 
 /**
+ * WS_EX_TOPMOST（winuser.h 原值）。
+ *
+ * 放在 shared 里是为了让「宿主窗口是不是被置顶了」这条判定有真门禁：
+ * 投屏窗口**不该**置顶 —— 用户切到别的应用时，投屏窗口必须让位。
+ */
+export const EXSTYLE_TOPMOST = 0x00000008
+
+/**
+ * 宿主的扩展样式里是否带着「总在最前」。
+ *
+ * ===== 为什么要专门判这件事 =====
+ * 投屏窗口被置顶后，用户切到浏览器/聊天工具时它照样盖在上面，
+ * 看起来像「投屏把别的应用挡住了」。这是用户在实机上直接提出要去掉的行为。
+ *
+ * 置顶位可能由系统或 Chromium 在某些时机补上（实测宿主会在运行中被置为
+ * 0x200108），所以只能在运行期反复核对并清掉，不能只在建窗口时设一次。
+ */
+export function hasTopmostExStyle(exStyle: number): boolean {
+  return (exStyle & EXSTYLE_TOPMOST) !== 0
+}
+
+/**
  * 宿主窗口里「鼠标会落到谁身上」—— 该不该把 scrcpy 子窗口重新提到最上层。
  *
  * ===== 为什么需要这条判定（实机踩到的第五个缺陷）=====
@@ -337,6 +379,13 @@ export function buildScrcpyArgs(input: ScrcpyArgsInput): string[] {
     input.serial,
     '--window-borderless',
     '--window-title=' + SCRCPY_WINDOW_PREFIX + input.token,
+    /*
+     * 先把窗口建在屏幕外，嵌入时再 MoveWindow 拽进客户区。
+     * 不这么做的话，scrcpy 会先在自己的位置显示约 0.4 秒 —— 用户看到的
+     * 是一张浮在桌面上的投屏画面，随后才跳进窗口（实测 t=3.31s→3.67s）。
+     */
+    '--window-x=' + String(SCRCPY_OFFSCREEN_X),
+    '--window-y=' + String(SCRCPY_OFFSCREEN_Y),
     '--no-audio',
     '--max-size=' + String(input.maxSize),
     // 自定义参数放最后：我们自己的固定参数优先，用户值只做追加
@@ -390,6 +439,9 @@ const RESERVED_SCRCPY_OPTIONS: readonly { name: string; takesValue: boolean }[] 
   { name: 'serial', takesValue: true },
   { name: 'window-title', takesValue: true },
   { name: 'max-size', takesValue: true },
+  // 窗口先在屏幕外建好，嵌入时再摆进客户区；用户改掉就会先看到一张浮窗
+  { name: 'window-x', takesValue: true },
+  { name: 'window-y', takesValue: true },
   // 纯开关：没有值可丢，紧跟其后的参数是用户自己的，不能连坐
   { name: 'window-borderless', takesValue: false },
 ]
@@ -405,6 +457,7 @@ export const SCRCPY_RESERVED_DISPLAY: readonly string[] = [
   '--window-title',
   '--window-borderless',
   '--max-size',
+  '--window-x / --window-y',
 ]
 
 /**

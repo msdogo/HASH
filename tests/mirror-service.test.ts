@@ -111,7 +111,7 @@ describe('mirror service', () => {
     )
     // 固定参数一个都不能少
     expect(sp.calls[0].args.slice(0, 2)).toEqual(['-s', 'S1'])
-    expect(sp.calls[0].args).toEqual(expect.arrayContaining(['--no-audio', '--max-size=1024']))
+    expect(sp.calls[0].args).toEqual(expect.arrayContaining(['--no-audio', '--max-size=1920']))
   })
 
   it('红线参数在启动时被剔除，但**不影响**启动（不是拒绝启动）', async () => {
@@ -120,7 +120,7 @@ describe('mirror service', () => {
     const args = sp.calls[0].args
     expect(args).not.toContain('--max-size=720')
     expect(args).not.toContain('OTHERDEV')
-    expect(args).toContain('--max-size=1024')
+    expect(args).toContain('--max-size=1920')
     expect(args).toContain('--show-touches')
     // -s 仍然是自己的设备
     expect(args.slice(0, 2)).toEqual(['-s', 'S1'])
@@ -130,7 +130,9 @@ describe('mirror service', () => {
     const { svc, sp } = makeService({})
     await svc.start('S1')
     expect(sp.calls[0].args).toEqual([
-      '-s', 'S1', '--window-borderless', '--window-title=' + SCRCPY_WINDOW_PREFIX + 'S1-1700000000000', '--no-audio', '--max-size=1024',
+      '-s', 'S1', '--window-borderless', '--window-title=' + SCRCPY_WINDOW_PREFIX + 'S1-1700000000000',
+      // 窗口先建在屏幕外，嵌入时才 MoveWindow 拽进客户区（避免先看到一张浮窗）
+      '--window-x=-32000', '--window-y=-32000', '--no-audio', '--max-size=1920',
     ])
   })
 

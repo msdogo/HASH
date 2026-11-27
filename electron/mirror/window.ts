@@ -11,6 +11,7 @@ import {
   type Rect,
 } from '../../src/shared/mirror'
 import {
+  clearHostTopmost,
   embedWindow,
   findWindowByTitle,
   isEmbeddedOnTop,
@@ -51,6 +52,13 @@ interface Entry {
   win: BrowserWindow
   session: MirrorSession
   embedded: EmbeddedWindow | null
+  /**
+   * 投屏成功那一刻的内容区尺寸（DIP），「重置窗口大小」恢复的就是它。
+   *
+   * open() 里在窗口第一次显示之前记录；嵌入还没走完就被重置时仍为 null
+   * （此时 resetSize 回退到旧算式）。
+   */
+  defaultSize: { width: number; height: number } | null
   cleanup: Array<() => void>
 }
 
@@ -125,6 +133,18 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
         minWidth: 240,
         minHeight: 320,
         frame: false,
+        /*
+         * 任务栏按钮显示的名字（Win11 任务栏/Alt-Tab 都取它）。
+         *
+         * 不写这个的话所有窗口都继承 index.html 的 <title>HASH</title>，
+         * 开两台设备就是两个一模一样的「HASH」。session.title 由
+         * service.ts 用 mirrorTitleOf 算好（型号 + serial 后 4 位），
+         * 开窗这一刻就可用 —— 不用等 started 事件，也就没有「先 HASH 再变」的闪烁。
+         *
+         * 注意这**不是** scrcpy 的原生窗口标题：那个被红线参数 --window-title
+         * 占死成 SCRCPY_WINDOW_PREFIX + token（嵌入靠它找 HWND），两者互不相干。
+         */
+        title: session.title,
         // 与主窗口一致（main.ts 的 #F7F8FA）：窗口第一帧到渲染完成之间
         // 露出的底色不能是深色，否则每次开会闪一下黑框。
         backgroundColor: '#F7F8FA',
@@ -138,12 +158,53 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
       })
       if (deps.iconPath !== '') win.setIcon(deps.iconPath)
 
-      const entry: Entry = { win, session, embedded: null, cleanup: [] }
+      /*
+       * 拒绝渲染层改标题。
+       *
+       * 构造参数里的 title 只在页面加载前有效：渲染层一加载，Chromium 就把
+       * document.title（index.html 的 HASH）回写给窗口，任务栏的「MI 6 (1A2B)」
+       * 会被瞬间打回「HASH」。page-title-updated 是这条回写的唯一入口，
+       * preventDefault 掉之后窗口标题就只归主进程管。
+       *
+       * 必须挂在 **BrowserWindow** 上，不是 webContents 上 —— 实测（Electron 45，
+       * 见下表）只有 BrowserWindow 的 preventDefault 能真的拦住回写：
+       *   none       → title=HASH        （构造参数的 MI 6 (1A2B) 被覆盖）
+       *   webContents→ title=HASH        （preventDefault 无效，照旧被覆盖）
+       *   window     → title=MI 6 (1A2B) （真的拦住了）
+       *
+       * 主窗口/设置窗口不装这个监听 —— 它们本来就该叫 HASH。
+       */
+      win.on('page-title-updated', (event) => {
+        event.preventDefault()
+      })
+
+      const entry: Entry = { win, session, embedded: null, defaultSize: null, cleanup: [] }
       entries.set(session.serial, entry)
 
       deps.loadView(win, '#/mirror/' + encodeURIComponent(session.serial))
 
-      win.once('ready-to-show', () => { win.show() })
+      /*
+       * ===== 为什么这里不 show()（用户反馈的第一次/第三次闪烁）=====
+       *
+       * 以前的写法是 win.once('ready-to-show', () => win.show())：渲染层一就绪就
+       * 把窗口推出来。可那时 scrcpy 窗口还没出现，画面区只有深色底 + 一行「正在等待
+       * 设备画面出现」—— 这就是用户说的「投屏界面 A」。实机采样：宿主窗口在
+       * t=2.66s 显示，scrcpy 窗口 t=3.31s 才建出来、t=3.67s 才嵌进来。
+       *
+       * 之后再 setContentSize 校正尺寸，窗口又在画面已经出现之后**跳一次**（界面 C）。
+       *
+       * 现在改成「全部就绪才露一次脸」：等 scrcpy 窗口出现 → 量到稳定视频尺寸 →
+       * 按最终尺寸 setContentSize → 嵌入 → 提层 → 才 show()。窗口首次出现就是最终
+       * 样子，中间所有尺寸/位置变化都发生在不可见状态下。
+       *
+       * 代价是点「投屏」到窗口出现之间有一段（实测约 1 秒、冷启动更久）什么都没有。
+       * 所以每条失败路径都必须把窗口显示出来 —— 否则用户会以为点了没反应。
+       */
+      const revealOnce = (): void => {
+        if (win.isDestroyed()) return
+        if (win.isVisible()) return
+        win.show()
+      }
       win.on('closed', () => {
         entries.delete(session.serial)
         deps.onClosed(session.serial)
@@ -154,9 +215,25 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
        * 所以不能阻塞 open()。失败要上报 —— 用户看到的是一个空窗口，
        * 没有说明就成了「点了投屏，出来一个黑框」。
        */
+      /*
+       * 兜底：无论嵌入流程卡在哪一步，这些毫秒之后窗口必须出现。
+       *
+       * 只靠每条分支自己 reveal 是不够的 —— 漏掉一条分支的后果是「点了投屏，
+       * 屏幕上什么也没发生」，而那时 scrcpy 进程还在后台跑，用户看不到任何线索。
+       * findWindowByTitle 自己最多等 10 秒，这里留 12 秒。
+       */
+      const revealTimer = setTimeout(revealOnce, REVEAL_TIMEOUT_MS)
+      revealTimer.unref?.()
+      entry.cleanup.push(() => { clearTimeout(revealTimer) })
+
       void (async () => {
         const hwnd = await findWindowByTitle(SCRCPY_WINDOW_PREFIX + session.token)
         if (hwnd === 0) {
+          /*
+           * 窗口始终没出现 —— 这次投屏失败。先把自己显示出来再上报：
+           * onEmbedFailed 会把窗口关掉，不先显示的话用户连一眼都看不到。
+           */
+          revealOnce()
           deps.onEmbedFailed(session.serial, 'scrcpy 窗口未在 10 秒内出现')
           return
         }
@@ -194,6 +271,7 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
 
         const result = embedWindow(hostHwnd, hwnd, fitRect(hostArea(win), videoWidth, videoHeight))
         if (!result.ok || result.window === undefined) {
+          revealOnce()
           deps.onEmbedFailed(session.serial, result.reason ?? 'unknown')
           return
         }
@@ -218,6 +296,8 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
            * 而且覆盖是粘住的：尺寸改回去也不会自己恢复，只能显式 SetWindowPos。
            */
           raiseEmbedded(hostHwnd, childHwnd)
+          // 同一时机顺带摘掉宿主的置顶（见下方看门狗的说明）
+          clearHostTopmost(hostHwnd)
         }
         win.on('resize', onResize)
         entry.cleanup.push(() => { win.off('resize', onResize) })
@@ -235,14 +315,46 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
          */
         const watchdog = setInterval(() => {
           if (win.isDestroyed()) return
-          if (!needsRaise(visibleChildHandles(hostHwnd), childHwnd)) return
-          raiseEmbedded(hostHwnd, childHwnd)
+          /*
+           * 每一项都只在「真的需要」时才动手，所以正常情况下这个定时器完全无感：
+           *   - 子窗口被压到下面 → 提回顶层；
+           *   - 宿主被置顶       → 摘掉置顶。
+           *
+           * 第二条是用户在实机上提的：投屏窗口一旦置顶，切到浏览器/聊天工具时它照样
+           * 盖在最上面，看起来像「投屏把别的应用挡住了」。置顶位不是我们设的
+           * （整个工程里没有 alwaysOnTop；实测宿主会在投屏后十几秒自己变成 0x200108，
+           * 而且是粘住的 —— 不改就一直在），所以只能运行期反复核对并清掉。
+           */
+          if (needsRaise(visibleChildHandles(hostHwnd), childHwnd)) {
+            raiseEmbedded(hostHwnd, childHwnd)
+          }
+          clearHostTopmost(hostHwnd)
         }, ZORDER_WATCHDOG_MS)
         // 不让这个定时器拖住应用退出（与 devices/apps 的轮询同一手法）
         watchdog.unref?.()
         entry.cleanup.push(() => { clearInterval(watchdog) })
         // 补一次：嵌入发生在 setContentSize 之后，上一轮 resize 可能已经把子窗口压下去了
         if (!isEmbeddedOnTop(hostHwnd, childHwnd)) raiseEmbedded(hostHwnd, childHwnd)
+        // 建窗口/显示可能把宿主弄成置顶 —— 嵌入完成的这一刻先摘一次
+        clearHostTopmost(hostHwnd)
+
+        /*
+         * 记下「投屏成功这一刻」的内容区尺寸 —— 这是「重置窗口大小」要恢复的值。
+         *
+         * 必须记在这里，不能记得更早：:262 那次 setContentSize 用的是
+         * measureStableVideoRect 量到的**实测**视频尺寸，早于它记到的是
+         * 建窗时的推算值（竖屏 MI 6：推算 523×900 vs 实测 539×900）。
+         * 记早一步，重置就会把窗口缩窄 16px，那 16px 被 fitRect 摊成上下各 17px
+         * 黑边 —— 正是用户报的缺陷。
+         */
+        const [defaultWidth, defaultHeight] = win.getContentSize()
+        entry.defaultSize = { width: defaultWidth, height: defaultHeight }
+
+        /*
+         * 到这一步画面已经在窗口里、位置和尺寸都已定型 —— 第一次显示就是最终样子。
+         * 顺序不能颠倒：先 show 再嵌的话，用户会先看到一个没有画面的空窗口。
+         */
+        revealOnce()
       })()
     },
 
@@ -263,24 +375,59 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
       if (entry === undefined || entry.win.isDestroyed()) return
 
       /*
-       * 默认尺寸必须用**会话里记下的 screen** 重新算，而不是缓存首次的尺寸。
+       * 恢复的是「投屏成功那一刻」记下的内容区尺寸，不再拿 session.screen 重算。
        *
-       * 为什么：设备可能中途转过屏。用缓存值会把横屏设备的窗口"重置"成竖的，
-       * 而用户看到的是一个比原来更离谱的窗口。
-       * 与 open() 完全同一套算式（videoSizeFor → windowFitSize），
-       * 所以「重置」的结果与「重新打开」逐像素一致。
+       * ===== 为什么不再重算（用户报的缺陷：点重置后画面上下各多一条黑边）=====
+       * 旧实现用 videoSizeFor(entry.session.screen, DEFAULT_MAX_SIZE) → windowFitSize
+       * 重算，看着与 open() 是同一套算式，其实不是：
+       *   - open() 的最终尺寸来自 measureStableVideoRect 量到的**实测**视频尺寸；
+       *   - 重算用的是会话探测到的屏幕尺寸按 --max-size 折算的**推算**值。
+       * 竖屏 MI 6 上两者差 16px（实测 539×900 vs 推算 523×900），
+       * 而 fitRect 会把这 16px 的缺口摊成上下各 17px 的黑带 —— 正是用户截图里的样子。
+       * 记住实测值，重置就不会再和真实窗口对不上。
+       *
+       * 已知取舍（写在明处）：设备中途转屏后，重置回到的是「打开时的形状」。
+       * 旧实现其实也没做成转屏适配 —— session.screen 在会话期内不会更新，
+       * 重算用的永远是启动那一刻探测到的那一份。
        */
-      const video = videoSizeFor(entry.session.screen, DEFAULT_MAX_SIZE)
-      const size = windowFitSize(video.width, video.height, screen.getDisplayMatching(entry.win.getBounds()).scaleFactor)
-      entry.win.setContentSize(size.width, size.height)
+      const fallbackSize = (): void => {
+        const video = videoSizeFor(entry.session.screen, DEFAULT_MAX_SIZE)
+        const size = windowFitSize(
+          video.width,
+          video.height,
+          screen.getDisplayMatching(entry.win.getBounds()).scaleFactor,
+        )
+        entry.win.setContentSize(size.width, size.height)
+      }
+
+      /*
+       * 最大化 / 全屏状态下 setContentSize 是空操作。
+       * 不先还原，用户点了重置会觉得「完全没反应」—— 窗口还是铺满屏幕那个样子。
+       */
+      if (entry.win.isFullScreen()) entry.win.setFullScreen(false)
+      if (entry.win.isMaximized()) entry.win.unmaximize()
+
+      // defaultSize 为 null 只出现在「嵌入还没走完就点了重置」，此时退回旧算式
+      if (entry.defaultSize === null) fallbackSize()
+      else entry.win.setContentSize(entry.defaultSize.width, entry.defaultSize.height)
 
       /*
        * 嵌入的子窗口不会跟着窗口自己变 —— 必须显式 MoveWindow。
        *
        * 顺序：先设窗口尺寸，再摆子窗口。反过来的话 fitRect 用的是**旧的**
        * 客户区大小，画面会按旧尺寸居中，看起来像"重置没生效"。
+       *
+       * 画面宽高比取**子窗口的实测尺寸**：设备转屏后 scrcpy 会自己改子窗口大小，
+       * 这时若还按 session.screen 推算，转屏后的画面会被拉扁。量不到再回退会话值。
        */
       if (entry.embedded !== null) {
+        const childRect = windowRectOf(entry.embedded.childHwnd)
+        const measuredWidth = childRect === null ? 0 : childRect.right - childRect.left
+        const measuredHeight = childRect === null ? 0 : childRect.bottom - childRect.top
+        const video =
+          measuredWidth > 0 && measuredHeight > 0
+            ? { width: measuredWidth, height: measuredHeight }
+            : videoSizeFor(entry.session.screen, DEFAULT_MAX_SIZE)
         resizeEmbedded(
           entry.embedded.childHwnd,
           fitRect(hostArea(entry.win), video.width, video.height),
@@ -291,12 +438,22 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
 }
 
 /**
- * z 序看门狗的轮询周期（毫秒）。
+ * z 序/置顶看门狗的轮询周期（毫秒）。
  *
- * 与被压住后的恢复延迟等价：用户点下去之前最多有这么久是「点不动」的。
- * 再小没有收益（人手一次点击的间隔远大于 500ms），只会多读几次窗口链。
+ * 两个恢复延迟都由它决定：子窗口被压住后多久能再点、宿主被置顶后多久让位。
+ * 500ms 对人眼来说察觉不到，而再小没有收益（人手一次点击的间隔远大于它），
+ * 只会多读几次窗口样式。
  */
 const ZORDER_WATCHDOG_MS = 500
+
+/**
+ * 「点了投屏但窗口迟迟不出现」的兜底上限（毫秒）。
+ *
+ * findWindowByTitle 自己最多等 10 秒（scrcpy 冷启动实测 6–8 秒），这里留 2 秒余量。
+ * 兜底一提早，就会在 scrcpy 只是慢的机器上抢先把「等待中」的空窗口推出来 ——
+ * 那正是我们要消除的东西。
+ */
+const REVEAL_TIMEOUT_MS = 12_000
 
 /** 宿主窗口的 HWND。 */
 function hwndOfHost(win: BrowserWindow): number {

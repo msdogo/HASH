@@ -9,7 +9,9 @@ import {
   buildScrcpyArgs,
   classifyScrcpyFailure,
   fitRect,
+  EXSTYLE_TOPMOST,
   mirrorTitleOf,
+  hasTopmostExStyle,
   needsRaise,
   parseScrcpyExtraArgs,
   SCRCPY_RESERVED_DISPLAY,
@@ -46,6 +48,14 @@ describe('buildScrcpyArgs', () => {
     expect(args).not.toContain('--no-mouse-hover')
     // 但默认值本身必须是它（用户第一次打开设置页看到的就是这行）
     expect(DEFAULT_SCRCPY_ARGS).toBe('--no-mouse-hover')
+  })
+
+  it('窗口建在屏幕外（嵌入前不露脸，否则用户先看到一张浮窗）', () => {
+    const args = buildScrcpyArgs({ serial: 'ABC123', token: 't1', maxSize: DEFAULT_MAX_SIZE })
+    expect(args).toContain('--window-x=-32000')
+    expect(args).toContain('--window-y=-32000')
+    // 必须在 --window-title 之后、用户自定义参数之前（用户值追加在最后，不许顶掉它）
+    expect(args.indexOf('--window-x=-32000')).toBeGreaterThan(args.indexOf('--window-title=' + SCRCPY_WINDOW_PREFIX + 't1'))
   })
 
   it('maxSize 拼进 --max-size', () => {
@@ -322,6 +332,12 @@ describe('自定义 scrcpy 参数：红线参数被拒绝', () => {
     expect(r.ignored).toEqual(['--window-title=hack', '--window-borderless'])
   })
 
+  it('--window-x / --window-y 被拒绝（改掉就会先看到一张浮在桌面上的画面）', () => {
+    expect(parseScrcpyExtraArgs('--window-x=0 --window-y=0').ignored).toEqual(['--window-x=0', '--window-y=0'])
+    // 空格写法：值也要一起丢掉，不能留一个游离的 0
+    expect(parseScrcpyExtraArgs('--window-x 0').ignored).toEqual(['--window-x', '0'])
+  })
+
   it('--max-size 两种写法都被拒绝（窗口初始尺寸按 1024 预计算）', () => {
     expect(parseScrcpyExtraArgs('--max-size=720').ignored).toEqual(['--max-size=720'])
     // 空格写法会连同值一起被吃掉，不留一个游离的 '720'
@@ -349,7 +365,7 @@ describe('自定义 scrcpy 参数：红线参数被拒绝', () => {
   })
 
   it('界面用的清单与判定表覆盖同一组参数（有条目、不重复）', () => {
-    expect(SCRCPY_RESERVED_DISPLAY.length).toBe(4)
+    expect(SCRCPY_RESERVED_DISPLAY.length).toBe(5)
     expect(new Set(SCRCPY_RESERVED_DISPLAY).size).toBe(SCRCPY_RESERVED_DISPLAY.length)
   })
 })
@@ -391,5 +407,31 @@ describe('needsRaise', () => {
 
   it('只有一个子窗口且就是它 → 不动手', () => {
     expect(needsRaise([100], 100)).toBe(false)
+  })
+})
+
+/**
+ * 「宿主窗口是不是被置顶了」。
+ *
+ * 用户在实机上提的：投屏窗口一旦置顶，切到别的应用时它照样盖在上面。
+ * 值直接取自实机读数（0x200100 = 普通窗口，0x200108 = 被置顶）。
+ */
+describe('hasTopmostExStyle', () => {
+  it('实机读到的置顶值 0x200108 判为置顶', () => {
+    expect(hasTopmostExStyle(0x200108)).toBe(true)
+  })
+
+  it('普通窗口 0x200100 不判为置顶', () => {
+    expect(hasTopmostExStyle(0x200100)).toBe(false)
+  })
+
+  it('只有 WS_EX_TOPMOST 这一位也判出来（不依赖其它位）', () => {
+    expect(hasTopmostExStyle(EXSTYLE_TOPMOST)).toBe(true)
+    expect(hasTopmostExStyle(EXSTYLE_TOPMOST | 0x200100)).toBe(true)
+  })
+
+  it('只差这一位就不是置顶（差值恰好是 8）', () => {
+    expect(hasTopmostExStyle(EXSTYLE_TOPMOST - 1)).toBe(false)
+    expect(hasTopmostExStyle(0)).toBe(false)
   })
 })
