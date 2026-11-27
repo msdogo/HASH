@@ -20,6 +20,7 @@ import { startRecorder, STOP_COMMANDS } from './capture/recorder'
 import { RECORD_START_TIMEOUT_MS } from '../src/shared/capture'
 import { AppsService } from './apps/service'
 import { createKeyService } from './device/keys'
+import { createOrientationProbe } from './mirror/orientation'
 import { createMirrorService } from './mirror/service'
 import { locateScrcpy } from './mirror/binary'
 import { probeScrcpyVersion, startScrcpy } from './mirror/runner'
@@ -378,6 +379,15 @@ const appsService = new AppsService({
  *
  * adbPath 传 getter：构造时机早于自检完成，与 capture/apps 同一手法。
  */
+/**
+ * 屏幕方向探测器（投屏窗口的初始尺寸靠它）。
+ *
+ * 与 keyService 同一手法：构造时机早于 adb 自检完成，所以 adbPath 走外部传入。
+ */
+const orientationProbe = createOrientationProbe({
+  clientFor: (serial) => createClient(serial),
+})
+
 const keyService = createKeyService({
   devices,
   clientFor: (serial) => createClient(serial),
@@ -446,6 +456,13 @@ const mirrorService = createMirrorService({
       probe: probeScrcpyVersion,
     }),
   spawn: startScrcpy,
+  /*
+   * 建窗口之前先问一次屏幕方向。
+   *
+   * 不传也能跑（窗口退回「先按默认尺寸建、量到视频后再改」），
+   * 但那样遥控器这类横屏设备每次投屏都会「先竖后横」跳一下 —— 必须接上。
+   */
+  probeScreen: (serial, adbPath) => orientationProbe.screenOf(serial, adbPath),
   emit: (event) => {
     /*
      * 会话事件 → 窗口 + 渲染层，两条路都要走。

@@ -7,9 +7,11 @@ import {
 } from '../../src/shared/errors'
 import {
   DEFAULT_MAX_SIZE,
+  DEFAULT_SCREEN,
   buildScrcpyArgs,
   classifyScrcpyFailure,
   mirrorTitleOf,
+  type ScreenSize,
 } from '../../src/shared/mirror'
 import type { ScrcpyLocation } from './binary'
 import type { ScrcpyHandle } from './runner'
@@ -37,6 +39,13 @@ export interface MirrorSession {
   version: string
   /** 显示名（型号 + serial 尾号）。 */
   title: string
+  /**
+   * 启动前探测到的屏幕尺寸（已按旋转方向）。
+   *
+   * 投屏窗口据此**一次性**建出正确比例，避免「先竖后横」的跳变。
+   * 探测失败时是 DEFAULT_SCREEN —— 那种情况下退化成旧行为，不影响功能。
+   */
+  screen: ScreenSize
 }
 
 /** 会话变化事件（推给渲染层）。 */
@@ -61,6 +70,14 @@ export interface MirrorServiceDeps {
   locate: () => Promise<ScrcpyLocation>
   /** 起进程。 */
   spawn: SpawnScrcpy
+  /**
+   * 探测设备屏幕尺寸（决定投屏窗口一开出来是横的还是竖的）。
+   *
+   * 可缺省：缺省就不探，窗口退回「先按默认尺寸建、量到视频后再改」的旧行为。
+   * 之所以做成可选而不是必填，是为了让既有测试不必全部补桩 ——
+   * 但生产（electron/main.ts）必须传，否则「先竖后横」的跳变会回来。
+   */
+  probeScreen?: (serial: string, adbPath: string) => Promise<ScreenSize>
   /** 推事件给渲染层。 */
   emit: (event: MirrorEvent) => void
   /** 时间源（注入以便测试确定 startedAt）。 */
@@ -143,6 +160,19 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const token = makeToken(serial, startedAt)
       const args = buildScrcpyArgs({ serial, token, maxSize: DEFAULT_MAX_SIZE })
 
+      /*
+       * 先问方向，再起进程。
+       *
+       * 顺序不能反：窗口是收到 started 事件时建的（main.ts 的 emit），
+       * 而建窗口要用这个尺寸。放在 spawn 之后探测，窗口已经建错了。
+       *
+       * 探测失败在这里拿到的就是 DEFAULT_SCREEN（probe 自己保证不 reject），
+       * 所以下面不需要再判一次 —— 那只会写出永远不成立的死分支。
+       */
+      const screen = deps.probeScreen === undefined
+        ? DEFAULT_SCREEN
+        : await deps.probeScreen(serial, adb)
+
       const handle = deps.spawn({ scrcpyPath: located.path, adbPath: adb, args })
       if (handle === null) {
         /*
@@ -163,6 +193,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         source: located.source,
         version: located.version,
         title: mirrorTitleOf({ serial, model: device.model }),
+        screen,
       }
       sessions.set(serial, { session, handle })
       deps.emit({ kind: 'started', session })

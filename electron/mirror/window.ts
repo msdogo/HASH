@@ -1,9 +1,11 @@
 import { BrowserWindow, screen } from 'electron'
 import type { MirrorSession } from '../../src/shared/mirror'
 import {
+  DEFAULT_MAX_SIZE,
   SCRCPY_WINDOW_PREFIX,
   availableRect,
   fitRect,
+  videoSizeFor,
   windowFitSize,
   type Rect,
 } from '../../src/shared/mirror'
@@ -87,9 +89,26 @@ export function createMirrorWindowManager(deps: MirrorWindowManagerDeps): Mirror
         return
       }
 
+      /*
+       * 初始尺寸由**探测到的屏幕方向**决定，不写死。
+       *
+       * 写死 480×900（竖）时，横屏设备（遥控器）会先出现一个竖窗口，
+       * 等 scrcpy 出画面、量到视频尺寸后 setContentSize 再变成横向 ——
+       * 用户看到的就是「先竖后横」的跳变。
+       *
+       * 这里用与后续 setContentSize 完全相同的口径（videoSizeFor 算视频尺寸，
+       * windowFitSize 加上顶栏/侧边栏），所以窗口一开出来就是最终尺寸，
+       * 后面那次 setContentSize 只是校正，不再有可见跳变。
+       */
+      const initialVideo = videoSizeFor(session.screen, DEFAULT_MAX_SIZE)
+      const initialSize = windowFitSize(
+        initialVideo.width,
+        initialVideo.height,
+        screen.getPrimaryDisplay().scaleFactor,
+      )
       const win = new BrowserWindow({
-        width: 480,
-        height: 900,
+        width: initialSize.width,
+        height: initialSize.height,
         minWidth: 240,
         minHeight: 320,
         frame: false,

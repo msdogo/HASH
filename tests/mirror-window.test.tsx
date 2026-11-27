@@ -65,7 +65,7 @@ describe('MirrorSidebar', () => {
  * 这不是类型系统的妥协，而是「注入点只用于测试」这件事的如实表达。
  */
 const MirrorWindowWithProps = MirrorWindow as unknown as (
-  props: { initial?: { serial?: string } },
+  props: { initial?: { serial?: string; model?: string } },
 ) => React.ReactElement
 
 describe('MirrorWindow', () => {
@@ -77,6 +77,34 @@ describe('MirrorWindow', () => {
     expect(html).toContain('ABC123')
     // 侧边栏的六个键必须在
     expect((html.match(/aria-label="/g) ?? []).length).toBeGreaterThanOrEqual(6)
+  })
+
+  it('顶栏显示设备**型号**，不显示完整序列号', async () => {
+    /*
+     * 串号（9N9CN2G0012A3P）对用户没有意义，型号（DJI RC PLUS 2）一眼知道是哪台。
+     * 这条用例同时锁两件事：
+     *   ① 型号真的渲染出来了；
+     *   ② 完整串号**没有**出现在可见文本里 —— 它只留在 title 属性中。
+     * 只断言 ① 的话，把 serial 和 model 一起打印出来也能过，等于没锁住。
+     */
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, {
+        initial: { serial: '9N9CN2G0012A3P', model: 'DJI RC PLUS 2' },
+      }),
+    )
+    expect(html).toContain('DJI RC PLUS 2')
+    // 完整串号只能出现在 title 属性里，不能出现在文本节点里
+    const textOnly = html.replace(/<[^>]*>/g, '')
+    expect(textOnly).not.toContain('9N9CN2G0012A3P')
+  })
+
+  it('型号缺失时回退 serial 后 4 位（绝不显示空字符串）', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MirrorWindowWithProps, { initial: { serial: '9N9CN2G0012A3P' } }),
+    )
+    expect(html).toContain('A3P')
+    const textOnly = html.replace(/<[^>]*>/g, '')
+    expect(textOnly).not.toContain('9N9CN2G0012A3P')
   })
 
   it('没有 serial 时侧边栏禁用（避免对着空窗口按返回键）', () => {

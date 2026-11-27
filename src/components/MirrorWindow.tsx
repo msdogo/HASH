@@ -4,6 +4,8 @@ import { errorText, t, tf } from '@shared/i18n'
 import type { DeviceKey } from '@shared/device-key'
 import type { MirrorEvent } from '@shared/mirror'
 import { WindowControls } from './WindowControls'
+import { useDeviceStore } from '@/store/deviceStore'
+import { deviceLabel } from '@shared/device-view'
 
 /**
  * 投屏窗口（每台设备一个）。
@@ -25,7 +27,7 @@ export interface MirrorWindowProps {
    *
    * 生产不传 → 从 location.hash 解析。
    */
-  initial?: { serial?: string }
+  initial?: { serial?: string; model?: string }
 }
 
 /** 从 hash 里解析设备序列号；不是投屏窗口时返回空串。 */
@@ -44,6 +46,22 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
   const serial = props.initial?.serial ?? (
     typeof location === 'undefined' ? '' : serialFromHash(location.hash)
   )
+  /*
+   * 设备型号从设备表里取。
+   *
+   * 为什么不从主进程的会话里取：会话里也有 title（型号 + 尾号），
+   * 但它在 scrcpy 起来之后才通过 started 事件到达 —— 那之前顶栏是空的。
+   * 设备表在应用启动时就已经有了，从它取能让顶栏从第一帧就显示名字。
+   *
+   * initial.model 是**测试注入口**（与 DeviceRail 的 initial 同一手法）：
+   * zustand 在 SSR 下用的是 getInitialState（不是 getState），
+   * 所以 renderToStaticMarkup 里读不到 setState 之后的设备表 ——
+   * 只能靠注入把「有型号」这条路径变成真渲染门禁。生产不传。
+   */
+  const storeModel = useDeviceStore(
+    (state) => state.devices.find((device) => device.serial === serial)?.model,
+  )
+  const model = props.initial?.model ?? storeModel
   const [busyKey, setBusyKey] = useState<DeviceKey | null>(null)
   const [notice, setNotice] = useState('')
   const [ready, setReady] = useState(false)
@@ -93,7 +111,19 @@ export function MirrorWindow(props: MirrorWindowProps = {}) {
       >
         <span className="truncate text-xs text-neutral-300">{t('mirror.running')}</span>
         {serial !== '' && (
-          <span className="truncate text-[11px] text-neutral-500">{serial}</span>
+          /*
+           * 显示**设备名**而不是完整序列号。
+           *
+           * 序列号对用户没有意义（9N9CN2G0012A3P 这种谁也记不住），
+           * 而型号（DJI RC PLUS 2）一眼就知道是哪台机器 —— 与设备栏、
+           * 日志行用的是同一套 deviceLabel 口径，三处显示的永远是同一个名字。
+           *
+           * 完整序列号放进 title：需要区分两台同型号设备时，悬停就能看到；
+           * 而主界面上不再被一串十六进制噪声占掉。
+           */
+          <span className="truncate text-[11px] text-neutral-500" title={serial}>
+            {deviceLabel({ serial, model })}
+          </span>
         )}
         <span
           className="ml-auto flex items-stretch"

@@ -44,6 +44,13 @@ export interface MirrorSession {
   version: string
   /** 显示名（型号 + serial 尾号）。 */
   title: string
+  /**
+   * 启动前探测到的屏幕尺寸（已按旋转方向）。
+   *
+   * 投屏窗口据此**一次性**建出正确比例，避免「先竖后横」的跳变。
+   * 探测失败时是 DEFAULT_SCREEN —— 那种情况下退化成旧行为，不影响功能。
+   */
+  screen: ScreenSize
 }
 
 /** 会话变化事件（主进程 → 渲染层）。 */
@@ -164,6 +171,66 @@ export function windowFitSize(
   }
   return { width, height }
 }
+
+/**
+ * 屏幕尺寸（设备当前生效分辨率，与**旋转方向一致**）。
+ *
+ * 是旋转后的尺寸：设备横过来时 dumpsys 报 cur=1920x1200，
+ * 而不是 Physical size 的 1200x1920。我们要的正是旋转后的那个 ——
+ * 它决定了 scrcpy 送来的画面是横的还是竖的。
+ */
+export interface ScreenSize {
+  width: number
+  height: number
+}
+
+/**
+ * 从 `adb shell dumpsys window displays` 的输出里解析当前分辨率。
+ *
+ * 为什么认 `cur=` 而不是 `init=` / `Physical size`：
+ *   - `init=` 与 `Physical size` 不随旋转变化
+ *     （实测 DJI RC Plus 2 恒报 1200x1920，即使设备已经横屏）；
+ *   - `cur=` 才是当前生效的分辨率（同一台机器横屏时报 1920x1200）。
+ * 拿物理尺寸去建窗口，横屏设备就会开出竖窗口 —— 那正是要修的观感问题。
+ *
+ * @returns 解析失败返回 null（调用方回退默认值，绝不因此让投屏失败）。
+ */
+export function parseScreenSize(stdout: string): ScreenSize | null {
+  /*
+   * 一行里可能有多个 `cur=`（多显示器时每个 DisplayDeviceInfo 一段）。
+   * 取**第一个**：主显示器在 dumpsys 里排在前面，投屏投的就是主屏。
+   */
+  const match = /\bcur=(\d+)x(\d+)/.exec(stdout)
+  if (match === null) return null
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
+  return { width, height }
+}
+
+/**
+ * 按 scrcpy 的 `--max-size` 语义算视频尺寸：**长边**缩到 maxSize，短边等比。
+ *
+ * 实测对得上：屏幕 1920x1200 + maxSize 1024 → 视频 1024x640（比例 0.533），
+ * 与生产环境量到的 scrcpy 子窗口尺寸完全一致；
+ * 屏幕 1080x1920 + maxSize 1024 → 视频 1024x576。
+ *
+ * 只缩不放：设备分辨率比 maxSize 小时保持原样 ——
+ * 放大只会让 scrcpy 多传像素，画面并不会更清楚。
+ */
+export function videoSizeFor(screen: ScreenSize, maxSize: number): ScreenSize {
+  if (screen.width <= 0 || screen.height <= 0) return { width: 0, height: 0 }
+  const longEdge = Math.max(screen.width, screen.height)
+  if (longEdge <= maxSize || maxSize <= 0) return { width: screen.width, height: screen.height }
+  const scale = maxSize / longEdge
+  return {
+    width: Math.max(1, Math.round(screen.width * scale)),
+    height: Math.max(1, Math.round(screen.height * scale)),
+  }
+}
+
+/** 探测不出分辨率时的回退值（常见竖屏手机 1080×1920，缩到 1024 长边）。 */
+export const DEFAULT_SCREEN: ScreenSize = { width: 1080, height: 1920 }
 
 /** 拼 scrcpy 命令行参数所需的输入。 */
 export interface ScrcpyArgsInput {

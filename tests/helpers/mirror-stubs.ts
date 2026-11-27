@@ -1,7 +1,7 @@
 import type { KeyService } from '../../electron/device/keys'
 import type { MirrorService } from '../../electron/mirror/service'
 import type { DeviceKey } from '../../src/shared/device-key'
-import type { MirrorSession } from '../../src/shared/mirror'
+import { DEFAULT_SCREEN, type MirrorSession } from '../../src/shared/mirror'
 
 /**
  * HandlerDeps 里「按键 + 投屏」三项的测试替身。
@@ -29,6 +29,7 @@ export function stubMirrorDeps(): {
       source: 'bundled',
       version: '0.0.0',
       title: 'stub',
+      screen: DEFAULT_SCREEN,
     }),
     stop: async (): Promise<void> => undefined,
     list: (): MirrorSession[] => [],

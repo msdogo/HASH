@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useMirrorStore } from '../src/store/mirrorStore'
-import type { MirrorSession } from '../src/shared/mirror'
+import { DEFAULT_SCREEN, type MirrorSession } from '../src/shared/mirror'
 
 const session = (serial: string): MirrorSession => ({
   serial,
@@ -10,6 +10,7 @@ const session = (serial: string): MirrorSession => ({
   source: 'bundled',
   version: '5.0.1',
   title: '设备 (' + serial + ')',
+  screen: DEFAULT_SCREEN,
 })
 
 describe('mirrorStore', () => {

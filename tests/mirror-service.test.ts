@@ -7,7 +7,7 @@ import {
   E_NO_SERIAL,
   E_SCRCPY_NOT_FOUND,
 } from '../src/shared/errors'
-import { SCRCPY_WINDOW_PREFIX } from '../src/shared/mirror'
+import { DEFAULT_SCREEN, SCRCPY_WINDOW_PREFIX, type ScreenSize } from '../src/shared/mirror'
 
 /** 假 spawn：记录入参，能手动触发退出。 */
 function fakeSpawn() {
@@ -50,6 +50,7 @@ function makeService(opts: {
   spawn?: SpawnScrcpy
   events?: unknown[]
   now?: number
+  probeScreen?: (serial: string, adbPath: string) => Promise<ScreenSize>
 }) {
   const sp = fakeSpawn()
   const events: unknown[] = opts.events ?? []
@@ -60,6 +61,7 @@ function makeService(opts: {
     spawn: opts.spawn ?? sp.spawn,
     emit: (e) => { events.push(e) },
     now: () => opts.now ?? 1_700_000_000_000,
+    ...(opts.probeScreen === undefined ? {} : { probeScreen: opts.probeScreen }),
   })
   return { svc, sp, events }
 }
@@ -70,6 +72,47 @@ describe('mirror service', () => {
     await svc.start('S1')
     expect(sp.calls).toHaveLength(1)
     expect(sp.calls[0].adbPath).toBe('C:\\pt\\adb.exe')
+  })
+
+  it('探测屏幕方向**早于** spawn（否则窗口已经按错的尺寸建出来了）', async () => {
+    /*
+     * 顺序门禁：这条用例的价值全在「先探后 spawn」这个次序上。
+     * 若把探测挪到 spawn 之后，窗口会在探测完成前就被 open() 建出来，
+     * 「先竖后横」的跳变立刻回来 —— 而下面 events 里那份 screen 也会是默认值。
+     */
+    const order: string[] = []
+    const sp = fakeSpawn()
+    const svc = createMirrorService({
+      devices: { get: (s) => device(s) },
+      adbPath: () => 'C:\\pt\\adb.exe',
+      locate: async () => ({ ok: true, path: 'C:\\s\\scrcpy.exe', version: '5.0.1', source: 'bundled' }),
+      spawn: (input) => { order.push('spawn'); return sp.spawn(input) },
+      emit: () => undefined,
+      now: () => 1,
+      probeScreen: async () => { order.push('probe'); return { width: 1920, height: 1200 } },
+    })
+    await svc.start('S1')
+    expect(order).toEqual(['probe', 'spawn'])
+  })
+
+  it('探测到的尺寸进会话（窗口据此一次建对比例）', async () => {
+    const { svc } = makeService({ probeScreen: async () => ({ width: 1920, height: 1200 }) })
+    const session = await svc.start('S1')
+    expect(session.screen).toEqual({ width: 1920, height: 1200 })
+  })
+
+  it('未注入探测（旧调用方）→ 会话里是默认尺寸，不抛错', async () => {
+    const { svc } = makeService({})
+    const session = await svc.start('S1')
+    expect(session.screen).toEqual(DEFAULT_SCREEN)
+  })
+
+  it('探测失败（回退默认值）不影响投屏照常启动', async () => {
+    // probe 自己保证不 reject；这里模拟它给出默认值这条路径
+    const { svc, sp } = makeService({ probeScreen: async () => DEFAULT_SCREEN })
+    const session = await svc.start('S1')
+    expect(sp.calls).toHaveLength(1)
+    expect(session.screen).toEqual(DEFAULT_SCREEN)
   })
 
   it('scrcpy 参数里必须带 -s serial（红线）', async () => {
