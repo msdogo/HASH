@@ -1,6 +1,6 @@
 {
   "name": "adb-file-manager",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "private": true,
   "main": "dist-electron/main.js",
   "type": "module",
